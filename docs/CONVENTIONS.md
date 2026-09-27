@@ -25,9 +25,17 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 | SOFTWARE_LEADER / BUILD_LEADER (×3) / BUSINESS_LEADER | implied by role | yes | manage own subteam: tasks, review, answer questions |
 | CAPTAIN | none | yes | all subteams + whole-team tasks |
 | MENTOR / TEACHER | none | yes | all subteams + whole-team tasks |
-| `isAdmin` flag (site owner) | any role | — | everything above + Admin area (approve accounts, manage people) |
+| `isAdmin` flag (**owner**, shown as "Owner") | any role | — | everything above + owners' accounts + granting Owner |
 
-- `ADMIN_EMAILS` only bootstraps the first admin: while no ACTIVE admin exists, registering/signing in with a listed email makes that account an ACTIVE admin. Afterwards admins are managed in Admin → People (or `npm run admin`).
+- **Admin access** (`canAdminister`) = every leader, the captain, mentors, teachers, and owners: the Admin area (approve sign-ups and member resources, manage people, email log). It does **not** widen task scope — subteam leaders still only manage their own subteam's tasks.
+- **Guardrails on admin access** (`ROLE_RANK`: members < subteam leaders < captain/mentors/teachers < owners):
+  non-owners manage only ACTIVE accounts ranked **below** them and sign-ups waiting for approval **up to** their own rank
+  (`canManageAccount`), and can only give positions below their own (up to their own when approving a sign-up —
+  `canGrantRole` / `grantableRoles`). They never see password-reset links (email only), never change someone else's
+  email, can't change their own position, and never touch owners' accounts or the Owner flag. The email log is owners-only
+  (`canViewEmailLog`, `requireOwnerUser`). There must always be at least one ACTIVE owner.
+- **Owners** (`isAdmin`, `isOwner`) can do all of the above for anyone, including other owners.
+- `ADMIN_EMAILS` only bootstraps the first owner: while no ACTIVE owner exists, registering/signing in with a listed email makes that account an ACTIVE owner. Afterwards owners are managed in Admin → People (or `npm run admin`).
 
 - **staff** = any leader/captain/mentor/teacher or admin (`isStaff`). **all-scope** = captain/mentor/teacher/admin (`hasAllScope`).
 - Seats: `SEAT_LIMITS` in `src/lib/constants.ts` (1 captain, 1 software, 3 build, 1 business leader).
@@ -47,6 +55,21 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 - On submit: `status=SUBMITTED, submittedAt=now, submissionNote=note|null` (keep the old `reviewNote` so reviewers can see prior feedback).
 - On approve/reject: `status, reviewedById=actor, reviewedAt=now, reviewNote=note|null`. Reject **requires** a note (tell them what to fix).
 - On withdraw: `status=TODO, submittedAt=null, submissionNote=null`. On reopen: `status=TODO`, clear `reviewedAt/reviewedById`, keep `reviewNote`.
+
+## Categories, sign-up tasks, and the Task dashboard
+
+- `TaskCategory` groups a subteam's tasks (`subteam` null = whole-team categories), managed by `canManageCategories`
+  (= `canManageSubteam`) in `services/categories.ts` (writes to one subteam's list take an advisory lock: names are unique
+  per subteam, case-insensitively, max `LIMITS.categoriesPerSubteamMax`). A task's category must belong to its subteam.
+- A task is either **"Assign people"** (`signupMode = false`) or **"Let people sign up"** (`signupMode = true`, optional
+  `signupLimit` = most people on it, counting everyone). `signupOpen` closes/reopens sign-ups without changing the mode
+  (`setSignupOpen`); editing a sign-up task keeps it open/closed as it was. Switching to "Assign people" clears `selfAssigned`.
+- `services/signups.ts`: `signUpForTask` / `leaveTask`. Sign-ups and task edits lock the task row (`SELECT … FOR UPDATE`)
+  before counting people, so the limit holds under races. Leaving is only for your own self sign-up while it's TODO.
+- `updateTask` gets `previousAssigneeIds` (+ `previousAssigneeIdsSent`) from the edit form: changes are computed against the
+  people the form showed, so sign-ups that happened while the form was open are kept.
+- `/tasks` (Task dashboard) and `/tasks/[id]` are for every ACTIVE user (`queries/board.ts`). They show who's on each task
+  with a **public** status only (done / checked off / to do — "sent back" shows as to do) and never notes.
 
 ## Dates
 
@@ -147,6 +170,20 @@ export async function createThingAction(_prev: ActionState, formData: FormData):
 - Look & feel: brand green `brand-*`, neutral `ink-*`, white cards on `bg-canvas`, `font-display` (Oswald) for page titles only. Keep copy short, friendly, and specific.
 - Empty states for every list. Loading: add `loading.tsx` only if a page is slow; forms already show pending.
 
+## Resources (`src/server/services/resources.ts`)
+
+A Resource is a link or a small uploaded file (`ResourceFile`, bytes in Postgres, ≤ `LIMITS.resourceFileMaxBytes` = 4 MB each and
+`LIMITS.resourceStorageMaxBytes` in total; Server Action bodies are capped at 5 MB in `next.config.ts`, and Vercel rejects
+requests over 4.5 MB, so don't raise the file limit).
+
+- People with admin access (`canManageResources`) add resources that go live (APPROVED) and can edit/remove/pin anyone's.
+- Everyone else's start PENDING, are only visible to them and reviewers (`canViewResource` / `visibleResourcesWhere`), and are
+  approved or turned down (`reviewResource`, `canReviewResources`). A member's edit sends it back to PENDING.
+- Files are served only by `src/app/(app)/resources/files/[id]/route.ts` with the headers from `src/server/resources/serve.ts`:
+  text as `text/plain`, png/jpeg/gif/webp and PDF inline, everything else (HTML, SVG, …) as an `application/octet-stream`
+  download; always `nosniff`, a sandboxing CSP (PDFs skip `sandbox`, which Chrome's PDF viewer refuses), and `no-store`.
+  Windows executables/scripts are refused at upload (`BLOCKED_EXTENSIONS`). Never render uploaded content as HTML.
+
 ## Notifications (email)
 
 Services emit `NotificationEvent`s (see `src/server/notifications/events.ts`). `src/server/notifications/deliver.ts` decides recipients
@@ -160,10 +197,12 @@ Production sends run in `after()` so user actions never wait on SMTP.
 | `task.submitted` | checklist | task creator if they can still review it; otherwise the first non-empty tier of reviewers: leaders of the task's subteam (whole-team task: of the submitter's subteam) → captains → admins (`emailOnSubmission`) |
 | `task.reviewed` | tasks | assignee (`emailOnReview`) |
 | `task.assigned` | tasks | the new assignees, except whoever made the change (`actorId`) (`emailOnAssigned`, default off) |
-| `account.pending` | auth | ACTIVE admins (`emailOnSignup`) |
+| `account.pending` | auth | everyone with admin access: ACTIVE owners, leaders, captain, mentors, teachers (`emailOnSignup`) |
 | `account.approved` | admin | that user (always) |
 | `password.reset` | auth/admin | that user (always) |
 | `password.changed` | auth/settings | that user (always, security notice) |
+| `resource.submitted` | resources | ACTIVE owners + leaders of the member's subteam (captains if the member has no subteam or it has no active leaders), never the member (`emailOnResource`) |
+| `resource.reviewed` | resources | the member who shared it (`emailOnReview`) |
 
 `question.asked` / `question.replied` are also posted, in full, to a leaders-only Discord channel when `DISCORD_WEBHOOK_URL` is set (`src/server/notifications/discord.ts`; one-way, logged in EmailLog as `to = "Discord"`, `allowed_mentions` empty so user text can't ping anyone).
 

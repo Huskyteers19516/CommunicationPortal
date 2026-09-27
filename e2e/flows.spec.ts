@@ -33,13 +33,18 @@ test.describe("access control", () => {
     await expect(page).toHaveURL(/\/today$/);
   });
 
-  test("a build leader can't open Admin or another subteam's task", async ({ page }) => {
+  test("a build leader has admin access but can't manage another subteam's task or an owner's account", async ({ page }) => {
     await signIn(page, PEOPLE.buildLeader);
     await page.goto("/admin");
-    await expect(page).toHaveURL(/\/today$/);
+    await expect(page).toHaveURL(/\/admin$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Approvals" })).toBeVisible();
     const [softwareTask] = await sql<{ id: string }>(`SELECT id FROM "Task" WHERE subteam = 'SOFTWARE' LIMIT 1`);
     const res = await page.goto(`/manage/tasks/${softwareTask.id}`);
     expect(res?.status()).toBe(404);
+    const [owner] = await sql<{ id: string }>(`SELECT id FROM "User" WHERE email = $1`, [PEOPLE.admin]);
+    await page.goto(`/admin/users/${owner.id}`);
+    await expect(page.getByText("Only an owner can change an owner's account.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
   });
 
   test("members only see their own questions", async ({ page }) => {
@@ -234,8 +239,31 @@ test.describe("settings", () => {
 
 test.describe("layout", () => {
   const pagesFor: Record<string, string[]> = {
-    [PEOPLE.softwareMember]: ["/today", "/my-tasks", "/my-tasks?tab=done", "/questions", "/questions/new", "/settings"],
-    [PEOPLE.buildLeader]: ["/manage", "/manage/tasks", "/manage/tasks/new", "/manage/review", "/manage/progress", "/questions"],
+    [PEOPLE.softwareMember]: [
+      "/today",
+      "/my-tasks",
+      "/my-tasks?tab=done",
+      "/tasks",
+      "/tasks?view=past",
+      "/questions",
+      "/questions/new",
+      "/resources",
+      "/resources/new",
+      "/settings",
+    ],
+    [PEOPLE.buildLeader]: [
+      "/manage",
+      "/manage/tasks",
+      "/manage/tasks/new",
+      "/manage/categories",
+      "/manage/review",
+      "/manage/progress",
+      "/questions",
+      "/tasks",
+      "/resources",
+      "/admin",
+      "/admin/users",
+    ],
     [PEOPLE.admin]: ["/admin", "/admin/users", "/admin/emails", "/manage/progress?range=month"],
   };
   for (const [email, paths] of Object.entries(pagesFor)) {
@@ -368,6 +396,8 @@ test.describe("resources", () => {
     await page.getByLabel("Quick links").fill("Meeting Agenda | https://docs.example.com/team?tab=agenda\nnot a link");
     await page.getByRole("button", { name: "Add resource" }).click();
     await expect(page.getByText("Line 2:", { exact: false })).toBeVisible();
+    // Focus goes to the field to fix (the message at the top can be far away on a phone).
+    await expect(page.getByLabel("Quick links")).toBeFocused();
     // The form kept what was typed; fix the bad line and save.
     await expect(page.getByLabel("Title")).toHaveValue(title);
     await page.getByLabel("Quick links").fill("Meeting Agenda | https://docs.example.com/team?tab=agenda");
@@ -384,8 +414,10 @@ test.describe("resources", () => {
     await expect(page.getByRole("link", { name: "Meeting Agenda" }).first()).toHaveAttribute("href", "https://docs.example.com/team?tab=agenda");
     await expect(page.getByRole("link", { name: "Add resource" })).toHaveCount(0);
     await expect(page.getByRole("link", { name: `Edit ${title}` })).toHaveCount(0);
-    await page.goto("/resources/new");
-    await expect(page).toHaveURL(/\/resources$/);
+    // Members share instead (it waits for approval; see e2e/resources.spec.ts), and can't pin.
+    await page.getByRole("link", { name: "Share a resource" }).first().click();
+    await expect(page).toHaveURL(/\/resources\/new$/);
+    await expect(page.getByText("Pin to the top")).toHaveCount(0);
     await expectNoHorizontalScroll(page);
   });
 });

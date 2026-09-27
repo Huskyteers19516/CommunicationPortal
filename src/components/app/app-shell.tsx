@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { Actor } from "@/server/actor";
-import { canAccessManage, canAdminister } from "@/server/permissions";
+import { canAccessManage, canAdminister, canViewEmailLog } from "@/server/permissions";
 import type { NavCounts } from "@/server/queries/nav";
 import { HuskyMark, Logo } from "../brand/logo";
 import { BottomTabs, MobileNav, SidebarNav, SignOutButton } from "./nav-client";
@@ -18,8 +18,9 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
       items: [
         { href: "/today", label: "Today", icon: "today" },
         { href: "/my-tasks", label: "My tasks", icon: "myTasks" },
+        { href: "/tasks", label: "Task dashboard", icon: "dashboard" },
         { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
-        { href: "/resources", label: "Resources", icon: "resources" },
+        { href: "/resources", label: "Resources", icon: "resources", count: counts.pendingResources },
       ],
     },
   ];
@@ -40,7 +41,8 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
       items: [
         { href: "/admin", label: "Approvals", icon: "approvals", count: counts.pendingApprovals, exact: true },
         { href: "/admin/users", label: "People", icon: "users" },
-        { href: "/admin/emails", label: "Email log", icon: "emails" },
+        // Owners only (subjects can reveal other subteams' private details).
+        ...(canViewEmailLog(actor) ? [{ href: "/admin/emails", label: "Email log", icon: "emails" } satisfies NavItem] : []),
       ],
     });
   }
@@ -49,10 +51,9 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
   const tabs: NavItem[] = [
     { href: "/today", label: "Today", icon: "today" },
     { href: "/my-tasks", label: "My tasks", icon: "myTasks" },
+    { href: "/tasks", label: "Dashboard", icon: "dashboard" },
     { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
-    staff
-      ? { href: "/manage/review", label: "Review", icon: "review", count: counts.reviewQueue }
-      : { href: "/settings", label: "Settings", icon: "settings" },
+    ...(staff ? [{ href: "/manage/review", label: "Review", icon: "review", count: counts.reviewQueue } satisfies NavItem] : []),
   ];
   return { sections, tabs };
 }

@@ -94,9 +94,12 @@ function CopyButton({ text }: { text: string }) {
 function PasswordResetRow({
   user,
   emailReady,
+  showLink,
 }: {
   user: { id: string; email: string; isDisabled: boolean };
   emailReady: boolean;
+  /** Owners see the link itself; other admins only send it by email. */
+  showLink: boolean;
 }) {
   const [state, formAction] = useActionState<ResetLinkState, FormData>(sendPasswordResetAction, initialActionState);
   const linkId = `reset-link-${user.id}`;
@@ -108,15 +111,24 @@ function PasswordResetRow({
         description={
           user.isDisabled
             ? "Re-activate this account before creating a reset link."
-            : emailReady
-              ? `Creates a one-time link to choose a new password and emails it to ${user.email}. You'll see the link here too.`
-              : "Creates a one-time link to choose a new password. Email isn't set up, so you'll need to send it to them yourself."
+            : !showLink
+              ? emailReady
+                ? `Emails ${user.email} a one-time link to choose a new password.`
+                : "Email isn't set up yet, so only an owner can create reset links."
+              : emailReady
+                ? `Creates a one-time link to choose a new password and emails it to ${user.email}. You'll see the link here too.`
+                : "Creates a one-time link to choose a new password. Email isn't set up, so you'll need to send it to them yourself."
         }
       />
       <form action={formAction}>
         <input type="hidden" name="userId" value={user.id} />
-        <SubmitButton variant="secondary" className="w-full" pendingText="Creating link…" disabled={user.isDisabled}>
-          Create reset link
+        <SubmitButton
+          variant="secondary"
+          className="w-full"
+          pendingText={showLink ? "Creating link…" : "Sending…"}
+          disabled={user.isDisabled || (!showLink && !emailReady)}
+        >
+          {showLink ? "Create reset link" : "Email a reset link"}
         </SubmitButton>
       </form>
       {state?.ok && state.resetUrl ? (
@@ -148,6 +160,7 @@ function PasswordResetRow({
 export function UserAccountActions({
   user,
   emailReady,
+  actorIsOwner = false,
 }: {
   user: {
     id: string;
@@ -156,18 +169,23 @@ export function UserAccountActions({
     isDisabled: boolean;
     isSelf: boolean;
     canDelete: boolean;
+    /** False for an owner's account viewed by someone who isn't an owner. */
+    canManage: boolean;
     /** PENDING/REJECTED but used the portal, so it can't be deleted. */
     deleteBlockedByActivity: boolean;
     activeSessions: number;
   };
   /** Whether an email provider is configured. */
   emailReady: boolean;
+  /** Owners also see the reset link itself. */
+  actorIsOwner?: boolean;
 }) {
+  if (!user.canManage) return null;
   return (
     <Card>
       <CardHeader title="Account actions" />
       <ul className="divide-y divide-ink-100">
-        <PasswordResetRow user={user} emailReady={emailReady} />
+        <PasswordResetRow user={user} emailReady={emailReady} showLink={actorIsOwner} />
         <ActionRow
           userId={user.id}
           action={revokeSessionsAction}

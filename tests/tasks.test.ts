@@ -18,8 +18,10 @@ import {
   removeAssignment,
   reopenAssignment,
   reviewAssignment,
+  setSignupOpen,
   updateTask,
 } from "@/server/services/tasks";
+import { leaveTask, signUpForTask } from "@/server/services/signups";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeTask, makeUser, TEST_NOW, TEST_TODAY } from "./helpers/factories";
 
@@ -674,6 +676,9 @@ describe("getTaskDuplicate", () => {
       subteam: "BUILD",
       priority: "HIGH",
       dueDate: today,
+      categoryId: "",
+      assignMode: "assign",
+      signupLimit: null,
       // Sky (software) is out of scope and Dana is disabled.
       assigneeIds: [p.buildLead1.id, p.buildMember.id],
     });
@@ -887,5 +892,336 @@ describe("queries", () => {
     const filtered = await getReviewQueue(q.captain, { subteam: "SOFTWARE" }, fresh.db);
     expect(filtered.total).toBe(1);
     expect(await getReviewQueue(q.buildMember, {}, fresh.db)).toEqual({ total: 0, shown: 0, groups: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Task dashboard: sign-up tasks and categories
+
+describe("createTask: sign-up tasks", () => {
+  it("creates a sign-up task with nobody on it yet, and emails nobody", async () => {
+    const ctx = ctxFor(p.buildLead1);
+    const { id } = await createTask(ctx, taskInput({ assignMode: "signup", assigneeIds: [], signupLimit: "3" }));
+    const task = await t.db.task.findUniqueOrThrow({ where: { id }, include: { assignments: true } });
+    expect(task).toMatchObject({ signupOpen: true, signupLimit: 3 });
+    expect(task.assignments).toHaveLength(0);
+    expect(ctx.notifier.events).toEqual([]);
+  });
+
+  it("treats an empty spots field as no limit", async () => {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", assigneeIds: [], signupLimit: "" }));
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ signupOpen: true, signupLimit: null });
+  });
+
+  it("counts pre-filled people toward the spots; only they get the 'assigned' email", async () => {
+    const ctx = ctxFor(p.buildLead1);
+    const { id } = await createTask(ctx, taskInput({ assignMode: "signup", signupLimit: "2", assigneeIds: [p.buildMember.id] }));
+    const rows = await t.db.taskAssignment.findMany({ where: { taskId: id } });
+    expect(rows).toMatchObject([{ userId: p.buildMember.id, selfAssigned: false, status: "TODO" }]);
+    expect(ctx.notifier.events).toEqual([{ type: "task.assigned", taskId: id, userIds: [p.buildMember.id], actorId: p.buildLead1.id }]);
+
+    const err = await createTask(
+      ctxFor(p.buildLead1),
+      taskInput({ assignMode: "signup", signupLimit: "1", assigneeIds: [p.buildMember.id, p.buildMember2.id] }),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).fieldErrors.signupLimit).toBe(
+      "2 people are on this task, but it only has 1 spot. Add spots or take people off.",
+    );
+  });
+
+  it("validates the number of spots and the mode", async () => {
+    const fieldErrors = async (input: Record<string, unknown>) => {
+      const err = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", assigneeIds: [], ...input })).catch((e) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      return (err as ValidationError).fieldErrors;
+    };
+    for (const bad of ["0", "-2", "2.5", "abc", "151"]) {
+      expect((await fieldErrors({ signupLimit: bad })).signupLimit, bad).toBe("Enter 1 to 150 spots, or leave it empty for no limit.");
+    }
+    expect((await fieldErrors({ assignMode: "lottery" })).assignMode).toBe("Choose who does this task.");
+    await expect(
+      createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", assigneeIds: [], signupLimit: "150" })),
+    ).resolves.toHaveProperty("id");
+  });
+
+  it("'Assign people' closes sign-ups and ignores spots, and still needs someone", async () => {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "assign", signupLimit: "4" }));
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ signupOpen: false, signupLimit: null });
+    const err = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "assign", assigneeIds: [] })).catch((e) => e);
+    expect((err as ValidationError).fieldErrors.assigneeIds).toBe("Pick at least one person.");
+  });
+});
+
+describe("createTask / updateTask: categories", () => {
+  let intake: string;
+  let swVision: string;
+  let events: string;
+
+  beforeAll(async () => {
+    const make = (subteam: "BUILD" | "SOFTWARE" | null, name: string) =>
+      t.db.taskCategory.create({ data: { subteam, name, nameKey: name.toLowerCase(), position: 0 } }).then((c) => c.id);
+    intake = await make("BUILD", "Intake");
+    swVision = await make("SOFTWARE", "Vision");
+    events = await make(null, "Events");
+  });
+
+  it("stores a category from the task's own subteam", async () => {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ categoryId: intake }));
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).categoryId).toBe(intake);
+    const team = await createTask(ctxFor(p.captain), taskInput({ subteam: "", categoryId: events }));
+    expect((await t.db.task.findUniqueOrThrow({ where: { id: team.id } })).categoryId).toBe(events);
+  });
+
+  it("rejects a category from another subteam, or one that no longer exists", async () => {
+    const fieldErrors = async (actor: Actor, input: Record<string, unknown>) => {
+      const err = await createTask(ctxFor(actor), taskInput(input)).catch((e) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      return (err as ValidationError).fieldErrors;
+    };
+    expect((await fieldErrors(p.buildLead1, { categoryId: swVision })).categoryId).toBe("Pick a category from Build.");
+    expect((await fieldErrors(p.captain, { subteam: "", categoryId: intake })).categoryId).toBe("Pick a category from the whole-team list.");
+    expect((await fieldErrors(p.captain, { subteam: "BUILD", categoryId: events })).categoryId).toBe("Pick a category from Build.");
+    expect((await fieldErrors(p.buildLead1, { categoryId: "missing" })).categoryId).toMatch(/no longer exists/);
+  });
+
+  it("creates a new category from the form, or reuses one with the same name", async () => {
+    const before = await t.db.taskCategory.count({ where: { subteam: "BUILD" } });
+    const reuse = await createTask(ctxFor(p.buildLead1), taskInput({ categoryId: "__new__", newCategory: "  INTAKE " }));
+    expect((await t.db.task.findUniqueOrThrow({ where: { id: reuse.id } })).categoryId).toBe(intake);
+    expect(await t.db.taskCategory.count({ where: { subteam: "BUILD" } })).toBe(before);
+
+    const fresh = await createTask(ctxFor(p.buildLead2), taskInput({ categoryId: "__new__", newCategory: "Drive   train" }));
+    const task = await t.db.task.findUniqueOrThrow({ where: { id: fresh.id }, include: { category: true } });
+    expect(task.category).toMatchObject({ subteam: "BUILD", name: "Drive train", createdById: p.buildLead2.id });
+
+    const err = await createTask(ctxFor(p.buildLead1), taskInput({ categoryId: "__new__", newCategory: "  " })).catch((e) => e);
+    expect((err as ValidationError).fieldErrors.newCategory).toBe("Name the new category.");
+    const long = await createTask(ctxFor(p.buildLead1), taskInput({ categoryId: "__new__", newCategory: "x".repeat(41) })).catch((e) => e);
+    expect((long as ValidationError).fieldErrors.newCategory).toMatch(/at most 40/);
+  });
+
+  it("keeps the category on edit, and refuses a mismatch after moving the task", async () => {
+    const task = await makeTask(t.db, p.buildLead1, { subteam: "BUILD", assigneeIds: [p.buildMember.id] });
+    await updateTask(ctxFor(p.buildLead1), { taskId: task.id, ...taskInput({ categoryId: intake, assigneeIds: [p.buildMember.id] }) });
+    expect((await t.db.task.findUniqueOrThrow({ where: { id: task.id } })).categoryId).toBe(intake);
+
+    const err = await updateTask(ctxFor(p.captain), {
+      taskId: task.id,
+      ...taskInput({ subteam: "SOFTWARE", categoryId: intake, assigneeIds: [p.buildMember.id] }),
+    }).catch((e) => e);
+    expect((err as ValidationError).fieldErrors.categoryId).toBe("Pick a category from Software.");
+    await updateTask(ctxFor(p.captain), {
+      taskId: task.id,
+      ...taskInput({ subteam: "SOFTWARE", categoryId: "", assigneeIds: [p.buildMember.id] }),
+    });
+    expect(await t.db.task.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ subteam: "SOFTWARE", categoryId: null });
+  });
+});
+
+describe("updateTask: people signing up while the edit form is open", () => {
+  /** A Build sign-up task (limit optional) with some people already on it. */
+  async function openTask(people: string[], limit: number | null = null) {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", assigneeIds: people, signupLimit: limit ?? "" }));
+    return id;
+  }
+  const edit = (taskId: string, assigneeIds: string[], previous: string[] | null, extra: Record<string, unknown> = {}) => {
+    const ctx = ctxFor(p.buildLead1);
+    const input = {
+      taskId,
+      ...taskInput({ assignMode: "signup", assigneeIds, signupLimit: "", ...extra }),
+      ...(previous ? { previousAssigneeIds: previous, previousAssigneeIdsSent: "1" } : {}),
+    };
+    return { ctx, run: () => updateTask(ctx, input) };
+  };
+  const peopleOn = async (taskId: string) =>
+    (await t.db.taskAssignment.findMany({ where: { taskId }, select: { userId: true } })).map((a) => a.userId).sort();
+
+  it("keeps people who signed up after the form loaded, and only emails the people the leader added", async () => {
+    const id = await openTask([p.buildMember.id]);
+    await signUpForTask(ctxFor(p.buildMember2), { taskId: id }); // while the form is open
+    const { ctx, run } = edit(id, [p.buildMember.id, p.buildLead2.id], [p.buildMember.id]);
+    await run();
+    expect(await peopleOn(id)).toEqual([p.buildMember.id, p.buildMember2.id, p.buildLead2.id].sort());
+    expect(ctx.notifier.events).toEqual([{ type: "task.assigned", taskId: id, userIds: [p.buildLead2.id], actorId: p.buildLead1.id }]);
+    const selfSignup = await assignmentOf(id, p.buildMember2.id);
+    expect(selfSignup.selfAssigned).toBe(true);
+  });
+
+  it("doesn't add back people who left after the form loaded", async () => {
+    const id = await openTask([]);
+    await signUpForTask(ctxFor(p.buildMember), { taskId: id });
+    await signUpForTask(ctxFor(p.buildMember2), { taskId: id });
+    // Form loads with both; then one of them leaves.
+    await leaveTask(ctxFor(p.buildMember2), { taskId: id });
+    const { run } = edit(id, [p.buildMember.id, p.buildMember2.id], [p.buildMember.id, p.buildMember2.id]);
+    await run();
+    expect(await peopleOn(id)).toEqual([p.buildMember.id]);
+  });
+
+  it("still removes people the leader unchecked", async () => {
+    const id = await openTask([p.buildMember.id, p.buildMember2.id]);
+    const { run } = edit(id, [p.buildMember.id], [p.buildMember.id, p.buildMember2.id]);
+    await run();
+    expect(await peopleOn(id)).toEqual([p.buildMember.id]);
+  });
+
+  it("an empty list from the form counts when the marker is sent", async () => {
+    const id = await openTask([]);
+    await signUpForTask(ctxFor(p.buildMember), { taskId: id });
+    await edit(id, [], []).run();
+    expect(await peopleOn(id)).toEqual([p.buildMember.id]);
+  });
+
+  it("without the marker, the list is the full set (as before)", async () => {
+    const id = await openTask([]);
+    await signUpForTask(ctxFor(p.buildMember), { taskId: id });
+    await edit(id, [], null).run();
+    expect(await peopleOn(id)).toEqual([]);
+  });
+
+  it("checks the spots against everyone who'll be on it, late sign-ups included", async () => {
+    const id = await openTask([p.buildMember.id], 3);
+    await signUpForTask(ctxFor(p.buildMember2), { taskId: id });
+    const err = await edit(id, [p.buildMember.id, p.buildLead2.id], [p.buildMember.id], { signupLimit: "2" })
+      .run()
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).fieldErrors.signupLimit).toMatch(/^3 people are on this task, but it only has 2 spots/);
+    expect(await peopleOn(id)).toEqual([p.buildMember.id, p.buildMember2.id].sort());
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).signupLimit).toBe(3);
+  });
+
+  it("still stops a subteam leader from taking themselves off", async () => {
+    const id = await openTask([p.buildLead1.id, p.buildMember.id]);
+    const err = await edit(id, [p.buildMember.id], [p.buildLead1.id, p.buildMember.id])
+      .run()
+      .catch((e) => e);
+    expect((err as ValidationError).fieldErrors.assigneeIds).toBe("You can't remove yourself from a task. Ask another leader or the captain.");
+  });
+
+  it("switching to 'Assign people' closes sign-ups and clears the spots", async () => {
+    const id = await openTask([p.buildMember.id], 4);
+    await updateTask(ctxFor(p.buildLead1), {
+      taskId: id,
+      ...taskInput({ assignMode: "assign", assigneeIds: [p.buildMember.id] }),
+      previousAssigneeIds: [p.buildMember.id],
+      previousAssigneeIdsSent: "1",
+    });
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ signupOpen: false, signupLimit: null });
+  });
+});
+
+describe("setSignupOpen", () => {
+  it("editing a sign-up task keeps sign-ups closed if a leader closed them; switching an assigned task to sign-up opens them", async () => {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", signupLimit: "3", assigneeIds: [] }));
+    await setSignupOpen(ctxFor(p.buildLead1), { taskId: id, open: "false" });
+    await updateTask(ctxFor(p.buildLead1), {
+      taskId: id,
+      ...taskInput({ title: "Renamed", assignMode: "signup", signupLimit: "3", assigneeIds: [] }),
+      previousAssigneeIds: [],
+      previousAssigneeIdsSent: "1",
+    });
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ title: "Renamed", signupOpen: false, signupLimit: 3 });
+
+    const assigned = await createTask(ctxFor(p.buildLead1), taskInput({ assigneeIds: [p.buildMember.id] }));
+    await updateTask(ctxFor(p.buildLead1), {
+      taskId: assigned.id,
+      ...taskInput({ assignMode: "signup", assigneeIds: [p.buildMember.id] }),
+      previousAssigneeIds: [p.buildMember.id],
+      previousAssigneeIdsSent: "1",
+    });
+    expect((await t.db.task.findUniqueOrThrow({ where: { id: assigned.id } })).signupOpen).toBe(true);
+  });
+
+  it("the mode is stored: a closed sign-up task with nobody on it stays a sign-up task", async () => {
+    const lead = ctxFor(p.buildLead1);
+    const { id } = await createTask(lead, taskInput({ assignMode: "signup", signupLimit: "", assigneeIds: [] }));
+    await setSignupOpen(lead, { taskId: id, open: "false" });
+    const detail = await getManagedTaskDetail(p.buildLead1, id, t.db);
+    expect(detail).toMatchObject({ assignMode: "signup", signupOpen: false });
+    // Saving it (still "Let people sign up", nobody on it) works and keeps sign-ups closed.
+    await updateTask(lead, {
+      taskId: id,
+      ...taskInput({ title: "Still closed", assignMode: "signup", signupLimit: "", assigneeIds: [] }),
+      previousAssigneeIds: [],
+      previousAssigneeIdsSent: "1",
+    });
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ signupMode: true, signupOpen: false });
+  });
+
+  it("switching a sign-up task to 'Assign people' sticks: self sign-ups become assigned and can't leave", async () => {
+    const lead = ctxFor(p.buildLead1);
+    const { id } = await createTask(lead, taskInput({ assignMode: "signup", signupLimit: "3", assigneeIds: [] }));
+    await signUpForTask(ctxFor(p.buildMember), { taskId: id });
+    await updateTask(lead, {
+      taskId: id,
+      ...taskInput({ assignMode: "assign", assigneeIds: [p.buildMember.id] }),
+      previousAssigneeIds: [p.buildMember.id],
+      previousAssigneeIdsSent: "1",
+    });
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ signupMode: false, signupOpen: false, signupLimit: null });
+    expect((await getManagedTaskDetail(p.buildLead1, id, t.db))?.assignMode).toBe("assign");
+    expect((await t.db.taskAssignment.findFirstOrThrow({ where: { taskId: id } })).selfAssigned).toBe(false);
+    await expect(leaveTask(ctxFor(p.buildMember), { taskId: id })).rejects.toBeInstanceOf(ForbiddenError);
+    // An assigned task can't be "opened" for sign-ups without editing it into a sign-up task.
+    await expect(setSignupOpen(lead, { taskId: id, open: "true" })).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("lets task managers close and reopen sign-ups", async () => {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", assigneeIds: [] }));
+    await setSignupOpen(ctxFor(p.buildLead2), { taskId: id, open: "false" });
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).signupOpen).toBe(false);
+    await expect(signUpForTask(ctxFor(p.buildMember), { taskId: id })).rejects.toThrow("Sign-ups for this task are closed.");
+    await setSignupOpen(ctxFor(p.captain), { taskId: id, open: "true" });
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).signupOpen).toBe(true);
+  });
+
+  it("hides the task from other subteams' leaders and forbids members", async () => {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", assigneeIds: [] }));
+    await expect(setSignupOpen(ctxFor(p.swLead), { taskId: id, open: "false" })).rejects.toThrow(NotFoundError);
+    await expect(setSignupOpen(ctxFor(p.buildMember), { taskId: id, open: "false" })).rejects.toThrow(ForbiddenError);
+    await expect(setSignupOpen(ctxFor(p.buildLead1), { taskId: "missing", open: "false" })).rejects.toThrow(NotFoundError);
+    await expect(setSignupOpen(ctxFor(p.buildLead1), { taskId: id, open: "maybe" })).rejects.toThrow(ValidationError);
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).signupOpen).toBe(true);
+  });
+});
+
+describe("queries: category and sign-up details", () => {
+  it("list rows, task detail, and duplicates carry the category and sign-up settings", async () => {
+    const lead = await makeUser(t.db, { role: "BUILD_LEADER", name: "Query Lead" });
+    const { id } = await createTask(
+      ctxFor(lead),
+      taskInput({ assignMode: "signup", signupLimit: "5", assigneeIds: [p.buildMember.id], categoryId: "__new__", newCategory: "Lift" }),
+    );
+    await signUpForTask(ctxFor(p.buildMember2), { taskId: id });
+    const category = await t.db.taskCategory.findFirstOrThrow({ where: { subteam: "BUILD", nameKey: "lift" } });
+
+    const list = await listManagedTasks(lead, { view: "upcoming", mine: true, today: TEST_TODAY }, t.db);
+    expect(list.tasks).toHaveLength(1);
+    expect(list.tasks[0]).toMatchObject({
+      category: { id: category.id, name: "Lift" },
+      signupMode: true,
+      signupOpen: true,
+      signupLimit: 5,
+      counts: { total: 2, todo: 2 },
+    });
+
+    const detail = await getManagedTaskDetail(lead, id, t.db);
+    expect(detail).toMatchObject({ category: { id: category.id, name: "Lift" }, signupOpen: true, signupLimit: 5, assignMode: "signup" });
+    expect(detail!.assignments.map((a) => [a.user.id, a.selfAssigned])).toEqual(
+      expect.arrayContaining([
+        [p.buildMember.id, false],
+        [p.buildMember2.id, true],
+      ]),
+    );
+
+    // Copies keep the category, mode and spots — but not the people who signed themselves up.
+    const copy = await getTaskDuplicate(lead, id, { today: TEST_TODAY }, t.db);
+    expect(copy).toMatchObject({ categoryId: category.id, assignMode: "signup", signupLimit: 5, assigneeIds: [p.buildMember.id] });
+
+    // Closed with sign-ups still reads as a sign-up task.
+    await setSignupOpen(ctxFor(lead), { taskId: id, open: false });
+    expect((await getManagedTaskDetail(lead, id, t.db))?.assignMode).toBe("signup");
   });
 });

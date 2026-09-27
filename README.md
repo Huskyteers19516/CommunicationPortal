@@ -6,17 +6,18 @@ The team communication app for **FTC 19516 The Huskyteers**. Leaders assign task
 
 | Who | Can do |
 |---|---|
-| **Member** (Software / Build / Business) | See **Today's checklist** (overdue, due today, coming up) · check items off → *waiting for review* → *approved* (or *needs changes* with the leader's note) · **ask questions** to their subteam leaders, the captain, or a specific person · email preferences |
-| **Subteam leader** (Software, Build ×3, Business) | Everything a member can do, plus for **their subteam**: create/edit tasks and assign them to people · **review queue** (approve / send back with a note / bulk approve) · **team progress** (who's done today / this week / 30 days, overdue items) · answer questions |
-| **Captain, Mentor, Teacher** | Same as leaders, for **every subteam**, plus whole-team tasks |
-| **Admin** (you, the site owner) | **Approve or reject** leaders/captain/mentors/teachers (with seat limits: 1 captain, 1 software, 3 build, 1 business leader) · manage people (change position, disable, send password reset, sign out devices) · **email log** + test email |
+| **Member** (Software / Build / Business) | See **Today's checklist** (overdue, due today, coming up) · check items off → *waiting for review* → *approved* (or *needs changes* with the leader's note) · the **Task dashboard** (every subteam's tasks, sorted by category, and who's on each one) · **sign up** for tasks that are open for sign-up · **ask questions** to their subteam leaders, the captain, or a specific person · **share resources** (links or files up to 4 MB, e.g. code) — they appear once someone with admin access approves them · email preferences |
+| **Subteam leader** (Software, Build ×3, Business) | Everything a member can do, plus for **their subteam**: task **categories** (e.g. Build → Intake, Drivetrain, CAD — add one with **+**) · create/edit tasks and either **assign people** or **let people sign up** (optionally with a number of spots) · **review queue** (approve / send back with a note / bulk approve) · **team progress** · answer questions · plus **admin access** (below) |
+| **Captain, Mentor, Teacher** | Same as leaders, for **every subteam**, plus whole-team tasks, plus **admin access** |
+| **Admin access** (every leader, the captain, mentors, and teachers) | **Approve or reject** sign-ups (seat limits: 1 captain, 1 software, 3 build, 1 business leader) · **approve members' resources** · manage people (change position, disable, email a password reset, sign out devices). Guardrails: leaders manage members and approve sign-ups up to leader level; the captain, mentors, and teachers also manage leaders. Nobody but an owner can change an owner's account, someone else's email, or see the email log. |
+| **Owner** (you, the site owner) | Everything, for everyone: all accounts (including making someone else an owner), the **email log** + test email/Discord message. |
 
-Members' accounts work right after sign-up. Leader, captain, mentor, and teacher accounts wait on a "waiting for approval" page until the admin approves them.
+Members' accounts work right after sign-up. Leader, captain, mentor, and teacher accounts wait on a "waiting for approval" page until someone with admin access approves them.
 
 **Emails** (each person can turn them off in *Settings*):
 - To leaders: a member asks them a question · a member checks off a task they assigned
 - To members: someone answers their question · their item is approved or sent back · *(off by default)* they're assigned a new task
-- To the admin: someone signs up and needs approval
+- To people with admin access: someone signs up and needs approval · a member shares a resource (owners + that member's subteam leaders)
 - Always sent: password reset links, "your password was changed", "you're approved"
 
 ## Put it online (about 20 minutes, free tiers)
@@ -41,7 +42,7 @@ The app needs a server and a database, so **GitHub Pages can't run it** (it only
 7. **Become the admin right away:** open the site → *Create an account* with the email from `ADMIN_EMAILS`. You land in the app with the **Admin** section in the menu. Do this before sharing the link.
 8. In **Admin → Email log**, press **Send me a test email**. Then share the link and the team code. Members can start using it immediately; approve leaders, mentors and teachers in **Admin → Approvals**.
 
-> **More admins:** open *Admin → People*, pick the person, tick **Team admin**. (`ADMIN_EMAILS` only creates the *first* admin.)
+> **Admins and owners:** every leader, the captain, mentors, and teachers automatically have admin access. To add another **owner**, open *Admin → People*, pick the person, tick **Owner**. (`ADMIN_EMAILS` only creates the *first* owner.)
 > **Locked out of admin?** From a computer with this repo and your production database URL as `DATABASE_URL` in `.env`, run
 > `npm run admin -- --email you@example.com --name "Your Name"`. To just reset someone's password without changing their role: `npm run admin -- --email them@example.com --reset-only`.
 > **Someone can't get emails / typo'd their email?** *Admin → People → (person)*: fix the email there. **Forgot password?** Same page → *Send password reset*. The page also shows the one-time link (works once, for 1 hour), so you can send it to them yourself even if email isn't set up.

@@ -44,7 +44,7 @@ export function ThreadMessage({
             {mine && <span className="font-normal text-ink-500"> (you)</span>}
           </span>
           {staff &&
-            (author.role === "MEMBER" && author.isAdmin ? <Badge tone="brand">Admin</Badge> : <RoleBadge role={author.role} />)}
+            (author.role === "MEMBER" && author.isAdmin ? <Badge tone="brand">Owner</Badge> : <RoleBadge role={author.role} />)}
           <time
             className="whitespace-nowrap text-xs text-ink-500"
             dateTime={createdAt.toISOString()}

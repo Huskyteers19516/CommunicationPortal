@@ -9,7 +9,7 @@ import { LinkTabs } from "@/components/ui/link-tabs";
 import { PageHeader } from "@/components/ui/page-header";
 import { Pagination } from "@/components/ui/pagination";
 import type { EmailStatus } from "@/generated/prisma/enums";
-import { requireAdminUser } from "@/server/auth/session";
+import { requireOwnerUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { discordWebhookUrl } from "@/server/notifications/discord";
 import { getEmailConfigStatus, listEmailLogs, parseEmailLogFilters } from "@/server/queries/admin";
@@ -32,7 +32,8 @@ function hrefFor(status: EmailStatus | undefined, page = 1) {
 }
 
 export default async function EmailLogPage({ searchParams }: PageProps<"/admin/emails">) {
-  const actor = await requireAdminUser();
+  // Owners only: subjects reveal things (who was sent back, private question titles) other admins shouldn't see.
+  const actor = await requireOwnerUser();
   const filters = parseEmailLogFilters(await searchParams);
   const config = getEmailConfigStatus(actor);
   const result = await listEmailLogs(actor, filters);

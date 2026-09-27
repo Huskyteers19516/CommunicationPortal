@@ -121,6 +121,10 @@ export interface ManagedTaskRow {
   subteam: Subteam | null;
   dueDate: DateOnly;
   priority: Priority;
+  category: { id: string; name: string } | null;
+  signupMode: boolean;
+  signupOpen: boolean;
+  signupLimit: number | null;
   createdByName: string;
   isMine: boolean;
   counts: StatusCounts;
@@ -179,6 +183,10 @@ export async function listManagedTasks(
       subteam: true,
       dueDate: true,
       priority: true,
+      signupMode: true,
+      signupOpen: true,
+      signupLimit: true,
+      category: { select: { id: true, name: true } },
       createdById: true,
       createdBy: { select: { name: true } },
     },
@@ -206,6 +214,10 @@ export async function listManagedTasks(
       subteam: t.subteam,
       dueDate: dbToDateOnly(t.dueDate),
       priority: t.priority,
+      category: t.category,
+      signupMode: t.signupMode,
+      signupOpen: t.signupOpen,
+      signupLimit: t.signupLimit,
       createdByName: t.createdBy.name,
       isMine: t.createdById === actor.id,
       counts: countsByTask.get(t.id) ?? emptyCounts(),
@@ -218,6 +230,10 @@ export async function listManagedTasks(
 
 // ---------- task detail ----------
 
+function assignModeOf(signupMode: boolean): "assign" | "signup" {
+  return signupMode ? "signup" : "assign";
+}
+
 export interface ManagedAssignment {
   id: string;
   status: AssignmentStatus;
@@ -227,6 +243,8 @@ export interface ManagedAssignment {
   reviewNote: string | null;
   reviewerName: string | null;
   user: { id: string; name: string; role: Role; subteam: Subteam | null; status: AccountStatus };
+  /** The person signed themselves up from the Task dashboard. */
+  selfAssigned: boolean;
   /** The actor may approve / send back / reopen this item (false for your own item unless all-scope). */
   canReview: boolean;
   /** The actor may take this person off the task (false for your own item unless all-scope). */
@@ -240,6 +258,11 @@ export interface ManagedTaskDetail {
   subteam: Subteam | null;
   dueDate: DateOnly;
   priority: Priority;
+  category: { id: string; name: string } | null;
+  signupOpen: boolean;
+  signupLimit: number | null;
+  /** "signup" for sign-up tasks (open now, or closed but with spots / self sign-ups), else "assign". */
+  assignMode: "assign" | "signup";
   createdAt: Date;
   createdBy: { id: string; name: string; role: Role; subteam: Subteam | null };
   assignments: ManagedAssignment[];
@@ -259,6 +282,10 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
       subteam: true,
       dueDate: true,
       priority: true,
+      signupMode: true,
+      signupOpen: true,
+      signupLimit: true,
+      category: { select: { id: true, name: true } },
       createdAt: true,
       createdById: true,
       createdBy: { select: { id: true, name: true, role: true, subteam: true } },
@@ -268,6 +295,7 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
           id: true,
           userId: true,
           status: true,
+          selfAssigned: true,
           submittedAt: true,
           submissionNote: true,
           reviewedAt: true,
@@ -299,6 +327,10 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
     subteam: task.subteam,
     dueDate: dbToDateOnly(task.dueDate),
     priority: task.priority,
+    category: task.category,
+    signupOpen: task.signupOpen,
+    signupLimit: task.signupLimit,
+    assignMode: assignModeOf(task.signupMode),
     createdAt: task.createdAt,
     createdBy: task.createdBy,
     counts,
@@ -312,6 +344,7 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
       reviewNote: a.reviewNote,
       reviewerName: a.reviewedBy?.name ?? null,
       user: a.user,
+      selfAssigned: a.selfAssigned,
       canReview: canReviewAssignment(actor, task, { userId: a.userId, assigneeSubteam: a.user.subteam }),
       canRemove: a.userId !== actor.id || hasAllScope(actor),
     })),
@@ -331,7 +364,14 @@ export interface TaskDuplicate {
   priority: Priority;
   /** Due today (team timezone) — the usual reason to copy is "same thing again today". */
   dueDate: DateOnly;
-  /** The original assignees the actor can still assign (ACTIVE and in scope). */
+  /** The original category when the copy stays in the same subteam, else "" (none). */
+  categoryId: string;
+  assignMode: "assign" | "signup";
+  signupLimit: number | null;
+  /**
+   * The original assignees the actor can still assign (ACTIVE and in scope). People who signed
+   * themselves up aren't copied — a sign-up task starts fresh.
+   */
   assigneeIds: string[];
 }
 
@@ -351,24 +391,32 @@ export async function getTaskDuplicate(
       description: true,
       subteam: true,
       priority: true,
+      categoryId: true,
+      signupMode: true,
+      signupOpen: true,
+      signupLimit: true,
       createdById: true,
       assignments: {
         orderBy: { user: { name: "asc" } },
-        select: { user: { select: { id: true, subteam: true, status: true } } },
+        select: { selfAssigned: true, user: { select: { id: true, subteam: true, status: true } } },
       },
     },
   });
   if (!task || !canManageTask(actor, task)) return null;
+  const sameSubteam = canCreateTask(actor, task.subteam);
 
   return {
     sourceId: task.id,
     sourceTitle: task.title,
     title: task.title,
     description: task.description,
-    subteam: canCreateTask(actor, task.subteam) ? (task.subteam ?? "") : getTaskFormOptions(actor).defaultSubteam,
+    subteam: sameSubteam ? (task.subteam ?? "") : getTaskFormOptions(actor).defaultSubteam,
     priority: task.priority,
     dueDate: opts.today ?? todayInTimezone(env.teamTimezone),
-    assigneeIds: task.assignments.filter((a) => canAssignTo(actor, a.user)).map((a) => a.user.id),
+    categoryId: sameSubteam ? (task.categoryId ?? "") : "",
+    assignMode: assignModeOf(task.signupMode),
+    signupLimit: task.signupLimit,
+    assigneeIds: task.assignments.filter((a) => !a.selfAssigned && canAssignTo(actor, a.user)).map((a) => a.user.id),
   };
 }
 

@@ -14,6 +14,7 @@ import { hashToken } from "../auth/tokens";
 import type { PublicContext } from "../context";
 import type { Db } from "../db";
 import { ValidationError } from "../errors";
+import { adminAccessWhere } from "../notifications/recipients";
 import { consumeRateLimit, enforceRateLimit, resetRateLimit } from "../rate-limit";
 
 const MINUTE = 60 * 1000;
@@ -243,7 +244,7 @@ export interface PendingNotice {
  */
 export async function getPendingNotice(db: Db, emailConfigured: boolean): Promise<PendingNotice> {
   if (!emailConfigured) return { adminEmailed: false, approvalEmailed: false };
-  const admins = await db.user.count({ where: { isAdmin: true, status: "ACTIVE", emailOnSignup: true } });
+  const admins = await db.user.count({ where: { AND: [adminAccessWhere, { emailOnSignup: true }] } });
   return { adminEmailed: admins > 0, approvalEmailed: true };
 }
 

@@ -43,6 +43,14 @@ test("member", async ({ page }, info) => {
   if (q) await shoot(page, p, "15-member-thread", `/questions/${q.id}`);
   await shoot(page, p, "16-member-settings", "/settings");
   await shoot(page, p, "16b-member-resources", "/resources");
+  await shoot(page, p, "16e-member-dashboard", "/tasks");
+  const [signupTask] = await sql<{ id: string }>(`SELECT id FROM "Task" WHERE "signupOpen" = true ORDER BY "dueDate" LIMIT 1`);
+  if (signupTask) await shoot(page, p, "16f-member-dashboard-task", `/tasks/${signupTask.id}`);
+  await shoot(page, p, "16c-member-share-resource", "/resources/new");
+  const [codeFile] = await sql<{ id: string }>(
+    `SELECT r.id FROM "Resource" r JOIN "ResourceFile" f ON f."resourceId" = r.id WHERE r.status = 'APPROVED' ORDER BY r."createdAt" LIMIT 1`,
+  );
+  if (codeFile) await shoot(page, p, "16d-member-resource-file", `/resources/${codeFile.id}`);
   const menu = page.getByRole("button", { name: "Open menu" });
   if (await menu.isVisible()) {
     await page.goto("/today");
@@ -82,6 +90,10 @@ test("build leader", async ({ page }, info) => {
   await shoot(page, p, "31-leader-settings", "/settings");
   await shoot(page, p, "32-leader-resources", "/resources");
   await shoot(page, p, "33-leader-add-resource", "/resources/new");
+  await shoot(page, p, "36-leader-dashboard", "/tasks");
+  await shoot(page, p, "37-leader-categories", "/manage/categories");
+  const [waiting] = await sql<{ id: string }>(`SELECT id FROM "Resource" WHERE status = 'PENDING' ORDER BY "createdAt" LIMIT 1`);
+  if (waiting) await shoot(page, p, "34-leader-resource-waiting", `/resources/${waiting.id}`);
 });
 
 test("admin", async ({ page }, info) => {

@@ -48,7 +48,7 @@ export interface SeedCredential {
 export interface SeedResult {
   today: DateOnly;
   password: string;
-  counts: { users: number; tasks: number; assignments: number; questions: number; replies: number };
+  counts: { users: number; tasks: number; assignments: number; questions: number; replies: number; categories: number };
   credentials: SeedCredential[];
 }
 
@@ -131,9 +131,12 @@ interface AssignmentSpec {
   status: AssignmentStatus;
   submissionNote?: string;
   reviewNote?: string;
+  /** Signed themselves up on the Task dashboard. */
+  self?: boolean;
 }
 
 const todo = (who: PersonKey): AssignmentSpec => ({ who, status: "TODO" });
+const signedUp = (who: PersonKey): AssignmentSpec => ({ who, status: "TODO", self: true });
 const submitted = (who: PersonKey, submissionNote?: string): AssignmentSpec => ({ who, status: "SUBMITTED", submissionNote });
 const approved = (who: PersonKey, submissionNote?: string, reviewNote?: string): AssignmentSpec => ({
   who,
@@ -157,6 +160,91 @@ interface TaskSpec {
   priority?: Priority;
   creator: PersonKey;
   assignments: AssignmentSpec[];
+  /** Task dashboard category (see CATEGORIES); defaults to TASK_CATEGORY[title]. */
+  category?: string;
+  signupOpen?: boolean;
+  signupLimit?: number;
+}
+
+// ── Task dashboard categories ─────────────────────────────────────────────────
+
+const CATEGORIES: { subteam: Subteam | null; creator: PersonKey; names: string[] }[] = [
+  { subteam: "SOFTWARE", creator: "priya", names: ["Autonomous", "TeleOp", "Vision", "Tools"] },
+  { subteam: "BUILD", creator: "marcus", names: ["Intake", "Outtake", "Drivetrain", "Lift", "CAD & Design"] },
+  { subteam: "BUSINESS", creator: "amara", names: ["Outreach", "Sponsors", "Portfolio", "Social media"] },
+  { subteam: null, creator: "jordan", names: ["Events", "Competition"] },
+];
+
+/** Where the tasks in buildTasks() are sorted. A few stay uncategorized on purpose ("Other tasks"). */
+const TASK_CATEGORY: Record<string, string> = {
+  "Set up Android Studio and pull the latest robot code": "Tools",
+  "Write the autonomous path for the left start position": "Autonomous",
+  "Tune the drivetrain PID and log the results": "Autonomous",
+  "Review the vision pipeline pull request": "Vision",
+  "Add telemetry for the lift encoder positions": "TeleOp",
+  "Document the TeleOp controls for the drive team": "TeleOp",
+  "Rebuild the intake roller with new surgical tubing": "Intake",
+  "Replace the worn chain on the lift": "Lift",
+  "CAD the new outtake bracket in Onshape": "CAD & Design",
+  "Print 4 spare TPU wheels": "Drivetrain",
+  "Drive practice: 10 full match cycles": "Drivetrain",
+  "Email three local sponsors with our sponsorship packet": "Sponsors",
+  "Draft the outreach section of the engineering portfolio": "Portfolio",
+  "Post the scrimmage recap on Instagram": "Social media",
+  "Plan the elementary school robotics demo": "Outreach",
+  "Turn in the league meet permission slip": "Competition",
+  "Finalize the drive team lineup for the league meet": "Competition",
+  "Read the Game Manual Part 2 update (Q&A 41–58)": "Competition",
+  "Pack the pit for the league meet": "Competition",
+};
+
+/** Tasks people sign themselves up for on the Task dashboard. */
+function buildSignupTasks(): TaskSpec[] {
+  return [
+    {
+      title: "Help machine the new outtake plates",
+      description: "Three people on the mill with Sofia. Bring safety glasses; we'll cut both plates in one session.",
+      subteam: "BUILD",
+      day: 4,
+      creator: "marcus",
+      category: "Outtake",
+      signupOpen: true,
+      signupLimit: 3,
+      assignments: [signedUp("liam"), signedUp("hannah")],
+    },
+    {
+      title: "Run the drivetrain test cycles",
+      description: "Run 20 full-speed cycles and write down anything that rattles or gets hot.",
+      subteam: "BUILD",
+      day: 2,
+      creator: "kenji",
+      category: "Drivetrain",
+      signupOpen: true,
+      signupLimit: 2,
+      assignments: [todo("mateo"), signedUp("ethan")],
+    },
+    {
+      title: "Test the new vision code on the practice field",
+      description: "Try detection from every starting tile and note where it misses. Anyone on Software can help.",
+      subteam: "SOFTWARE",
+      day: 3,
+      creator: "priya",
+      category: "Vision",
+      signupOpen: true,
+      assignments: [signedUp("chloe")],
+    },
+    {
+      title: "Volunteer at the league meet check-in table",
+      description: "Greet teams, hand out pit maps, and answer questions for one hour. Six volunteers needed.",
+      subteam: null,
+      day: 5,
+      creator: "jordan",
+      category: "Events",
+      signupOpen: true,
+      signupLimit: 6,
+      assignments: [signedUp("aiden"), signedUp("ava"), signedUp("isabella")],
+    },
+  ];
 }
 
 function buildTasks(): TaskSpec[] {
@@ -494,6 +582,39 @@ const QUESTIONS: QuestionSpec[] = [
   },
 ];
 
+/** A member's uploaded OpMode, shown on the Resources page (an approved file resource). */
+const TELEOP_JAVA = `package org.firstinspires.ftc.teamcode;
+
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.DcMotor;
+
+@TeleOp(name = "TeleOp Main", group = "Huskyteers")
+public class TeleOpMain extends LinearOpMode {
+    @Override
+    public void runOpMode() {
+        DcMotor left = hardwareMap.get(DcMotor.class, "leftDrive");
+        DcMotor right = hardwareMap.get(DcMotor.class, "rightDrive");
+        DcMotor intake = hardwareMap.get(DcMotor.class, "intake");
+        right.setDirection(DcMotor.Direction.REVERSE);
+
+        waitForStart();
+        while (opModeIsActive()) {
+            double drive = -gamepad1.left_stick_y;
+            double turn = gamepad1.right_stick_x;
+            left.setPower(drive + turn);
+            right.setPower(drive - turn);
+            // Right trigger pulls game pieces in, left trigger spits them out.
+            intake.setPower(gamepad1.right_trigger - gamepad1.left_trigger);
+
+            telemetry.addData("Drive", "%.2f", drive);
+            telemetry.addData("Turn", "%.2f", turn);
+            telemetry.update();
+        }
+    }
+}
+`;
+
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 /** Delete every app row, children first. */
@@ -505,6 +626,7 @@ async function wipeAppData(tx: Tx): Promise<void> {
   await tx.question.deleteMany();
   await tx.taskAssignment.deleteMany();
   await tx.task.deleteMany();
+  await tx.taskCategory.deleteMany();
   await tx.passwordResetToken.deleteMany();
   await tx.session.deleteMany();
   await tx.user.deleteMany();
@@ -572,8 +694,30 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
         return id;
       };
 
+      // Task dashboard categories.
+      const categories = await tx.taskCategory.createManyAndReturn({
+        data: CATEGORIES.flatMap((c) =>
+          c.names.map((name, position) => ({
+            subteam: c.subteam,
+            name,
+            nameKey: name.toLowerCase(),
+            position,
+            createdById: uid(c.creator),
+            createdAt: ago(24 * 40),
+          })),
+        ),
+        select: { id: true, subteam: true, name: true },
+      });
+      const categoryIdFor = (t: TaskSpec) => {
+        const name = t.category ?? TASK_CATEGORY[t.title];
+        if (!name) return null;
+        const found = categories.find((c) => c.subteam === t.subteam && c.name === name);
+        if (!found) throw new Error(`seed: no "${name}" category for ${t.title}`);
+        return found.id;
+      };
+
       // Tasks.
-      const taskSpecs = buildTasks();
+      const taskSpecs = [...buildTasks(), ...buildSignupTasks()];
       const taskCreatedAt = (t: TaskSpec) => ago(24 * (Math.max(0, -t.day) + 2) + 3);
       const tasks = await tx.task.createManyAndReturn({
         data: taskSpecs.map((t) => ({
@@ -582,6 +726,10 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
           subteam: t.subteam,
           dueDate: dateOnlyToDb(addDays(today, t.day)),
           priority: t.priority ?? "NORMAL",
+          categoryId: categoryIdFor(t),
+          signupMode: t.signupOpen ?? false,
+          signupOpen: t.signupOpen ?? false,
+          signupLimit: t.signupLimit ?? null,
           createdById: uid(t.creator),
           createdAt: taskCreatedAt(t),
         })),
@@ -598,6 +746,7 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
             taskId: taskIdByTitle.get(t.title)!,
             userId: uid(a.who),
             status: a.status,
+            selfAssigned: a.self ?? false,
             createdAt,
           };
           if (a.status !== "TODO") {
@@ -677,12 +826,57 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
         ],
       });
 
+      // Members' shares: one waiting for approval, one approved uploaded file, one turned down.
+      await tx.resource.create({
+        data: {
+          title: "Gear ratio calculator",
+          url: "https://gears.example.com/ratio-calculator",
+          description: "Handy for picking sprockets for the new arm.",
+          type: "WEBSITE",
+          group: "Build",
+          status: "PENDING",
+          createdById: uid("ethan"),
+          createdAt: ago(5),
+        },
+      });
+      const teleOp = new TextEncoder().encode(TELEOP_JAVA);
+      await tx.resource.create({
+        data: {
+          title: "TeleOp starter code",
+          description: "Arcade drive plus the intake on the triggers. A good starting point for new programmers.",
+          type: "CODE",
+          group: "Code",
+          status: "APPROVED",
+          createdById: uid("aiden"),
+          createdAt: ago(26),
+          reviewedById: uid("priya"),
+          reviewedAt: ago(20),
+          file: { create: { filename: "TeleOpMain.java", contentType: "text/x-java", size: teleOp.byteLength, data: teleOp, createdAt: ago(26) } },
+        },
+      });
+      await tx.resource.create({
+        data: {
+          title: "Robot photos",
+          url: "https://photos.example.com/huskyteers-robot",
+          description: "Photos from the last build session.",
+          type: "OTHER",
+          group: "Media",
+          status: "REJECTED",
+          createdById: uid("maya"),
+          createdAt: ago(8),
+          reviewedById: uid("priya"),
+          reviewedAt: ago(2),
+          reviewNote: "That album is private, so the team can't open it. Share it with the team first, then send it again.",
+        },
+      });
+
       return {
         users: keys.length,
         tasks: tasks.length,
         assignments: assignmentRows.length,
         questions: questions.length,
         replies: replyRows.length,
+        categories: categories.length,
       };
     },
     { timeout: 60_000, maxWait: 10_000 },
@@ -736,7 +930,7 @@ function printSummary(result: SeedResult, appUrl: string) {
 
   console.log(`\nDemo team loaded (today is ${formatDateOnly(result.today)}).`);
   console.log(
-    `  ${counts.users} people · ${counts.tasks} tasks · ${counts.assignments} checklist items · ` +
+    `  ${counts.users} people · ${counts.tasks} tasks (${counts.categories} categories) · ${counts.assignments} checklist items · ` +
       `${counts.questions} questions · ${counts.replies} replies\n`,
   );
   console.log(line(header));

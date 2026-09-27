@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
-import { createTask, deleteTask, removeAssignment, reopenAssignment, updateTask } from "@/server/services/tasks";
+import { createTask, deleteTask, removeAssignment, reopenAssignment, setSignupOpen, updateTask } from "@/server/services/tasks";
 
 export async function createTaskAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(
@@ -61,4 +61,15 @@ export async function removeAssignmentAction(_prev: ActionState, formData: FormD
     },
     { success: "Removed from this task." },
   );
+}
+
+/** Close or reopen sign-ups (fields: taskId, open = "true" | "false"). */
+export async function setSignupOpenAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await getServiceContext();
+    const input = formDataToObject(formData);
+    await setSignupOpen(ctx, input);
+    revalidatePath("/", "layout");
+    return input.open === "true" ? "Sign-ups are open again." : "Sign-ups are closed.";
+  });
 }

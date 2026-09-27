@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { cache } from "react";
 import { type Actor, actorSelect } from "../actor";
 import { type Db, prisma } from "../db";
-import { canAccessManage, canAdminister } from "../permissions";
+import { canAccessManage, canAdminister, canViewEmailLog } from "../permissions";
 import { generateToken, hashToken } from "./tokens";
 
 export const SESSION_COOKIE = "hk_session";
@@ -85,5 +85,12 @@ export async function requireStaffUser(): Promise<Actor> {
 export async function requireAdminUser(): Promise<Actor> {
   const user = await requireActiveUser();
   if (!canAdminister(user)) redirect("/today");
+  return user;
+}
+
+/** For owner-only Admin pages (the email log): an ACTIVE owner, else redirect to /admin or /today. */
+export async function requireOwnerUser(): Promise<Actor> {
+  const user = await requireAdminUser();
+  if (!canViewEmailLog(user)) redirect("/admin");
   return user;
 }

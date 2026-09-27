@@ -6,6 +6,7 @@ import {
   APPROVED_MESSAGE,
   DISCORD_TEST_MESSAGES,
   REJECTED_MESSAGE,
+  RESET_LINK_OWNER_ONLY,
   type ResetLinkState,
   TEST_EMAIL_MESSAGES,
 } from "@/components/admin/messages";
@@ -60,7 +61,7 @@ export async function updateUserAction(_prev: ActionState, formData: FormData): 
 
 /** Creates a one-time reset link, emails it when email is set up, and hands it to the admin once. */
 export async function sendPasswordResetAction(_prev: ResetLinkState, formData: FormData): Promise<ResetLinkState> {
-  const out: { resetUrl?: string } = {};
+  const out: { resetUrl?: string | null } = {};
   const state = await runAction(
     async () => {
       const ctx = await getServiceContext();
@@ -69,9 +70,16 @@ export async function sendPasswordResetAction(_prev: ResetLinkState, formData: F
     },
     { success: "Reset link created.", formData },
   );
-  if (!state?.ok || !out.resetUrl) return state;
+  if (!state?.ok) return state;
   // The email itself goes out after the response; without a transport it is only logged.
-  return { ...state, resetUrl: out.resetUrl, emailed: getTransport() !== null };
+  const emailed = getTransport() !== null;
+  // Only owners get the link back; everyone else relies on the email.
+  if (!out.resetUrl) {
+    return emailed
+      ? { ...state, message: "A reset link is on its way to their email.", emailed }
+      : { ok: false, message: RESET_LINK_OWNER_ONLY, nonce: state.nonce };
+  }
+  return { ...state, resetUrl: out.resetUrl, emailed };
 }
 
 export async function revokeSessionsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

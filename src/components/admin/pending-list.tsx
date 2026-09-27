@@ -25,6 +25,8 @@ export interface PendingCardUser {
   /** Pre-formatted on the server ("2 h ago") so client and server render the same text. */
   registeredAgo: string;
   registeredAt: string;
+  /** The viewer may approve/reject this sign-up (leaders: up to their own rank; see canManageAccount). */
+  canDecide: boolean;
 }
 
 /** Pending sign-ups with Approve / Change position / Reject. One shared action state keeps messages visible after a card disappears. */
@@ -32,10 +34,13 @@ export function PendingList({
   users,
   total,
   seats,
+  roles,
 }: {
   users: PendingCardUser[];
   total: number;
   seats: Partial<Record<Role, SeatInfo>>;
+  /** Positions the viewer may approve someone as. Default: all. */
+  roles?: Role[];
 }) {
   const [approveState, approveAction] = useActionState(approveUserAction, initialActionState);
   const [rejectState, rejectAction] = useActionState(rejectUserAction, initialActionState);
@@ -61,6 +66,7 @@ export function PendingList({
               key={u.id}
               user={u}
               seats={seats}
+              roles={roles}
               state={failedFor === u.id ? latest : null}
               approveAction={approveAction}
               rejectAction={rejectAction}
@@ -80,12 +86,14 @@ export function PendingList({
 function PendingCard({
   user,
   seats,
+  roles,
   state,
   approveAction,
   rejectAction,
 }: {
   user: PendingCardUser;
   seats: Partial<Record<Role, SeatInfo>>;
+  roles?: Role[];
   state: ActionState;
   approveAction: (formData: FormData) => void;
   rejectAction: (formData: FormData) => void;
@@ -121,49 +129,58 @@ function PendingCard({
 
         {state && <FormMessage state={state} />}
 
-        <details className="group rounded-lg border border-ink-200 bg-ink-50/60" open={requestedFull || !!state?.fieldErrors?.subteam}>
-          <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium text-ink-700 [&::-webkit-details-marker]:hidden">
-            Change position
-            <ChevronDown className="size-4 text-ink-400 transition-transform group-open:rotate-180" aria-hidden />
-          </summary>
-          <div className="space-y-3 border-t border-ink-200 px-3 pb-3 pt-3">
-            <PositionFields
-              key={state?.nonce ?? "initial"}
-              idPrefix={formId}
-              form={formId}
-              defaultRole={(values?.role as Role | undefined) ?? user.role}
-              defaultSubteam={(values?.subteam as Subteam | undefined) ?? user.subteam}
-              errors={state?.fieldErrors}
-              seats={seats}
-            />
-            <CheckboxField
-              form={formId}
-              name="overrideSeatLimit"
-              label="Approve anyway (over seat limit)"
-              description="Only if you really want more people in this position than planned."
-            />
-          </div>
-        </details>
+        {!user.canDecide ? (
+          <p className="rounded-lg bg-ink-50 px-3 py-2 text-sm text-ink-600">
+            Only the captain, a mentor, a teacher, or an owner can approve a {ROLE_LABELS[user.role]}.
+          </p>
+        ) : (
+          <>
+            <details className="group rounded-lg border border-ink-200 bg-ink-50/60" open={requestedFull || !!state?.fieldErrors?.subteam}>
+              <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium text-ink-700 [&::-webkit-details-marker]:hidden">
+                Change position
+                <ChevronDown className="size-4 text-ink-400 transition-transform group-open:rotate-180" aria-hidden />
+              </summary>
+              <div className="space-y-3 border-t border-ink-200 px-3 pb-3 pt-3">
+                <PositionFields
+                  key={state?.nonce ?? "initial"}
+                  idPrefix={formId}
+                  form={formId}
+                  defaultRole={(values?.role as Role | undefined) ?? user.role}
+                  defaultSubteam={(values?.subteam as Subteam | undefined) ?? user.subteam}
+                  errors={state?.fieldErrors}
+                  seats={seats}
+                  roles={roles}
+                />
+                <CheckboxField
+                  form={formId}
+                  name="overrideSeatLimit"
+                  label="Approve anyway (over seat limit)"
+                  description="Only if you really want more people in this position than planned."
+                />
+              </div>
+            </details>
 
-        <div className="flex flex-wrap gap-2">
-          <form id={formId} action={approveAction} className="flex-1 sm:flex-none">
-            <input type="hidden" name="userId" value={user.id} />
-            <SubmitButton className="w-full sm:w-auto" pendingText="Approving…">
-              Approve
-            </SubmitButton>
-          </form>
-          <form action={rejectAction} className="flex-1 sm:flex-none">
-            <input type="hidden" name="userId" value={user.id} />
-            <SubmitButton
-              variant="secondary"
-              className="w-full text-red-700 sm:w-auto"
-              pendingText="Rejecting…"
-              confirm={`Reject ${user.name}'s sign-up? They won't be able to use the portal.`}
-            >
-              Reject
-            </SubmitButton>
-          </form>
-        </div>
+            <div className="flex flex-wrap gap-2">
+              <form id={formId} action={approveAction} className="flex-1 sm:flex-none">
+                <input type="hidden" name="userId" value={user.id} />
+                <SubmitButton className="w-full sm:w-auto" pendingText="Approving…">
+                  Approve
+                </SubmitButton>
+              </form>
+              <form action={rejectAction} className="flex-1 sm:flex-none">
+                <input type="hidden" name="userId" value={user.id} />
+                <SubmitButton
+                  variant="secondary"
+                  className="w-full text-red-700 sm:w-auto"
+                  pendingText="Rejecting…"
+                  confirm={`Reject ${user.name}'s sign-up? They won't be able to use the portal.`}
+                >
+                  Reject
+                </SubmitButton>
+              </form>
+            </div>
+          </>
+        )}
       </CardBody>
     </Card>
   );

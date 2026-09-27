@@ -3,7 +3,7 @@
 
 import type { Prisma } from "@/generated/prisma/client";
 import type { Actor } from "./actor";
-import { hasAllScope, isStaff, ledSubteam } from "./permissions";
+import { canReviewResources, hasAllScope, isStaff, ledSubteam } from "./permissions";
 
 type ActorLike = Pick<Actor, "id" | "role" | "subteam" | "isAdmin">;
 
@@ -61,4 +61,16 @@ export function manageableMembersWhere(actor: ActorLike): Prisma.UserWhereInput 
 /** Users the actor may assign tasks to (mirror of canAssignTo). */
 export function assignableUsersWhere(actor: ActorLike): Prisma.UserWhereInput {
   return manageableMembersWhere(actor);
+}
+
+/** Resources the actor can see (mirror of canViewResource). */
+export function visibleResourcesWhere(actor: ActorLike): Prisma.ResourceWhereInput {
+  if (canReviewResources(actor)) return {};
+  return { OR: [{ status: "APPROVED" }, { createdById: actor.id }] };
+}
+
+/** Members' resources waiting for this actor's approval. */
+export function resourceReviewQueueWhere(actor: ActorLike): Prisma.ResourceWhereInput {
+  if (!canReviewResources(actor)) return NONE;
+  return { status: "PENDING" };
 }

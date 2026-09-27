@@ -9,7 +9,7 @@
 // No "server-only" / next/* imports: this runs inside after() and in tests.
 import type { Prisma } from "@/generated/prisma/client";
 import type { AccountStatus, Role, Subteam } from "@/generated/prisma/enums";
-import { SUBTEAM_LEADER_ROLE } from "@/lib/constants";
+import { STAFF_ROLES, SUBTEAM_LEADER_ROLE } from "@/lib/constants";
 import type { Db } from "../db";
 import { canManageTask, canReviewAssignment, canViewQuestion } from "../permissions";
 
@@ -19,7 +19,8 @@ export type NotificationPref =
   | "emailOnReply"
   | "emailOnReview"
   | "emailOnAssigned"
-  | "emailOnSignup";
+  | "emailOnSignup"
+  | "emailOnResource";
 
 /** Everything needed to decide whether (and how) to email someone. */
 export const recipientSelect = {
@@ -36,6 +37,7 @@ export const recipientSelect = {
   emailOnReview: true,
   emailOnAssigned: true,
   emailOnSignup: true,
+  emailOnResource: true,
 } as const satisfies Prisma.UserSelect;
 
 export interface Candidate {
@@ -52,6 +54,7 @@ export interface Candidate {
   emailOnReview: boolean;
   emailOnAssigned: boolean;
   emailOnSignup: boolean;
+  emailOnResource: boolean;
 }
 
 export interface Recipient {
@@ -302,10 +305,19 @@ export async function taskAssignedRecipients(
 // Accounts
 // ---------------------------------------------------------------------------------------------
 
-/** account.pending → every ACTIVE admin (emailOnSignup), never the new user. */
+/**
+ * People with admin access: owners plus every leader, the captain, mentors, and teachers (mirror of
+ * canAdminister), ACTIVE only.
+ */
+export const adminAccessWhere: Prisma.UserWhereInput = {
+  status: "ACTIVE",
+  OR: [{ isAdmin: true }, { role: { in: [...STAFF_ROLES] } }],
+};
+
+/** account.pending → everyone with admin access (emailOnSignup), never the new user. */
 export async function accountPendingRecipients(db: Db, newUserId: string): Promise<Recipient[]> {
   const admins = await db.user.findMany({
-    where: { isAdmin: true, status: "ACTIVE", emailOnSignup: true, id: { not: newUserId } },
+    where: { AND: [adminAccessWhere, { emailOnSignup: true, id: { not: newUserId } }] },
     select: recipientSelect,
     orderBy: { createdAt: "asc" },
     take: 50,
@@ -316,6 +328,40 @@ export async function accountPendingRecipients(db: Db, newUserId: string): Promi
 /** account.approved → that user (always sent; no preference). */
 export function accountApprovedRecipients(user: Candidate): Recipient[] {
   return pickRecipients([user]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Resources
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * resource.submitted → who should approve a member's resource (emailOnResource); never the member.
+ * Every ACTIVE owner, plus the ACTIVE leaders of the member's subteam. When the member has no
+ * subteam, or nobody ACTIVE leads it, the captains instead. Like the other tiers, "has leaders" is
+ * decided before preferences, so a leader who turned the email off doesn't push it onto the captain.
+ */
+export async function resourceSubmittedRecipients(
+  db: Db,
+  r: { createdById: string; submitterSubteam: Subteam | null },
+): Promise<Recipient[]> {
+  const leaderRole = r.submitterSubteam ? SUBTEAM_LEADER_ROLE[r.submitterSubteam] : null;
+  const or: Prisma.UserWhereInput[] = [{ isAdmin: true }, { role: "CAPTAIN" }];
+  if (leaderRole) or.push({ role: leaderRole });
+  const found = await db.user.findMany({
+    where: { status: "ACTIVE", id: { not: r.createdById }, OR: or },
+    select: recipientSelect,
+    orderBy: { createdAt: "asc" },
+    take: 200,
+  });
+  const owners = found.filter((u) => u.isAdmin);
+  const leaders = leaderRole ? found.filter((u) => u.role === leaderRole) : [];
+  const captains = leaders.length === 0 ? found.filter((u) => u.role === "CAPTAIN") : [];
+  return pickRecipients([...owners, ...leaders, ...captains], { pref: "emailOnResource", exclude: [r.createdById] });
+}
+
+/** resource.reviewed → the person who shared it (emailOnReview), unless they reviewed it themselves. */
+export function resourceReviewedRecipients(r: { reviewedById: string | null; createdBy: Candidate | null }): Recipient[] {
+  return pickRecipients([r.createdBy], { pref: "emailOnReview", exclude: [r.reviewedById] });
 }
 
 /** password.reset → that user unless DISABLED (always sent; no preference). */

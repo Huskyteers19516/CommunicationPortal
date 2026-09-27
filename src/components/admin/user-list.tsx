@@ -7,11 +7,12 @@ import { Card } from "@/components/ui/card";
 import { timeAgo } from "@/lib/dates";
 import type { UserListItem } from "@/server/queries/admin";
 
+/** Site owner (the `isAdmin` flag). Leaders, mentors, and teachers have admin access through their position. */
 function AdminBadge() {
   return (
     <Badge tone="brand">
       <ShieldCheck className="size-3" aria-hidden />
-      Admin
+      Owner
     </Badge>
   );
 }

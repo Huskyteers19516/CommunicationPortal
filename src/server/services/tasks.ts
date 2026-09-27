@@ -1,18 +1,26 @@
 // Task management + review (leader side): create/edit/delete tasks, and approve / send back / reopen
-// / remove checklist items. The member side (submit/withdraw) lives in the checklist service.
+// / remove checklist items. The member side (submit/withdraw) lives in the checklist service, and
+// signing yourself up for a task from the Task dashboard lives in the signups service.
+//
+// A task is either assigned ("Assign people": the leader picks everyone) or a sign-up task
+// ("Let people sign up": signupOpen, optionally capped at signupLimit people). Leaders can still
+// pre-fill people on a sign-up task.
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import type { Subteam } from "@/generated/prisma/enums";
-import { LIMITS } from "@/lib/constants";
+import { LIMITS, SUBTEAM_LABELS } from "@/lib/constants";
 import { addDays, dateOnlyToDb, dbToDateOnly, todayInTimezone } from "@/lib/dates";
-import { dateOnlySchema, idSchema, optionalText, stringArray, text } from "@/lib/validation";
+import { checkbox, dateOnlySchema, idSchema, optionalText, stringArray, text } from "@/lib/validation";
+import { NEW_CATEGORY } from "@/lib/task-form";
 import { parseInput } from "../action";
 import type { Actor } from "../actor";
+import type { Db } from "../db";
 import type { ServiceContext } from "../context";
 import { allowedFrom, nextStatus } from "../domain/assignment";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors";
 import { canAssignTo, canCreateTask, canManageTask, canReviewAssignment, hasAllScope, isStaff } from "../permissions";
 import { reviewQueueWhere } from "../scopes";
+import { findOrCreateCategory, normalizeCategoryName } from "./categories";
 
 /** How far back / ahead a due date may be set (in days, relative to today in the team timezone). */
 export const DUE_DATE_MAX_PAST_DAYS = 30;
@@ -25,6 +33,9 @@ const ITEM_NOT_FOUND = "That checklist item no longer exists.";
 const ALREADY_REVIEWED = "This item was already reviewed or withdrawn. Refresh to see the latest.";
 const OWN_ITEM = "You can't review your own checklist item. Ask another leader or the captain.";
 const REMOVE_SELF = "You can't remove yourself from a task. Ask another leader or the captain.";
+const PICK_PEOPLE = "Pick at least one person.";
+
+export { NEW_CATEGORY };
 
 // ---------- input schemas ----------
 
@@ -40,14 +51,48 @@ const priorityField = z.preprocess(
   z.enum(["LOW", "NORMAL", "HIGH"], { error: "Pick a priority." }),
 );
 
+/** Everyone picked in the form. May be empty for sign-up tasks (checked after parsing). */
 const assigneeIdsField = stringArray
   .transform((ids) => [...new Set(ids)])
-  .pipe(
-    z
-      .array(z.string())
-      .min(1, "Pick at least one person.")
-      .max(MAX_ASSIGNEES, `You can assign up to ${MAX_ASSIGNEES} people at once.`),
-  );
+  .pipe(z.array(z.string()).max(MAX_ASSIGNEES, `You can assign up to ${MAX_ASSIGNEES} people at once.`));
+
+/** "" = no category, NEW_CATEGORY = create `newCategory`, anything else = a category id. */
+const categoryIdField = z.preprocess(
+  (v) => (v === undefined || v === null ? "" : v),
+  z.string({ error: "Pick a category from the list." }).trim().max(64, "Pick a category from the list."),
+);
+
+const newCategoryField = z.preprocess(
+  (v) => (typeof v === "string" ? normalizeCategoryName(v) || undefined : v),
+  z
+    .string()
+    .max(LIMITS.categoryNameMax, `Category name must be at most ${LIMITS.categoryNameMax} characters.`)
+    .optional(),
+);
+
+const assignModeField = z.preprocess(
+  (v) => (v === undefined || v === null || v === "" ? "assign" : v),
+  z.enum(["assign", "signup"], { error: "Choose who does this task." }),
+);
+
+const SPOTS_MESSAGE = `Enter 1 to ${LIMITS.signupLimitMax} spots, or leave it empty for no limit.`;
+
+/** "" / missing = no limit (null); otherwise a whole number 1..LIMITS.signupLimitMax. */
+const signupLimitField = z.preprocess(
+  (v) => {
+    if (v === undefined || v === null) return null;
+    if (typeof v !== "string") return v;
+    const s = v.trim();
+    if (s === "") return null;
+    return /^\d+$/.test(s) ? Number(s) : Number.NaN;
+  },
+  z
+    .number({ error: SPOTS_MESSAGE })
+    .int(SPOTS_MESSAGE)
+    .min(1, SPOTS_MESSAGE)
+    .max(LIMITS.signupLimitMax, SPOTS_MESSAGE)
+    .nullable(),
+);
 
 const taskFields = {
   title: text("Title", LIMITS.taskTitleMax),
@@ -56,11 +101,32 @@ const taskFields = {
   dueDate: dateOnlySchema,
   priority: priorityField,
   assigneeIds: assigneeIdsField,
+  categoryId: categoryIdField,
+  newCategory: newCategoryField,
+  assignMode: assignModeField,
+  signupLimit: signupLimitField,
 };
 
 const createInput = z.object(taskFields);
-const updateInput = z.object({ taskId: idSchema, ...taskFields });
+const updateInput = z.object({
+  taskId: idSchema,
+  ...taskFields,
+  /**
+   * The people the edit form was loaded with. Only used when `previousAssigneeIdsSent` is set (so an
+   * empty list is distinguishable from "not sent"): people who signed up after the form loaded are
+   * kept, and people who left meanwhile aren't re-added.
+   */
+  previousAssigneeIds: stringArray.transform((ids) => [...new Set(ids)]),
+  previousAssigneeIdsSent: checkbox,
+});
 const taskIdInput = z.object({ taskId: idSchema });
+const signupOpenInput = z.object({
+  taskId: idSchema,
+  open: z.preprocess(
+    (v) => (v === true || v === "true" || v === "1" || v === "on" ? true : v === false || v === "false" || v === "0" ? false : v),
+    z.boolean({ error: "Choose open or closed." }),
+  ),
+});
 const assignmentIdInput = z.object({ assignmentId: idSchema });
 
 const reviewInput = z.object({
@@ -111,9 +177,9 @@ function listNames(names: string[]): string {
 }
 
 /** Every id must be an existing user the actor may assign. Throws ValidationError on assigneeIds otherwise. */
-async function assertAssignable(ctx: ServiceContext, userIds: string[]) {
+async function assertAssignable(ctx: ServiceContext, userIds: string[], db: Db | Tx = ctx.db) {
   if (userIds.length === 0) return;
-  const users = await ctx.db.user.findMany({
+  const users = await db.user.findMany({
     where: { id: { in: userIds } },
     select: { id: true, name: true, subteam: true, status: true },
   });
@@ -174,45 +240,134 @@ function isGoneError(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && (e.code === "P2025" || e.code === "P2003");
 }
 
+type Tx = Prisma.TransactionClient;
+
+type TaskFields = z.infer<typeof createInput>;
+
+/** "Assign people" needs someone to assign; sign-up tasks may start empty. */
+function requirePeople(data: TaskFields) {
+  if (data.assignMode === "assign" && data.assigneeIds.length === 0) {
+    throw new ValidationError(PICK_PEOPLE, { assigneeIds: PICK_PEOPLE });
+  }
+}
+
+/** The sign-up columns for the chosen mode (a new sign-up task starts open). */
+function modeFields(data: TaskFields): { signupMode: boolean; signupOpen: boolean; signupLimit: number | null } {
+  return data.assignMode === "signup"
+    ? { signupMode: true, signupOpen: true, signupLimit: data.signupLimit }
+    : { signupMode: false, signupOpen: false, signupLimit: null };
+}
+
+/** A sign-up task can't start out (or be edited into) having more people than spots. */
+function checkSpots(data: TaskFields, peopleOnIt: number) {
+  if (data.assignMode !== "signup" || data.signupLimit === null || peopleOnIt <= data.signupLimit) return;
+  const spots = data.signupLimit === 1 ? "1 spot" : `${data.signupLimit} spots`;
+  const message = `${peopleOnIt} people are on this task, but it only has ${spots}. Add spots or take people off.`;
+  throw new ValidationError(message, { signupLimit: message });
+}
+
+type CategoryChoice = { kind: "none" } | { kind: "existing"; id: string } | { kind: "new"; name: string };
+
+/** Check the category picked in the form against the task's subteam (null = whole team). */
+async function resolveCategory(ctx: ServiceContext, data: TaskFields): Promise<CategoryChoice> {
+  if (data.categoryId === "") return { kind: "none" };
+  if (data.categoryId === NEW_CATEGORY) {
+    if (!data.newCategory) throw new ValidationError("Name the new category.", { newCategory: "Name the new category." });
+    return { kind: "new", name: data.newCategory };
+  }
+  const category = await ctx.db.taskCategory.findUnique({ where: { id: data.categoryId }, select: { id: true, subteam: true } });
+  if (!category) {
+    const message = "That category no longer exists. Pick another one.";
+    throw new ValidationError(message, { categoryId: message });
+  }
+  if (category.subteam !== data.subteam) {
+    const message = `Pick a category from ${data.subteam ? SUBTEAM_LABELS[data.subteam] : "the whole-team list"}.`;
+    throw new ValidationError(message, { categoryId: message });
+  }
+  return { kind: "existing", id: category.id };
+}
+
+/** The category id to store, creating the new category inside the task's transaction. */
+async function categoryIdFor(tx: Tx, actor: Actor, choice: CategoryChoice, subteam: Subteam | null): Promise<string | null> {
+  if (choice.kind === "none") return null;
+  if (choice.kind === "existing") return choice.id;
+  return (await findOrCreateCategory(tx, actor, { subteam, name: choice.name })).id;
+}
+
 // ---------- tasks ----------
 
-/** Create a task and a TODO checklist item for every assignee. */
+/**
+ * Create a task and a TODO checklist item for everyone picked. "Let people sign up" tasks may start
+ * with nobody (or a few people the leader pre-fills); only those people get the "assigned" email.
+ */
 export async function createTask(ctx: ServiceContext, raw: unknown): Promise<{ id: string }> {
   requireStaff(ctx.actor);
   const data = parseInput(createInput, raw as Record<string, unknown>);
+  requirePeople(data);
   if (!canCreateTask(ctx.actor, data.subteam)) throw subteamForbidden(ctx.actor, data.subteam);
   checkDueDate(ctx, data.dueDate);
+  checkSpots(data, data.assigneeIds.length);
+  const category = await resolveCategory(ctx, data);
   await assertAssignable(ctx, data.assigneeIds);
 
-  // Nested create = one statement batch in a single transaction.
-  const task = await ctx.db.task.create({
-    data: {
-      title: data.title,
-      description: data.description ?? "",
-      subteam: data.subteam,
-      dueDate: dateOnlyToDb(data.dueDate),
-      priority: data.priority,
-      createdById: ctx.actor.id,
-      assignments: { createMany: { data: data.assigneeIds.map((userId) => ({ userId })) } },
-    },
-    select: { id: true },
-  });
+  const write = (db: Db | Tx, categoryId: string | null) =>
+    db.task.create({
+      data: {
+        title: data.title,
+        description: data.description ?? "",
+        subteam: data.subteam,
+        dueDate: dateOnlyToDb(data.dueDate),
+        priority: data.priority,
+        categoryId,
+        ...modeFields(data),
+        createdById: ctx.actor.id,
+        ...(data.assigneeIds.length
+          ? { assignments: { createMany: { data: data.assigneeIds.map((userId) => ({ userId })) } } }
+          : {}),
+      },
+      select: { id: true },
+    });
 
-  ctx.notifier.notify({ type: "task.assigned", taskId: task.id, userIds: data.assigneeIds, actorId: ctx.actor.id });
+  let task: { id: string };
+  try {
+    // A nested create is one statement batch in a single transaction; a new category joins that transaction.
+    task =
+      category.kind === "new"
+        ? await ctx.db.$transaction(async (tx) => write(tx, await categoryIdFor(tx, ctx.actor, category, data.subteam)))
+        : await write(ctx.db, category.kind === "existing" ? category.id : null);
+  } catch (e) {
+    // The category (or someone picked) was deleted between our checks and the write.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2003") {
+      throw new ConflictError("A category or person on this task was just removed. Check the form and try again.");
+    }
+    throw e;
+  }
+
+  if (data.assigneeIds.length) {
+    ctx.notifier.notify({ type: "task.assigned", taskId: task.id, userIds: data.assigneeIds, actorId: ctx.actor.id });
+  }
   return { id: task.id };
 }
 
 /**
- * Edit a task. `assigneeIds` is the full desired set: new people get a TODO item, people left out
- * lose theirs, everyone else keeps their current status.
+ * Edit a task. `assigneeIds` is the desired set of people: new people get a TODO item, people left
+ * out lose theirs, everyone else keeps their current status.
+ *
+ * Members can sign up while a leader has the edit form open, so the form also sends the people it
+ * was loaded with (`previousAssigneeIds` + `previousAssigneeIdsSent`). Changes are then worked out
+ * against that list: people who signed up in the meantime are kept, and people who left in the
+ * meantime aren't added back. Without it, `assigneeIds` is the full set (as before).
+ *
+ * Everything happens under a row lock on the task, so sign-ups can't sneak past the spot limit.
  */
 export async function updateTask(ctx: ServiceContext, raw: unknown): Promise<void> {
   requireStaff(ctx.actor);
   const data = parseInput(updateInput, raw as Record<string, unknown>);
+  requirePeople(data);
 
   const task = await ctx.db.task.findUnique({
     where: { id: data.taskId },
-    select: { id: true, createdById: true, subteam: true, dueDate: true, assignments: { select: { userId: true } } },
+    select: { id: true, createdById: true, subteam: true, dueDate: true },
   });
   if (!task || !canManageTask(ctx.actor, task)) throw new NotFoundError(TASK_NOT_FOUND);
   if (!canCreateTask(ctx.actor, data.subteam)) {
@@ -222,18 +377,30 @@ export async function updateTask(ctx: ServiceContext, raw: unknown): Promise<voi
   }
   // Keeping an old due date is fine (so old tasks stay editable); a new one must be in range.
   if (data.dueDate !== dbToDateOnly(task.dueDate)) checkDueDate(ctx, data.dueDate);
+  const category = await resolveCategory(ctx, data);
 
-  const current = new Set(task.assignments.map((a) => a.userId));
-  // Same rule as removeAssignment: a subteam leader can't take their own item off the list.
-  if (!hasAllScope(ctx.actor) && current.has(ctx.actor.id) && !data.assigneeIds.includes(ctx.actor.id)) {
-    throw new ValidationError(REMOVE_SELF, { assigneeIds: REMOVE_SELF });
-  }
-  const added = data.assigneeIds.filter((id) => !current.has(id));
-  await assertAssignable(ctx, added);
-
+  let added: string[] = [];
   try {
-    await ctx.db.$transaction([
-      ctx.db.task.update({
+    added = await ctx.db.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string; signupMode: boolean; signupOpen: boolean }[]>`
+        SELECT id, "signupMode", "signupOpen" FROM "Task" WHERE id = ${task.id} FOR UPDATE`;
+      if (locked.length === 0) throw new NotFoundError(TASK_NOT_FOUND);
+
+      const rows = await tx.taskAssignment.findMany({ where: { taskId: task.id }, select: { userId: true, selfAssigned: true } });
+      const current = new Set(rows.map((a) => a.userId));
+      const baseline = data.previousAssigneeIdsSent ? new Set(data.previousAssigneeIds) : current;
+      const selected = new Set(data.assigneeIds);
+      const removed = [...current].filter((id) => baseline.has(id) && !selected.has(id));
+      const additions = data.assigneeIds.filter((id) => !baseline.has(id) && !current.has(id));
+
+      // Same rule as removeAssignment: a subteam leader can't take their own item off the list.
+      if (!hasAllScope(ctx.actor) && removed.includes(ctx.actor.id)) {
+        throw new ValidationError(REMOVE_SELF, { assigneeIds: REMOVE_SELF });
+      }
+      await assertAssignable(ctx, additions, tx);
+      checkSpots(data, current.size - removed.length + additions.length);
+
+      await tx.task.update({
         where: { id: task.id },
         data: {
           title: data.title,
@@ -241,22 +408,56 @@ export async function updateTask(ctx: ServiceContext, raw: unknown): Promise<voi
           subteam: data.subteam,
           dueDate: dateOnlyToDb(data.dueDate),
           priority: data.priority,
+          categoryId: await categoryIdFor(tx, ctx.actor, category, data.subteam),
+          ...modeFields(data),
+          // Already a sign-up task: saving keeps sign-ups open or closed as they are (closing and
+          // reopening is its own button). Switching an assigned task to sign-up opens them.
+          ...(data.assignMode === "signup" && locked[0].signupMode ? { signupOpen: locked[0].signupOpen } : {}),
         },
         select: { id: true },
-      }),
-      ctx.db.taskAssignment.deleteMany({ where: { taskId: task.id, userId: { notIn: data.assigneeIds } } }),
-      ctx.db.taskAssignment.createMany({
-        data: added.map((userId) => ({ taskId: task.id, userId })),
-        skipDuplicates: true,
-      }),
-    ]);
+      });
+      // Switched to "Assign people": everyone on it now counts as assigned by a leader (so nobody can "leave").
+      if (data.assignMode === "assign" && rows.some((r) => r.selfAssigned)) {
+        await tx.taskAssignment.updateMany({ where: { taskId: task.id, selfAssigned: true }, data: { selfAssigned: false } });
+      }
+      if (removed.length) await tx.taskAssignment.deleteMany({ where: { taskId: task.id, userId: { in: removed } } });
+      if (additions.length) {
+        await tx.taskAssignment.createMany({
+          data: additions.map((userId) => ({ taskId: task.id, userId })),
+          skipDuplicates: true,
+        });
+      }
+      return additions;
+    });
   } catch (e) {
-    // Deleted by someone else after we read it (P2025 on update, P2003 on the new items).
-    if (isGoneError(e)) throw new NotFoundError(TASK_NOT_FOUND);
+    // Deleted by someone else after we read it (P2025 on update, P2003 on the new items) — or the
+    // picked category / a person was removed meanwhile (P2003 while the task still exists).
+    if (isGoneError(e)) {
+      if (await ctx.db.task.count({ where: { id: task.id } })) {
+        throw new ConflictError("A category or person on this task was just removed. Check the form and try again.");
+      }
+      throw new NotFoundError(TASK_NOT_FOUND);
+    }
     throw e;
   }
 
+  // Only people a leader added hear about it (sign-ups found it themselves).
   if (added.length) ctx.notifier.notify({ type: "task.assigned", taskId: task.id, userIds: added, actorId: ctx.actor.id });
+}
+
+/** Close sign-ups for a task (nobody else can sign up), or open them again. Task managers only. */
+export async function setSignupOpen(ctx: ServiceContext, raw: unknown): Promise<void> {
+  requireStaff(ctx.actor);
+  const { taskId, open } = parseInput(signupOpenInput, raw as Record<string, unknown>);
+  const task = await ctx.db.task.findUnique({ where: { id: taskId }, select: { id: true, createdById: true, subteam: true } });
+  if (!task || !canManageTask(ctx.actor, task)) throw new NotFoundError(TASK_NOT_FOUND);
+  // Only "Let people sign up" tasks can be opened (an assigned task has to be edited into one first).
+  const { count } = await ctx.db.task.updateMany({ where: { id: task.id, ...(open ? { signupMode: true } : {}) }, data: { signupOpen: open } });
+  if (count === 0) {
+    const still = await ctx.db.task.count({ where: { id: task.id } });
+    if (!still) throw new NotFoundError(TASK_NOT_FOUND);
+    throw new ConflictError("This task isn't a sign-up task. Edit it and choose “Let people sign up”.");
+  }
 }
 
 /** Delete a task and every checklist item for it. Linked questions stay (their task link is cleared). */

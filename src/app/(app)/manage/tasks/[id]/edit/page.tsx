@@ -7,6 +7,7 @@ import { addDays, todayInTimezone } from "@/lib/dates";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { hasAllScope } from "@/server/permissions";
+import { getTaskFormCategories } from "@/server/queries/categories";
 import { type AssignablePerson, getAssignableUsers, getManagedTaskDetail, getTaskFormOptions, groupPeople } from "@/server/queries/tasks";
 import { DUE_DATE_MAX_FUTURE_DAYS, DUE_DATE_MAX_PAST_DAYS } from "@/server/services/tasks";
 import { updateTaskAction } from "../../actions";
@@ -16,7 +17,11 @@ export const metadata: Metadata = { title: "Edit task" };
 export default async function EditTaskPage({ params }: PageProps<"/manage/tasks/[id]/edit">) {
   const actor = await requireStaffUser();
   const { id } = await params;
-  const [task, assignable] = await Promise.all([getManagedTaskDetail(actor, id), getAssignableUsers(actor)]);
+  const [task, assignable, categories] = await Promise.all([
+    getManagedTaskDetail(actor, id),
+    getAssignableUsers(actor),
+    getTaskFormCategories(actor),
+  ]);
   if (!task) notFound();
 
   // People already on the task stay visible (and checked) even if the actor couldn't add them today,
@@ -49,7 +54,7 @@ export default async function EditTaskPage({ params }: PageProps<"/manage/tasks/
   return (
     <>
       <BackLink href={`/manage/tasks/${task.id}`}>Back to task</BackLink>
-      <PageHeader title="Edit task" description={<span className="break-words">{task.title}</span>} />
+      <PageHeader title="Edit task" description={<span className="wrap-anywhere">{task.title}</span>} />
       <TaskForm
         action={updateTaskAction}
         mode="edit"
@@ -61,8 +66,13 @@ export default async function EditTaskPage({ params }: PageProps<"/manage/tasks/
           dueDate: task.dueDate,
           priority: task.priority,
           assigneeIds: task.assignments.map((a) => a.user.id),
+          categoryId: task.category?.id ?? "",
+          assignMode: task.assignMode,
+          signupLimit: task.signupLimit,
         }}
+        signupClosed={task.assignMode === "signup" && !task.signupOpen}
         subteamOptions={options.subteams}
+        categories={categories}
         groups={groupPeople(people)}
         minDate={task.dueDate < minDate ? task.dueDate : minDate}
         maxDate={addDays(today, DUE_DATE_MAX_FUTURE_DAYS)}

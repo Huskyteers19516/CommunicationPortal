@@ -3,21 +3,25 @@ import { PendingList } from "@/components/admin/pending-list";
 import type { SeatInfo } from "@/components/admin/position-fields";
 import { RecentDecisions } from "@/components/admin/recent-decisions";
 import { SeatUsageCard } from "@/components/admin/seat-usage-card";
+import { ResourceApprovalsCard } from "@/components/resources/resource-approvals-card";
 import { PageHeader } from "@/components/ui/page-header";
 import type { Role } from "@/generated/prisma/enums";
 import { formatDateTime, timeAgo } from "@/lib/dates";
 import { requireAdminUser } from "@/server/auth/session";
+import { canManageAccount, grantableRoles } from "@/server/permissions";
 import { env } from "@/server/env";
 import { getPendingUsers, getRecentDecisions, getSeatUsage } from "@/server/queries/admin";
+import { countPendingResources } from "@/server/queries/resources";
 
 export const metadata: Metadata = { title: "Approvals" };
 
 export default async function ApprovalsPage() {
   const actor = await requireAdminUser();
-  const [pending, seats, decisions] = await Promise.all([
+  const [pending, seats, decisions, pendingResources] = await Promise.all([
     getPendingUsers(actor),
     getSeatUsage(actor),
     getRecentDecisions(actor, 10),
+    countPendingResources(actor),
   ]);
   const now = new Date();
   const seatMap: Partial<Record<Role, SeatInfo>> = Object.fromEntries(
@@ -48,10 +52,13 @@ export default async function ApprovalsPage() {
               subteam: u.subteam,
               registeredAgo: timeAgo(u.createdAt, now, env.teamTimezone),
               registeredAt: formatDateTime(u.createdAt, env.teamTimezone),
+              canDecide: canManageAccount(actor, { ...u, status: "PENDING" }),
             }))}
+            roles={grantableRoles(actor, { approving: true })}
           />
         </section>
         <aside className="min-w-0 space-y-6">
+          <ResourceApprovalsCard count={pendingResources} />
           <SeatUsageCard seats={seats} />
           <RecentDecisions decisions={decisions} now={now} timeZone={env.teamTimezone} />
         </aside>

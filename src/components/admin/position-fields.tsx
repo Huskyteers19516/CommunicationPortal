@@ -24,6 +24,7 @@ export function PositionFields({
   errors,
   seats,
   form,
+  roles: allowedRoles,
 }: {
   idPrefix: string;
   defaultRole: Role;
@@ -31,6 +32,8 @@ export function PositionFields({
   errors?: { role?: string; subteam?: string };
   seats?: Partial<Record<Role, SeatInfo>>;
   form?: string;
+  /** Positions offered (the default one is always kept). Default: every position. */
+  roles?: Role[];
 }) {
   const [role, setRole] = useState<Role>(defaultRole);
   const implied = subteamForRole(role);
@@ -61,7 +64,7 @@ export function PositionFields({
           invalid={!!errors?.role}
           onChange={(e) => setRole(e.target.value as Role)}
         >
-          {ROLES.map((r) => (
+          {ROLES.filter((r) => !allowedRoles || r === defaultRole || allowedRoles.includes(r)).map((r) => (
             <option key={r} value={r}>
               {ROLE_LABELS[r]}
             </option>

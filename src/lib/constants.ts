@@ -4,12 +4,13 @@ import {
   AssignmentStatus,
   Priority,
   QuestionStatus,
+  ResourceStatus,
   ResourceType,
   Role,
   Subteam,
 } from "@/generated/prisma/enums";
 
-export { AccountStatus, AssignmentStatus, Priority, QuestionStatus, ResourceType, Role, Subteam };
+export { AccountStatus, AssignmentStatus, Priority, QuestionStatus, ResourceStatus, ResourceType, Role, Subteam };
 
 export const TEAM_NAME = "The Huskyteers";
 export const TEAM_NUMBER = "19516";
@@ -68,6 +69,12 @@ export const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
 };
 
 export const RESOURCE_TYPES = Object.values(ResourceType) as ResourceType[];
+
+export const RESOURCE_STATUS_LABELS: Record<ResourceStatus, string> = {
+  PENDING: "Waiting for approval",
+  APPROVED: "Approved",
+  REJECTED: "Sent back",
+};
 
 export const ROLES = Object.values(Role) as Role[];
 export const SUBTEAMS = Object.values(Subteam) as Subteam[];
@@ -141,4 +148,13 @@ export const LIMITS = {
   resourceUrlMax: 2000,
   resourceLinksMax: 20,
   resourceLinkLabelMax: 60,
+  /** Uploaded files are stored in Postgres, so keep them small (and under Vercel's 4.5 MB request limit). */
+  resourceFileMaxBytes: 4 * 1024 * 1024,
+  /** Total size of every uploaded file together (protects the database's storage quota). */
+  resourceStorageMaxBytes: 300 * 1024 * 1024,
+  resourceFilenameMax: 120,
+  categoryNameMax: 40,
+  categoriesPerSubteamMax: 30,
+  /** Most people a sign-up task can take. */
+  signupLimitMax: 150,
 } as const;

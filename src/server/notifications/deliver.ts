@@ -18,6 +18,8 @@ import {
   questionRepliedRecipients,
   type Recipient,
   recipientSelect,
+  resourceReviewedRecipients,
+  resourceSubmittedRecipients,
   type SubmissionRecipient,
   taskAssignedRecipients,
   taskReviewedRecipients,
@@ -31,6 +33,8 @@ import {
   passwordResetEmail,
   questionAskedEmail,
   questionRepliedEmail,
+  resourceReviewedEmail,
+  resourceSubmittedEmail,
   taskAssignedEmail,
   taskReviewedEmail,
   taskSubmittedEmail,
@@ -113,6 +117,10 @@ function planFor(db: Db, event: NotificationEvent, cfg: DeliverConfig): Promise<
       return planPasswordReset(db, event, cfg);
     case "password.changed":
       return planPasswordChanged(db, event, cfg);
+    case "resource.submitted":
+      return planResourceSubmitted(db, event, cfg);
+    case "resource.reviewed":
+      return planResourceReviewed(db, event, cfg);
     case "question.deleted":
       return Promise.resolve(null); // Discord-only (deliverDiscord removes the posts)
     default: {
@@ -344,5 +352,66 @@ async function planPasswordChanged(db: Db, event: EventOf<"password.changed">, c
     // Same audience rule as reset links: always sent (no preference), never to DISABLED accounts.
     recipients: passwordResetRecipients(user),
     render: (recipient) => passwordChangedEmail({ appUrl: cfg.appUrl, recipient }),
+  };
+}
+
+async function planResourceSubmitted(db: Db, event: EventOf<"resource.submitted">, cfg: DeliverConfig): Promise<Plan | null> {
+  const r = await db.resource.findUnique({
+    where: { id: event.resourceId },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      type: true,
+      url: true,
+      status: true,
+      createdById: true,
+      createdBy: { select: personSelect },
+      file: { select: { filename: true, size: true } },
+    },
+  });
+  // Already reviewed (or removed) by the time we got here: nothing to approve any more.
+  if (!r || r.status !== "PENDING" || !r.createdById || !r.createdBy) return null;
+  const submitter = r.createdBy;
+  return {
+    recipients: await resourceSubmittedRecipients(db, { createdById: r.createdById, submitterSubteam: submitter.subteam }),
+    render: (recipient) =>
+      resourceSubmittedEmail({
+        appUrl: cfg.appUrl,
+        recipient,
+        resource: { id: r.id, title: r.title, description: r.description, type: r.type, url: r.url, file: r.file },
+        submitter,
+      }),
+  };
+}
+
+async function planResourceReviewed(db: Db, event: EventOf<"resource.reviewed">, cfg: DeliverConfig): Promise<Plan | null> {
+  const r = await db.resource.findUnique({
+    where: { id: event.resourceId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      reviewNote: true,
+      reviewedById: true,
+      reviewedBy: { select: { name: true } },
+      createdBy: { select: recipientSelect },
+    },
+  });
+  if (!r) return null;
+  const status = r.status;
+  // Edited and sent again since the review: the review email would be stale.
+  if (status !== "APPROVED" && status !== "REJECTED") return null;
+  return {
+    recipients: resourceReviewedRecipients(r),
+    render: (recipient) =>
+      resourceReviewedEmail({
+        appUrl: cfg.appUrl,
+        recipient,
+        status,
+        resource: { id: r.id, title: r.title },
+        reviewerName: r.reviewedBy?.name ?? null,
+        reviewNote: r.reviewNote,
+      }),
   };
 }

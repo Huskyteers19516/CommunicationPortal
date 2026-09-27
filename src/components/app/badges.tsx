@@ -1,3 +1,4 @@
+import { Tag } from "lucide-react";
 import type { AccountStatus, AssignmentStatus, Priority, QuestionStatus, Role, Subteam } from "@/generated/prisma/enums";
 import {
   ASSIGNMENT_STATUS_LABELS,
@@ -7,7 +8,9 @@ import {
   STATUS_LABELS,
   SUBTEAM_LABELS,
 } from "@/lib/constants";
+import { cn } from "@/lib/cn";
 import { type DateOnly, daysBetween, relativeDueLabel } from "@/lib/dates";
+import { type SignupInfo, signupBadge } from "@/lib/signup";
 import { Badge, type BadgeTone } from "../ui/badge";
 
 const roleTone: Record<Role, BadgeTone> = {
@@ -62,4 +65,24 @@ export function DueBadge({ due, today, done = false }: { due: DateOnly; today: D
   if (!done && diff < 0) return <Badge tone="red">Overdue · {label}</Badge>;
   const text = /^(Today|Tomorrow|Yesterday|In )/.test(label) ? `Due ${label.charAt(0).toLowerCase()}${label.slice(1)}` : `Due ${label}`;
   return <Badge tone={!done && diff === 0 ? "brand" : "gray"}>{text}</Badge>;
+}
+
+/** Task dashboard category, e.g. "Intake". Renders nothing without one. */
+export function CategoryBadge({ name, className }: { name: string | null | undefined; className?: string }) {
+  if (!name) return null;
+  return (
+    <Badge tone="gray" className={cn("max-w-full", className)}>
+      <Tag className="size-3 shrink-0 text-ink-400" aria-hidden />
+      <span className="sr-only">Category: </span>
+      {/* Names can be one long word; let them wrap instead of widening the page. */}
+      <span className="min-w-0 whitespace-normal wrap-anywhere">{name}</span>
+    </Badge>
+  );
+}
+
+/** "Sign-up · 2 of 3 spots taken" / "Sign-up · open" / "Sign-up · full" / "Sign-ups closed"; nothing for assigned tasks. */
+export function SignupBadge(props: SignupInfo) {
+  const badge = signupBadge(props);
+  if (!badge) return null;
+  return <Badge tone={badge.tone}>{badge.label}</Badge>;
 }

@@ -2,14 +2,21 @@ import type { Metadata } from "next";
 import { BackLink } from "@/components/tasks/back-link";
 import { TaskForm } from "@/components/tasks/task-form";
 import { PageHeader } from "@/components/ui/page-header";
+import type { Subteam } from "@/generated/prisma/enums";
+import { SUBTEAMS } from "@/lib/constants";
 import { addDays, todayInTimezone } from "@/lib/dates";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { getTaskFormCategories } from "@/server/queries/categories";
 import { getAssignableUsers, getTaskDuplicate, getTaskFormOptions } from "@/server/queries/tasks";
 import { DUE_DATE_MAX_FUTURE_DAYS, DUE_DATE_MAX_PAST_DAYS } from "@/server/services/tasks";
 import { createTaskAction } from "../actions";
 
 export const metadata: Metadata = { title: "New task" };
+
+function first(v: string | string[] | undefined) {
+  return Array.isArray(v) ? v[0] : v;
+}
 
 export default async function NewTaskPage({ searchParams }: PageProps<"/manage/tasks/new">) {
   const actor = await requireStaffUser();
@@ -18,7 +25,18 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
   const today = todayInTimezone(env.teamTimezone);
   const options = getTaskFormOptions(actor);
   // ?from=<taskId> copies a task the actor manages ("Duplicate"); anything else is ignored.
-  const [groups, copy] = await Promise.all([getAssignableUsers(actor), from ? getTaskDuplicate(actor, from, { today }) : null]);
+  const [groups, copy, categories] = await Promise.all([
+    getAssignableUsers(actor),
+    from ? getTaskDuplicate(actor, from, { today }) : null,
+    getTaskFormCategories(actor),
+  ]);
+
+  // ?subteam=BUILD|TEAM&category=<id> (the dashboard's "+" buttons): only subteams and categories the actor may use.
+  const subteamParam = first(sp.subteam);
+  const wanted: "" | Subteam | undefined = subteamParam === "TEAM" ? "" : SUBTEAMS.find((s) => s === subteamParam);
+  const subteam = wanted !== undefined && options.subteams.some((o) => o.value === wanted) ? wanted : options.defaultSubteam;
+  const categoryParam = first(sp.category);
+  const categoryId = categoryParam && categories[subteam]?.some((c) => c.id === categoryParam) ? categoryParam : "";
 
   return (
     <>
@@ -27,11 +45,11 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
         title={copy ? "Duplicate task" : "New task"}
         description={
           copy ? (
-            <span className="break-words">
+            <span className="wrap-anywhere">
               Copy of “{copy.sourceTitle}”, due today. Check the date and people, then create it.
             </span>
           ) : (
-            "Everyone you pick gets it on their checklist."
+            "Assign it to people, or let them sign up on the Task dashboard."
           )
         }
       />
@@ -49,17 +67,24 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
                 dueDate: copy.dueDate,
                 priority: copy.priority,
                 assigneeIds: copy.assigneeIds,
+                categoryId: copy.categoryId,
+                assignMode: copy.assignMode,
+                signupLimit: copy.signupLimit,
               }
             : {
                 title: "",
                 description: "",
-                subteam: options.defaultSubteam,
+                subteam,
                 dueDate: today,
                 priority: "NORMAL",
                 assigneeIds: [],
+                categoryId,
+                assignMode: "assign",
+                signupLimit: null,
               }
         }
         subteamOptions={options.subteams}
+        categories={categories}
         groups={groups}
         minDate={addDays(today, -DUE_DATE_MAX_PAST_DAYS)}
         maxDate={addDays(today, DUE_DATE_MAX_FUTURE_DAYS)}

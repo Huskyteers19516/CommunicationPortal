@@ -29,3 +29,5 @@ export type ResetLinkState =
 
 export const RESET_LINK_HINT = "Works once, for 1 hour. Send it to them privately.";
 export const RESET_LINK_NOT_EMAILED = "Email isn't set up, so it was not emailed.";
+/** Non-owners only get reset links by email; without email set up, an owner has to make one. */
+export const RESET_LINK_OWNER_ONLY = "Email isn't set up, so the reset link couldn't be sent. Ask an owner to create one for them.";

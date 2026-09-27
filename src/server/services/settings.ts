@@ -1,6 +1,7 @@
 // Settings: the signed-in user's own profile, password, email preferences, and devices.
 // Everything here acts on `ctx.actor` only — no ids come from the client.
 import { z } from "zod";
+import type { Subteam } from "@/generated/prisma/enums";
 import { LIMITS } from "@/lib/constants";
 import { checkbox, nameSchema, passwordSchema } from "@/lib/validation";
 import { parseInput } from "../action";
@@ -9,7 +10,7 @@ import { hashPassword, verifyPassword } from "../auth/password";
 import type { ServiceContext } from "../context";
 import type { Db } from "../db";
 import { ConflictError, UnauthorizedError, ValidationError } from "../errors";
-import { isStaff } from "../permissions";
+import { canAdminister, isStaff, ledSubteam } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
 
 const PASSWORD_CHANGE_LIMIT = 10;
@@ -27,6 +28,7 @@ export interface NotificationPrefs {
   emailOnReview: boolean;
   emailOnAssigned: boolean;
   emailOnSignup: boolean;
+  emailOnResource: boolean;
 }
 
 const prefsSelect = {
@@ -36,6 +38,7 @@ const prefsSelect = {
   emailOnReview: true,
   emailOnAssigned: true,
   emailOnSignup: true,
+  emailOnResource: true,
 } as const;
 
 function asRecord(raw: unknown): Record<string, unknown> {
@@ -141,19 +144,36 @@ const prefsInput = z.object({
   emailOnQuestion: checkbox,
   emailOnSubmission: checkbox,
   emailOnSignup: checkbox,
+  emailOnResource: checkbox,
 });
+
+/**
+ * Whose shared resources email this person (resource.submitted, see resourceSubmittedRecipients):
+ * every member's (owners), their own subteam's members' (subteam leaders), or — the captain — only
+ * members with no subteam or whose subteam has no active leader. Null: never (mentors, teachers, members).
+ */
+export type ResourceEmailScope = { kind: "all" } | { kind: "subteam"; subteam: Subteam } | { kind: "fallback" };
+
+export function resourceEmailScope(actor: Pick<Actor, "id" | "role" | "subteam" | "isAdmin">): ResourceEmailScope | null {
+  if (actor.isAdmin) return { kind: "all" };
+  const led = ledSubteam(actor);
+  if (led) return { kind: "subteam", subteam: led };
+  if (actor.role === "CAPTAIN") return { kind: "fallback" };
+  return null;
+}
 
 /** Which preferences this person may change (others are ignored even if submitted). */
 export function editablePrefKeys(actor: Pick<Actor, "id" | "role" | "subteam" | "isAdmin">): (keyof NotificationPrefs)[] {
   const keys: (keyof NotificationPrefs)[] = ["emailOnReply", "emailOnReview", "emailOnAssigned"];
   if (isStaff(actor)) keys.push("emailOnQuestion", "emailOnSubmission");
-  if (actor.isAdmin) keys.push("emailOnSignup");
+  if (canAdminister(actor)) keys.push("emailOnSignup");
+  if (resourceEmailScope(actor)) keys.push("emailOnResource");
   return keys;
 }
 
 /**
  * Save email preferences from the settings form (unchecked boxes arrive missing = off).
- * Staff-only (question/submission) and admin-only (signup) switches are only applied for staff/admins.
+ * Staff-only (question/submission) and admin-only (sign-up / resource approval) switches are only applied for staff/admins.
  */
 export async function updateNotificationPrefs(ctx: ServiceContext, raw: unknown): Promise<void> {
   const parsed = parseInput(prefsInput, asRecord(raw));

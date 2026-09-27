@@ -659,7 +659,21 @@ describe("task.assigned", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("account.pending", () => {
-  it("asks every ACTIVE admin who wants sign-up emails", async () => {
+  /** Everyone with admin access (owners + leaders, captain, mentors, teachers), ACTIVE, who wants sign-up emails. */
+  async function adminAccessEmails(exceptId: string) {
+    const rows = await t.db.user.findMany({
+      where: {
+        status: "ACTIVE",
+        emailOnSignup: true,
+        id: { not: exceptId },
+        OR: [{ isAdmin: true }, { role: { in: ["SOFTWARE_LEADER", "BUILD_LEADER", "BUSINESS_LEADER", "CAPTAIN", "MENTOR", "TEACHER"] } }],
+      },
+      select: { email: true },
+    });
+    return rows.map((r) => r.email).sort();
+  }
+
+  it("asks everyone with admin access who wants sign-up emails", async () => {
     const sam = await makeUser(t.db, {
       name: "Sam Lee",
       email: "sam.lee@example.com",
@@ -667,8 +681,14 @@ describe("account.pending", () => {
       status: "PENDING",
     });
     const sent = await run({ type: "account.pending", userId: sam.id });
-    expect(recipients(sent)).toEqual(emailsOf(p.admin));
-    const [m] = sent;
+    const to = recipients(sent);
+    expect(to).toEqual(await adminAccessEmails(sam.id));
+    // Owners, leaders, the captain, and mentors — but not members, turned-off, pending, or disabled accounts.
+    for (const u of [p.admin, p.captain, p.mentor, p.buildLead1, p.swLead]) expect(to).toContain(u.email);
+    for (const u of [p.adminNoSignup, p.adminDisabled, p.captainDisabled, p.buildLeadPending, p.maya, p.swMember]) {
+      expect(to).not.toContain(u.email);
+    }
+    const m = sent.find((x) => x.to === p.admin.email)!;
     expect(m.subject).toBe("Approval needed: Sam Lee signed up as Build Leader");
     expect(m.text).toContain("Email: sam.lee@example.com");
     expect(m.text).toContain("Subteam: Build");
@@ -679,7 +699,8 @@ describe("account.pending", () => {
   it("never emails the new user and does nothing once they are no longer pending", async () => {
     const pendingAdmin = await makeUser(t.db, { role: "MENTOR", status: "PENDING", isAdmin: true });
     const sent = await run({ type: "account.pending", userId: pendingAdmin.id });
-    expect(recipients(sent)).toEqual(emailsOf(p.admin));
+    expect(recipients(sent)).toEqual(await adminAccessEmails(pendingAdmin.id));
+    expect(recipients(sent)).not.toContain(pendingAdmin.email);
 
     const approved = await makeUser(t.db, { role: "TEACHER", status: "ACTIVE" });
     expect(await run({ type: "account.pending", userId: approved.id })).toEqual([]);
@@ -896,5 +917,192 @@ describe("password.changed", () => {
     const disabled = await makeUser(t.db, { status: "DISABLED" });
     expect(await run({ type: "password.changed", userId: disabled.id })).toEqual([]);
     expect(await run({ type: "password.changed", userId: "does-not-exist" })).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("resource approvals", () => {
+  let r: TestDb;
+  let q: Record<
+    | "owner"
+    | "ownerQuiet"
+    | "ownerDisabled"
+    | "captain"
+    | "captainQuiet"
+    | "mentor"
+    | "buildLead1"
+    | "buildLead2"
+    | "buildLeadQuiet"
+    | "buildLeadPending"
+    | "swLeadQuiet"
+    | "bizLeadPending"
+    | "maya"
+    | "swMember"
+    | "bizMember",
+    Actor
+  >;
+
+  async function runR(event: NotificationEvent, options: DeliverOptions = {}): Promise<EmailMessage[]> {
+    const { sent, transport } = fakeTransport();
+    await deliverNotification(r.db, event, { transport, appUrl: APP_URL, teamTimezone: TEST_TZ, now: TEST_NOW, ...options });
+    return sent;
+  }
+
+  async function quiet(user: Actor, prefs: { emailOnResource?: boolean; emailOnReview?: boolean }) {
+    await r.db.user.update({ where: { id: user.id }, data: prefs });
+    return user;
+  }
+
+  async function share(by: Actor, data: { title?: string; url?: string; file?: boolean; status?: "PENDING" | "APPROVED" | "REJECTED" } = {}) {
+    return r.db.resource.create({
+      data: {
+        title: data.title ?? "Intake code",
+        description: "Our intake OpMode.\nWorks with the new servo.",
+        url: data.file ? "" : (data.url ?? "https://github.com/huskyteers/intake"),
+        type: "CODE",
+        status: data.status ?? "PENDING",
+        createdById: by.id,
+        file: data.file
+          ? { create: { filename: "Intake.java", contentType: "text/x-java", size: 2048, data: new TextEncoder().encode("class Intake {}") } }
+          : undefined,
+      },
+    });
+  }
+
+  beforeAll(async () => {
+    r = await createTestDb();
+    const db = r.db;
+    q = {
+      owner: await makeUser(db, { name: "Olivia Owner", role: "MEMBER", subteam: "BUSINESS", isAdmin: true }),
+      ownerQuiet: await makeUser(db, { role: "MENTOR", isAdmin: true }),
+      ownerDisabled: await makeUser(db, { role: "MENTOR", isAdmin: true, status: "DISABLED" }),
+      captain: await makeUser(db, { name: "Casey Captain", role: "CAPTAIN" }),
+      captainQuiet: await makeUser(db, { role: "CAPTAIN" }),
+      mentor: await makeUser(db, { role: "MENTOR" }),
+      buildLead1: await makeUser(db, { name: "Alex Kim", role: "BUILD_LEADER" }),
+      buildLead2: await makeUser(db, { role: "BUILD_LEADER" }),
+      buildLeadQuiet: await makeUser(db, { role: "BUILD_LEADER" }),
+      buildLeadPending: await makeUser(db, { role: "BUILD_LEADER", status: "PENDING" }),
+      swLeadQuiet: await makeUser(db, { role: "SOFTWARE_LEADER" }),
+      bizLeadPending: await makeUser(db, { role: "BUSINESS_LEADER", status: "PENDING" }),
+      maya: await makeUser(db, { name: "Maya Chen", role: "MEMBER", subteam: "BUILD" }),
+      swMember: await makeUser(db, { role: "MEMBER", subteam: "SOFTWARE" }),
+      bizMember: await makeUser(db, { role: "MEMBER", subteam: "BUSINESS" }),
+    };
+    await quiet(q.ownerQuiet, { emailOnResource: false });
+    await quiet(q.captainQuiet, { emailOnResource: false });
+    await quiet(q.buildLeadQuiet, { emailOnResource: false });
+    await quiet(q.swLeadQuiet, { emailOnResource: false });
+  });
+  afterAll(async () => {
+    await r.drop();
+  });
+
+  beforeEach(async () => {
+    await r.db.emailLog.deleteMany();
+  });
+
+  it("resource.submitted asks the owners and the member's subteam leaders who want the email", async () => {
+    const res = await share(q.maya, { file: true });
+    const sent = await runR({ type: "resource.submitted", resourceId: res.id });
+    expect(recipients(sent)).toEqual(emailsOf(q.owner, q.buildLead1, q.buildLead2));
+    const m = sent.find((x) => x.to === q.buildLead1.email)!;
+    expect(m.kind).toBe("resource.submitted");
+    expect(m.subject).toBe("Approval needed: Maya Chen shared “Intake code”");
+    expect(m.text).toContain("Hi Alex,");
+    expect(m.text).toContain("Maya Chen (Build member) shared “Intake code”");
+    expect(m.text).toContain("Type: Code");
+    expect(m.text).toContain("File: Intake.java (2.0 KB)");
+    expect(m.text).toContain("> Our intake OpMode.\n> Works with the new servo.");
+    expect(m.text).toContain(`Review it: ${APP_URL}/resources/${res.id}`);
+    expect(m.text).toContain(SETTINGS_FOOTER);
+    expect(m.html).toContain(`href="${APP_URL}/resources/${res.id}"`);
+  });
+
+  it("falls back to the captains when nobody active leads the subteam, or the member has no subteam", async () => {
+    const link = await share(q.bizMember, { url: "https://sponsors.example.com/deck" });
+    const sent = await runR({ type: "resource.submitted", resourceId: link.id });
+    expect(recipients(sent)).toEqual(emailsOf(q.owner, q.captain));
+    expect(sent[0].text).toContain("Link: https://sponsors.example.com/deck");
+
+    const noSubteam = await makeUser(r.db, { role: "MEMBER", subteam: null });
+    const other = await share(noSubteam);
+    expect(recipients(await runR({ type: "resource.submitted", resourceId: other.id }))).toEqual(emailsOf(q.owner, q.captain));
+  });
+
+  it("a leader who turned the email off doesn't push it onto the captains", async () => {
+    const res = await share(q.swMember);
+    expect(recipients(await runR({ type: "resource.submitted", resourceId: res.id }))).toEqual(emailsOf(q.owner));
+  });
+
+  it("never emails the person who shared it, and skips resources that are no longer waiting", async () => {
+    const own = await share(q.owner);
+    expect(recipients(await runR({ type: "resource.submitted", resourceId: own.id }))).toEqual(emailsOf(q.captain));
+
+    const approved = await share(q.maya, { status: "APPROVED" });
+    expect(await runR({ type: "resource.submitted", resourceId: approved.id })).toEqual([]);
+    const gone = await share(q.maya);
+    await r.db.resource.delete({ where: { id: gone.id } });
+    expect(await runR({ type: "resource.submitted", resourceId: gone.id })).toEqual([]);
+    const orphan = await share(q.maya);
+    await r.db.resource.update({ where: { id: orphan.id }, data: { createdById: null } });
+    expect(await runR({ type: "resource.submitted", resourceId: orphan.id })).toEqual([]);
+  });
+
+  it("is never posted to Discord", async () => {
+    const res = await share(q.maya);
+    const calls: string[] = [];
+    await runR(
+      { type: "resource.submitted", resourceId: res.id },
+      { discord: { webhookUrl: "https://discord.com/api/webhooks/1/abc", fetch: async (url) => (calls.push(url), new Response(null, { status: 204 })) } },
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it("resource.reviewed tells the member it was approved, with the reviewer's note", async () => {
+    const res = await share(q.maya);
+    await r.db.resource.update({
+      where: { id: res.id },
+      data: { status: "APPROVED", reviewedById: q.buildLead1.id, reviewedAt: TEST_NOW, reviewNote: "Nice, thanks!" },
+    });
+    const [m, ...rest] = await runR({ type: "resource.reviewed", resourceId: res.id });
+    expect(rest).toEqual([]);
+    expect(m.to).toBe(q.maya.email);
+    expect(m.kind).toBe("resource.reviewed");
+    expect(m.subject).toBe("Your resource “Intake code” was approved");
+    expect(m.text).toContain("Alex Kim approved “Intake code”");
+    expect(m.text).toContain("> Nice, thanks!");
+    expect(m.text).toContain(`${APP_URL}/resources/${res.id}`);
+    expect(m.text).toContain(SETTINGS_FOOTER);
+  });
+
+  it("resource.reviewed explains a turned-down resource", async () => {
+    const res = await share(q.maya, { title: "Robot photos" });
+    await r.db.resource.update({
+      where: { id: res.id },
+      data: { status: "REJECTED", reviewedById: q.captain.id, reviewedAt: TEST_NOW, reviewNote: "That folder is private." },
+    });
+    const [m] = await runR({ type: "resource.reviewed", resourceId: res.id });
+    expect(m.subject).toBe("Your resource “Robot photos” was sent back");
+    expect(m.text).toContain("Casey Captain looked at “Robot photos” and sent it back to you.");
+    expect(m.text).toContain("Why:\n> That folder is private.");
+    expect(m.text).toContain("send it again");
+  });
+
+  it("resource.reviewed respects emailOnReview and skips stale or self reviews", async () => {
+    const res = await share(q.swMember);
+    // Sent back for approval again (edited) before the email went out.
+    expect(await runR({ type: "resource.reviewed", resourceId: res.id })).toEqual([]);
+
+    await r.db.resource.update({ where: { id: res.id }, data: { status: "APPROVED", reviewedById: q.swMember.id } });
+    expect(await runR({ type: "resource.reviewed", resourceId: res.id })).toEqual([]);
+
+    await r.db.resource.update({ where: { id: res.id }, data: { reviewedById: q.captain.id } });
+    expect(recipients(await runR({ type: "resource.reviewed", resourceId: res.id }))).toEqual(emailsOf(q.swMember));
+    await quiet(q.swMember, { emailOnReview: false });
+    expect(await runR({ type: "resource.reviewed", resourceId: res.id })).toEqual([]);
+
+    expect(await runR({ type: "resource.reviewed", resourceId: "does-not-exist" })).toEqual([]);
   });
 });

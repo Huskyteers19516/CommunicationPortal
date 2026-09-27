@@ -17,7 +17,6 @@ import {
   canChangeQuestionStatus,
   canReplyToQuestion,
   canViewQuestion,
-  canViewTask,
 } from "../permissions";
 import { consumeRateLimit } from "../rate-limit";
 
@@ -73,7 +72,7 @@ const askInput = z.object({
   recipientId: optionalId("Choose who should answer."),
   /** "" = whole team (goes to the captain). Missing = the asker's own subteam. */
   subteam: z.enum(["SOFTWARE", "BUILD", "BUSINESS", ""], { error: "Pick a topic from the list." }).optional(),
-  taskId: optionalId("Pick one of your tasks."),
+  taskId: optionalId("Pick a task from the list."),
 });
 
 const replyInput = z.object({
@@ -128,7 +127,7 @@ async function loadVisibleQuestion(ctx: ServiceContext, questionId: string) {
  * Ask a question. Any ACTIVE user may ask.
  * - to="subteam": goes to the leaders of `subteam` (default: the asker's subteam; "" = whole team → captains).
  * - to="person": goes to `recipientId`, who must be ACTIVE staff and not the asker.
- * - taskId (optional): a task the asker can see (assigned to them, or one they manage).
+ * - taskId (optional): any existing task (everyone can see every task on the Task dashboard).
  */
 export async function askQuestion(ctx: ServiceContext, raw: unknown): Promise<{ id: string }> {
   const data = parseInput(askInput, asRecord(raw));
@@ -153,12 +152,7 @@ export async function askQuestion(ctx: ServiceContext, raw: unknown): Promise<{ 
     data.taskId
       ? ctx.db.task.findUnique({
           where: { id: data.taskId },
-          select: {
-            id: true,
-            createdById: true,
-            subteam: true,
-            assignments: { where: { userId: actor.id }, select: { userId: true } },
-          },
+          select: { id: true },
         })
       : null,
   ]);
@@ -171,9 +165,8 @@ export async function askQuestion(ctx: ServiceContext, raw: unknown): Promise<{ 
     recipientId = recipient.id;
   }
 
-  if (data.taskId && (!task || !canViewTask(actor, task, task.assignments.map((a) => a.userId)))) {
-    throw fieldError("taskId", "Pick one of your tasks.");
-  }
+  // Any task will do: the whole team can see every task on the Task dashboard.
+  if (data.taskId && !task) throw fieldError("taskId", "That task no longer exists.");
 
   // Counted only once the question is valid, so fixing a typo never uses up the allowance.
   await throttle(ctx, "ask", "You've asked a lot of questions in the last hour. Please wait a bit before asking another.");

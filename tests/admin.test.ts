@@ -180,12 +180,10 @@ describe("rejectUser", () => {
 });
 
 describe("non-admins are denied everything", () => {
+  // Leaders, the captain, mentors, and teachers have admin access through their position (see below).
   const roles = [
     { label: "member", input: { role: "MEMBER" as const } },
-    { label: "build leader", input: { role: "BUILD_LEADER" as const } },
-    { label: "captain", input: { role: "CAPTAIN" as const } },
-    { label: "mentor", input: { role: "MENTOR" as const } },
-    { label: "teacher", input: { role: "TEACHER" as const } },
+    { label: "member on another subteam", input: { role: "MEMBER" as const, subteam: "SOFTWARE" as const } },
   ];
 
   for (const { label, input } of roles) {
@@ -228,6 +226,148 @@ describe("non-admins are denied everything", () => {
       expect(ctx.notifier.events).toHaveLength(0);
     });
   }
+});
+
+describe("leaders, the captain, mentors, and teachers have admin access, with guardrails", () => {
+  const roles = [
+    { label: "build leader", input: { role: "BUILD_LEADER" as const }, rank: 1 },
+    { label: "software leader", input: { role: "SOFTWARE_LEADER" as const }, rank: 1 },
+    { label: "captain", input: { role: "CAPTAIN" as const }, rank: 2 },
+    { label: "mentor", input: { role: "MENTOR" as const }, rank: 2 },
+    { label: "teacher", input: { role: "TEACHER" as const }, rank: 2 },
+  ];
+  const edit = (u: Actor, over: Record<string, unknown> = {}) => ({
+    userId: u.id,
+    name: u.name,
+    email: u.email,
+    role: u.role,
+    subteam: u.subteam ?? "",
+    status: u.status,
+    ...(u.isAdmin ? { isAdmin: "on" } : {}),
+    ...over,
+  });
+
+  for (const { label, input, rank } of roles) {
+    it(`${label}: approves sign-ups up to their rank and manages accounts below it — never owners`, async () => {
+      const actor = await makeUser(t.db, input);
+      const ctx = contextFor(t.db, actor);
+      const member = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+      await addSession(admin.id);
+
+      // Sign-ups: leaders approve leaders (and below); the captain/mentors/teachers approve anyone but owners.
+      const pendingLeader = await makeUser(t.db, { role: "BUSINESS_LEADER", status: "PENDING" });
+      const pendingMentor = await makeUser(t.db, { role: "MENTOR", status: "PENDING" });
+      expect((await getPendingUsers(actor, t.db)).total).toBe(2);
+      await approveUser(ctx, { userId: pendingLeader.id });
+      expect(await statusOf(pendingLeader.id)).toBe("ACTIVE");
+      if (rank >= 2) {
+        await approveUser(ctx, { userId: pendingMentor.id });
+        expect(await statusOf(pendingMentor.id)).toBe("ACTIVE");
+      } else {
+        await expect(approveUser(ctx, { userId: pendingMentor.id })).rejects.toBeInstanceOf(ForbiddenError);
+        await expect(rejectUser(ctx, { userId: pendingMentor.id })).rejects.toBeInstanceOf(ForbiddenError);
+        // …and can't approve a leader sign-up *as* a mentor either.
+        const another = await makeUser(t.db, { role: "BUILD_LEADER", status: "PENDING" });
+        const e = await approveUser(ctx, { userId: another.id, role: "MENTOR" }).catch((err) => err);
+        expect(e).toBeInstanceOf(ValidationError);
+        expect(await statusOf(pendingMentor.id)).toBe("PENDING");
+        expect(await statusOf(another.id)).toBe("PENDING");
+      }
+
+      // Members' accounts: yes.
+      await updateUser(ctx, edit(member, { name: "Renamed" }));
+      expect((await t.db.user.findUniqueOrThrow({ where: { id: member.id } })).name).toBe("Renamed");
+      // Promotions only to positions below their own.
+      const promote = await updateUser(ctx, edit(member, { name: "Renamed", role: "SOFTWARE_LEADER" })).catch((err) => err);
+      if (rank >= 2) {
+        expect(promote).toBeUndefined();
+        expect((await t.db.user.findUniqueOrThrow({ where: { id: member.id } })).role).toBe("SOFTWARE_LEADER");
+      } else {
+        expect(promote).toBeInstanceOf(ValidationError);
+        expect((await t.db.user.findUniqueOrThrow({ where: { id: member.id } })).role).toBe("MEMBER");
+      }
+      const toMentor = await updateUser(ctx, edit(member, { role: "MENTOR" })).catch((err) => err);
+      expect(toMentor).toBeInstanceOf(ValidationError);
+
+      // Accounts at or above their own rank: no (a leader can't disable a mentor or take over the captain).
+      const peer = await makeUser(t.db, { role: rank >= 2 ? "TEACHER" : "BUILD_LEADER" });
+      await expect(updateUser(ctx, edit(peer, { status: "DISABLED" }))).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(updateUser(ctx, edit(peer, { email: "mine@example.com" }))).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(sendPasswordResetLink(ctx, { userId: peer.id })).rejects.toBeInstanceOf(ForbiddenError);
+      expect(await statusOf(peer.id)).toBe("ACTIVE");
+      expect((await getUserDetail(actor, peer.id, t.db))?.canManage).toBe(false);
+
+      // Only owners change someone else's email (new email + "forgot password" = account takeover).
+      const emailChange = await updateUser(ctx, edit(member, { name: "Renamed", email: "someone-new@example.com" })).catch((err) => err);
+      expect(emailChange).toBeInstanceOf(ValidationError);
+      expect((await t.db.user.findUniqueOrThrow({ where: { id: member.id } })).email).toBe(member.email);
+
+      // The Owner box is ignored for non-owners (nobody gets promoted).
+      await updateUser(ctx, edit(member, { isAdmin: "on" }));
+      expect((await t.db.user.findUniqueOrThrow({ where: { id: member.id } })).isAdmin).toBe(false);
+
+      // Reset links go by email only; the link itself is never handed to a non-owner.
+      const reset = await sendPasswordResetLink(ctx, { userId: member.id });
+      expect(reset.resetUrl).toBeNull();
+      expect(ctx.notifier.ofType("password.reset").map((ev) => ev.userId)).toContain(member.id);
+
+      // Owners' accounts are off-limits.
+      const calls: Array<() => Promise<unknown>> = [
+        () => updateUser(ctx, edit(admin, { name: "Hacked" })),
+        () => updateUser(ctx, edit(admin, { status: "DISABLED" })),
+        () => sendPasswordResetLink(ctx, { userId: admin.id }),
+        () => revokeSessions(ctx, { userId: admin.id }),
+      ];
+      for (const call of calls) await expect(call()).rejects.toThrow("Only an owner can change an owner's account.");
+      expect(await t.db.user.findUniqueOrThrow({ where: { id: admin.id } })).toMatchObject({
+        name: "Ada Admin",
+        status: "ACTIVE",
+        isAdmin: true,
+      });
+      expect(await t.db.session.count({ where: { userId: admin.id } })).toBe(1);
+      expect((await getUserDetail(actor, admin.id, t.db))?.canManage).toBe(false);
+      expect((await getUserDetail(actor, member.id, t.db))?.canManage).toBe(true);
+
+      // The email log stays with the owners.
+      await expect(listEmailLogs(actor, { page: 1 }, t.db)).rejects.toBeInstanceOf(ForbiddenError);
+
+      // They can't change their own position (that could lock them out of Admin)…
+      const e = await updateUser(ctx, edit(actor, { role: "MEMBER", subteam: "BUILD" })).catch((err) => err);
+      expect(e).toBeInstanceOf(ValidationError);
+      expect((e as ValidationError).fieldErrors.role).toMatch(/own position/);
+      expect((await t.db.user.findUniqueOrThrow({ where: { id: actor.id } })).role).toBe(input.role);
+      // …but can still fix their own name.
+      await updateUser(ctx, edit(actor, { name: "New Name" }));
+      expect((await t.db.user.findUniqueOrThrow({ where: { id: actor.id } })).name).toBe("New Name");
+    });
+  }
+
+  it("a leader can't reject, approve, or delete a pending owner (owners only)", async () => {
+    const leader = await makeUser(t.db, { role: "BUILD_LEADER" });
+    const pendingOwner = await makeUser(t.db, { role: "MEMBER", status: "PENDING", isAdmin: true });
+    await expect(rejectUser(contextFor(t.db, leader), { userId: pendingOwner.id })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(deleteUser(contextFor(t.db, leader), { userId: pendingOwner.id })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(approveUser(contextFor(t.db, leader), { userId: pendingOwner.id })).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await statusOf(pendingOwner.id)).toBe("PENDING");
+  });
+
+  it("a stale edit by a non-owner can't undo a promotion to owner that happened meanwhile", async () => {
+    const leader = await makeUser(t.db, { role: "CAPTAIN" });
+    const target = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    // The owner promotes the target after the captain loaded it (simulated by promoting first, then saving
+    // the captain's form, which was built from the old row).
+    await updateUser(adminCtx(), edit(target, { isAdmin: "on" }));
+    await expect(updateUser(contextFor(t.db, leader), edit(target, { name: "Stale save" }))).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await t.db.user.findUniqueOrThrow({ where: { id: target.id } })).toMatchObject({ isAdmin: true, name: target.name });
+  });
+
+  it("owners can make and unmake owners", async () => {
+    const leader = await makeUser(t.db, { role: "BUILD_LEADER" });
+    await updateUser(adminCtx(), edit(leader, { isAdmin: "on" }));
+    expect((await t.db.user.findUniqueOrThrow({ where: { id: leader.id } })).isAdmin).toBe(true);
+    await updateUser(adminCtx(), edit(leader, { isAdmin: undefined }));
+    expect((await t.db.user.findUniqueOrThrow({ where: { id: leader.id } })).isAdmin).toBe(false);
+  });
 });
 
 describe("updateUser", () => {
@@ -308,7 +448,7 @@ describe("updateUser", () => {
     const staleCtx = contextFor(t.db, { ...stale, isAdmin: true });
     const e1 = await updateUser(staleCtx, { ...base(admin), isAdmin: undefined }).catch((e) => e);
     expect(e1).toBeInstanceOf(ConflictError);
-    expect((e1 as ConflictError).message).toMatch(/at least one active admin/);
+    expect((e1 as ConflictError).message).toMatch(/at least one active owner/);
     const e2 = await updateUser(staleCtx, { ...base(admin), isAdmin: "on", status: "DISABLED" }).catch((e) => e);
     expect(e2).toBeInstanceOf(ConflictError);
     // Rolled back.
@@ -458,7 +598,7 @@ describe("sendPasswordResetLink", () => {
 
     // The admin gets the same one-time link back (to pass on privately), and it's the live one.
     expect(resetUrl).toBe(events[0].resetUrl);
-    const token = new URL(resetUrl).searchParams.get("token")!;
+    const token = new URL(resetUrl!).searchParams.get("token")!;
     const row = await t.db.passwordResetToken.findUniqueOrThrow({ where: { tokenHash: hashToken(token) } });
     expect(row).toMatchObject({ userId: m.id, usedAt: null });
     expect(row.expiresAt).toEqual(new Date(TEST_NOW.getTime() + 60 * 60 * 1000));

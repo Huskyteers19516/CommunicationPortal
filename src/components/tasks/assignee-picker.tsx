@@ -26,6 +26,10 @@ export function AssigneePicker({
   taskSubteam,
   error,
   name = "assigneeIds",
+  label = "Assign to",
+  optional = false,
+  hint,
+  maxSelected = null,
   onSelectionChange,
 }: {
   groups: AssigneeGroup[];
@@ -34,6 +38,14 @@ export function AssigneePicker({
   taskSubteam?: "" | Subteam;
   error?: string;
   name?: string;
+  /** Heading of the picker (e.g. "Already on it" for sign-up tasks). */
+  label?: string;
+  /** Adds a light "(optional)" after the label, like other optional fields. */
+  optional?: boolean;
+  /** Short explanation under the heading (read out with the group). */
+  hint?: string;
+  /** Most people who can be picked (a sign-up task's spots). "Select all" won't go past it. Null = no limit. */
+  maxSelected?: number | null;
   onSelectionChange?: (ids: Set<string>) => void;
 }) {
   const baseId = useId();
@@ -74,14 +86,26 @@ export function AssigneePicker({
     if (shortcut && (shortcut.ids.length === 0 || shortcut.ids.every((id) => selected.has(id)))) shortcut = null;
   }
 
+  // With a spot limit, bulk buttons only show when everything they'd add still fits.
+  const fits = (ids: string[]) => maxSelected === null || new Set([...selected, ...ids]).size <= maxSelected;
+  if (shortcut && !fits(shortcut.ids)) shortcut = null;
+  const overLimit = maxSelected !== null && selected.size > maxSelected;
+
   const errorId = `${baseId}-error`;
+  const hintId = `${baseId}-hint`;
+  const limitId = `${baseId}-limit`;
+  const describedBy = [hint && hintId, overLimit && limitId, error && errorId].filter(Boolean).join(" ") || undefined;
 
   return (
-    <fieldset aria-describedby={error ? errorId : undefined} className="min-w-0 space-y-3">
-      <legend className="sr-only">Assign to</legend>
+    <fieldset aria-describedby={describedBy} className="min-w-0 space-y-3">
+      <legend className="sr-only">
+        {label}
+        {optional && " (optional)"}
+      </legend>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p aria-hidden className="text-sm font-medium text-ink-800">
-          Assign to
+          {label}
+          {optional && <span className="ml-1 font-normal text-ink-500">(optional)</span>}
         </p>
         <div className="flex items-center gap-1">
           <span className="text-sm tabular-nums text-ink-600" aria-live="polite">
@@ -94,6 +118,17 @@ export function AssigneePicker({
           )}
         </div>
       </div>
+
+      {hint && (
+        <p id={hintId} className="-mt-2 text-xs text-ink-500">
+          {hint}
+        </p>
+      )}
+      {overLimit && (
+        <p id={limitId} className="text-xs text-amber-800">
+          That&apos;s more people than spots ({maxSelected}). Raise Spots or uncheck someone.
+        </p>
+      )}
 
       {shortcut && (
         <button
@@ -146,14 +181,16 @@ export function AssigneePicker({
                   </span>
                 </h3>
                 <div className="flex shrink-0">
-                  <button
-                    type="button"
-                    className={smallButton}
-                    disabled={visibleIds.every((id) => selected.has(id))}
-                    onClick={() => addAll(visibleIds)}
-                  >
-                    Select all
-                  </button>
+                  {fits(visibleIds) && (
+                    <button
+                      type="button"
+                      className={smallButton}
+                      disabled={visibleIds.every((id) => selected.has(id))}
+                      onClick={() => addAll(visibleIds)}
+                    >
+                      Select all
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={smallButton}

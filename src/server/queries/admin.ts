@@ -6,7 +6,7 @@ import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
 import { env } from "../env";
 import { ForbiddenError } from "../errors";
-import { canAdminister } from "../permissions";
+import { canAdminister, canManageAccount, canViewEmailLog } from "../permissions";
 import { NO_ACTIVITY } from "../services/admin";
 
 // Read-only loaders for the Admin area. Pages call requireAdminUser() first; these re-check anyway.
@@ -32,6 +32,7 @@ export interface PendingUser {
   email: string;
   role: Role;
   subteam: Subteam | null;
+  isAdmin: boolean;
   createdAt: Date;
 }
 
@@ -42,7 +43,7 @@ export async function getPendingUsers(actor: Actor, db: Db = prisma): Promise<{ 
   const [users, total] = await Promise.all([
     db.user.findMany({
       where,
-      select: { id: true, name: true, email: true, role: true, subteam: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, subteam: true, isAdmin: true, createdAt: true },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       take: ADMIN_PAGE_SIZE,
     }),
@@ -250,6 +251,8 @@ export interface UserDetail {
   hasActivity: boolean;
   /** Delete is only for PENDING/REJECTED accounts with no activity at all (and never yourself). Mirrors deleteUser. */
   canDelete: boolean;
+  /** The actor may change this account (owners' accounts: owners only). Mirrors canManageAccount. */
+  canManage: boolean;
   isSelf: boolean;
   /** The email is listed in ADMIN_EMAILS (only matters before the first admin exists). */
   inAdminEmails: boolean;
@@ -306,7 +309,9 @@ export async function getUserDetail(actor: Actor, id: string, db: Db = prisma, n
     questionsAsked: user._count.questionsAsked,
     activeSessions,
     hasActivity: noActivity === 0,
-    canDelete: !isSelf && (user.status === "PENDING" || user.status === "REJECTED") && noActivity === 1,
+    canDelete:
+      !isSelf && canManageAccount(actor, user) && (user.status === "PENDING" || user.status === "REJECTED") && noActivity === 1,
+    canManage: isSelf || canManageAccount(actor, user),
     isSelf,
     inAdminEmails: env.adminEmails.includes(user.email.toLowerCase()),
   };
@@ -342,7 +347,7 @@ export async function listEmailLogs(
   filters: EmailLogFilters,
   db: Db = prisma,
 ): Promise<{ logs: EmailLogItem[]; total: number; page: number; pageCount: number }> {
-  assertAdmin(actor);
+  if (!canViewEmailLog(actor)) throw new ForbiddenError();
   const where: Prisma.EmailLogWhereInput = filters.status ? { status: filters.status } : {};
   const total = await db.emailLog.count({ where });
   const { page, pageCount, skip } = pageInfo(total, filters.page);

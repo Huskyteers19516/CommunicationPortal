@@ -2,8 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Actor } from "@/server/actor";
 import {
   canAssignTo,
+  canManageCategories,
   canManageTask,
   canReviewAssignment,
+  canSignUpForTask,
   canViewMemberProgress,
   canViewQuestion,
   hasAllScope,
@@ -188,5 +190,38 @@ describe("specific rules", () => {
     expect(canTransition("SUBMITTED", "reject")).toBe(true);
     expect(canTransition("APPROVED", "reopen")).toBe(true);
     expect(canTransition("SUBMITTED", "reopen")).toBe(false);
+  });
+});
+
+describe("task dashboard rules", () => {
+  it("categories: subteam leaders manage their own list; all-scope staff manage every list and the whole-team one", () => {
+    const p = people;
+    const lists = ["SOFTWARE", "BUILD", "BUSINESS", null] as const;
+    const allowed = (actor: Actor) => lists.filter((s) => canManageCategories(actor, s));
+    for (const who of [p.captain, p.mentor, p.teacher, p.admin]) expect(allowed(who)).toEqual([...lists]);
+    expect(allowed(p.swLead)).toEqual(["SOFTWARE"]);
+    expect(allowed(p.buildLead1)).toEqual(["BUILD"]);
+    expect(allowed(p.bizLead)).toEqual(["BUSINESS"]);
+    for (const who of [p.swMember, p.buildMember, p.bizMember, p.disabledMember]) expect(allowed(who)).toEqual([]);
+    // Role-wise a pending leader looks like a leader — services also require an ACTIVE account.
+    expect(allowed(p.pendingLead)).toEqual(["BUILD"]);
+  });
+
+  it("sign-up: open tasks for your own subteam, or whole-team tasks for anyone", () => {
+    const p = people;
+    const build = { subteam: "BUILD" as const, signupOpen: true };
+    const team = { subteam: null, signupOpen: true };
+    expect(canSignUpForTask(p.buildMember, build)).toBe(true);
+    expect(canSignUpForTask(p.buildLead1, build)).toBe(true);
+    expect(canSignUpForTask(p.swMember, build)).toBe(false);
+    expect(canSignUpForTask(p.swLead, build)).toBe(false);
+    // No subteam (captain, mentors, teachers): only whole-team tasks.
+    expect(canSignUpForTask(p.captain, build)).toBe(false);
+    expect(canSignUpForTask(p.captain, team)).toBe(true);
+    for (const who of Object.values(p)) expect(canSignUpForTask(who, team), who.name).toBe(true);
+    for (const who of Object.values(p)) {
+      expect(canSignUpForTask(who, { ...build, signupOpen: false }), who.name).toBe(false);
+      expect(canSignUpForTask(who, { ...team, signupOpen: false }), who.name).toBe(false);
+    }
   });
 });

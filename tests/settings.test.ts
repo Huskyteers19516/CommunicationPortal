@@ -9,11 +9,13 @@ import {
   canBeQuestionRecipient,
   canCreateTask,
   canReviewAssignment,
+  canSignUpForTask,
   canViewQuestion,
 } from "@/server/permissions";
 import {
   changePassword,
   editablePrefKeys,
+  resourceEmailScope,
   getSettings,
   signOutOtherDevices,
   updateNotificationPrefs,
@@ -65,6 +67,7 @@ const prefsOf = (db: Db, id: string) =>
       emailOnReview: true,
       emailOnAssigned: true,
       emailOnSignup: true,
+      emailOnResource: true,
     },
   });
 
@@ -252,6 +255,7 @@ describe("updateNotificationPrefs", () => {
       emailOnQuestion: true,
       emailOnSubmission: true,
       emailOnSignup: false,
+      emailOnResource: true,
     });
     expect(ctx.notifier.events).toEqual([]);
   });
@@ -263,7 +267,7 @@ describe("updateNotificationPrefs", () => {
     expect(prefs).toMatchObject({ emailOnReply: false, emailOnReview: false, emailOnAssigned: false, emailOnQuestion: true, emailOnSubmission: true });
   });
 
-  it("leaders can change question/submission emails but not the admin signup email", async () => {
+  it("leaders can change question/submission emails and, with admin access, the approval emails", async () => {
     const leader = await makeUser(t.db, { role: "BUILD_LEADER", prefs: { emailOnSignup: false } });
     await updateNotificationPrefs(contextFor(t.db, leader), {
       emailOnReply: "on",
@@ -271,13 +275,14 @@ describe("updateNotificationPrefs", () => {
       emailOnSubmission: "on",
       emailOnSignup: "on",
     });
-    expect(await prefsOf(t.db, leader.id)).toEqual({
+    expect(await prefsOf(t.db, leader.id)).toMatchObject({
       emailOnReply: true,
       emailOnReview: true,
       emailOnAssigned: false,
       emailOnQuestion: false,
       emailOnSubmission: true,
-      emailOnSignup: false,
+      emailOnSignup: true,
+      emailOnResource: false,
     });
   });
 
@@ -285,7 +290,14 @@ describe("updateNotificationPrefs", () => {
     for (const role of ["MENTOR", "TEACHER", "CAPTAIN"] as const) {
       const person = await makeUser(t.db, { role });
       await updateNotificationPrefs(contextFor(t.db, person), { emailOnQuestion: "on" });
-      expect(await prefsOf(t.db, person.id)).toMatchObject({ emailOnQuestion: true, emailOnSubmission: false, emailOnSignup: true });
+      expect(await prefsOf(t.db, person.id)).toMatchObject({
+        emailOnQuestion: true,
+        emailOnSubmission: false,
+        emailOnSignup: false,
+        // Resource approval emails go to owners, subteam leaders, and captains — mentors/teachers don't
+        // get them, so their switch isn't shown or changed.
+        emailOnResource: role === "CAPTAIN" ? false : true,
+      });
     }
   });
 
@@ -299,6 +311,7 @@ describe("updateNotificationPrefs", () => {
       emailOnQuestion: true,
       emailOnSubmission: false,
       emailOnSignup: false,
+      emailOnResource: false,
     });
     await updateNotificationPrefs(contextFor(t.db, admin), { emailOnSignup: "true" });
     expect((await prefsOf(t.db, admin.id)).emailOnSignup).toBe(true);
@@ -314,7 +327,7 @@ describe("updateNotificationPrefs", () => {
     const reload = async () => (await getSettings(t.db, leader, { currentSessionTokenHash: null, now: TEST_NOW }))!.prefs;
 
     // Flip "Someone checks off a task I assigned" off.
-    await updateNotificationPrefs(ctx, { emailOnReply: "on", emailOnReview: "on", emailOnQuestion: "on" });
+    await updateNotificationPrefs(ctx, { emailOnReply: "on", emailOnReview: "on", emailOnQuestion: "on", emailOnResource: "on" });
     expect(await reload()).toEqual({
       emailOnReply: true,
       emailOnReview: true,
@@ -322,11 +335,18 @@ describe("updateNotificationPrefs", () => {
       emailOnQuestion: true,
       emailOnSubmission: false,
       emailOnSignup: false,
+      emailOnResource: true,
     });
 
     // Then "I'm assigned a new task" on: the earlier change stays saved.
-    await updateNotificationPrefs(ctx, { emailOnReply: "on", emailOnReview: "on", emailOnAssigned: "on", emailOnQuestion: "on" });
-    expect(await reload()).toMatchObject({ emailOnAssigned: true, emailOnSubmission: false });
+    await updateNotificationPrefs(ctx, {
+      emailOnReply: "on",
+      emailOnReview: "on",
+      emailOnAssigned: "on",
+      emailOnQuestion: "on",
+      emailOnResource: "on",
+    });
+    expect(await reload()).toMatchObject({ emailOnAssigned: true, emailOnSubmission: false, emailOnResource: true });
 
     // A failed save (signed-out / inactive account) changes nothing, so the switches fall back to these values.
     const before = await reload();
@@ -351,14 +371,39 @@ describe("updateNotificationPrefs", () => {
       "emailOnReview",
       "emailOnAssigned",
     ]);
+    // Leaders have admin access, so they also get the approval emails.
     expect(editablePrefKeys({ ...base, role: "SOFTWARE_LEADER", subteam: "SOFTWARE", isAdmin: false })).toEqual([
       "emailOnReply",
       "emailOnReview",
       "emailOnAssigned",
       "emailOnQuestion",
       "emailOnSubmission",
+      "emailOnSignup",
+      "emailOnResource",
     ]);
     expect(editablePrefKeys({ ...base, role: "CAPTAIN", isAdmin: true })).toContain("emailOnSignup");
+    expect(editablePrefKeys({ ...base, role: "MENTOR", isAdmin: false })).toContain("emailOnSignup");
+    expect(editablePrefKeys({ ...base, role: "MENTOR", isAdmin: false })).not.toContain("emailOnResource");
+    expect(editablePrefKeys({ ...base, role: "MENTOR", isAdmin: true })).toContain("emailOnResource");
+  });
+
+  it("resourceEmailScope: whose shared resources email this person (matches resourceSubmittedRecipients)", () => {
+    const base = { id: "x", subteam: null };
+    // Owners: every member's.
+    expect(resourceEmailScope({ ...base, role: "MEMBER", subteam: "BUILD", isAdmin: true })).toEqual({ kind: "all" });
+    expect(resourceEmailScope({ ...base, role: "BUILD_LEADER", subteam: "BUILD", isAdmin: true })).toEqual({ kind: "all" });
+    // Subteam leaders: their own subteam's members.
+    expect(resourceEmailScope({ ...base, role: "BUILD_LEADER", subteam: "BUILD", isAdmin: false })).toEqual({
+      kind: "subteam",
+      subteam: "BUILD",
+    });
+    expect(resourceEmailScope({ ...base, role: "SOFTWARE_LEADER", isAdmin: false })).toEqual({ kind: "subteam", subteam: "SOFTWARE" });
+    // The captain: only when a member's subteam has no active leader (or they have no subteam).
+    expect(resourceEmailScope({ ...base, role: "CAPTAIN", isAdmin: false })).toEqual({ kind: "fallback" });
+    // Never: mentors, teachers, members.
+    for (const role of ["MENTOR", "TEACHER", "MEMBER"] as const) {
+      expect(resourceEmailScope({ ...base, role, subteam: role === "MEMBER" ? "BUILD" : null, isAdmin: false }), role).toBeNull();
+    }
   });
 
   it("refuses accounts that aren't active", async () => {
@@ -494,6 +539,40 @@ describe("demo seed", () => {
     expect(tasks.some((x) => x.subteam === null)).toBe(true);
     expect(new Set(tasks.map((x) => x.subteam)).size).toBe(4);
 
+    // Task dashboard: categories per subteam, tasks sorted into their own subteam's categories, sign-up tasks.
+    const categories = await db.taskCategory.findMany({ orderBy: [{ subteam: "asc" }, { position: "asc" }] });
+    expect(categories).toHaveLength(result.counts.categories);
+    expect(categories.filter((c) => c.subteam === "BUILD").map((c) => c.name)).toEqual([
+      "Intake",
+      "Outtake",
+      "Drivetrain",
+      "Lift",
+      "CAD & Design",
+    ]);
+    expect(new Set(categories.map((c) => c.subteam))).toEqual(new Set(["SOFTWARE", "BUILD", "BUSINESS", null]));
+    const categoryById = new Map(categories.map((c) => [c.id, c]));
+    for (const task of tasks) {
+      if (task.categoryId) expect(categoryById.get(task.categoryId)?.subteam, task.title).toBe(task.subteam);
+    }
+    expect(tasks.some((x) => !x.categoryId)).toBe(true);
+    const signupTasks = tasks.filter((x) => x.signupOpen);
+    expect(signupTasks.length).toBeGreaterThanOrEqual(3);
+    expect(signupTasks.some((x) => x.subteam === null)).toBe(true);
+    expect(signupTasks.some((x) => x.signupLimit === null)).toBe(true);
+    expect(signupTasks.some((x) => x.signupLimit !== null && x.assignments.length >= x.signupLimit)).toBe(true); // full
+    expect(signupTasks.some((x) => x.signupLimit !== null && x.assignments.length < x.signupLimit && x.assignments.some((a) => a.selfAssigned))).toBe(true);
+    for (const task of signupTasks) {
+      if (task.signupLimit !== null) expect(task.assignments.length, task.title).toBeLessThanOrEqual(task.signupLimit);
+    }
+    // Self sign-ups only on sign-up tasks, only by people allowed to sign up, and never checked off yet.
+    for (const task of tasks) {
+      for (const a of task.assignments.filter((x) => x.selfAssigned)) {
+        expect(task.signupOpen, task.title).toBe(true);
+        expect(canSignUpForTask(byId.get(a.userId)!, task), task.title).toBe(true);
+        expect(a.status).toBe("TODO");
+      }
+    }
+
     // Checklist items
     const assignments = await db.taskAssignment.findMany({ include: { task: true } });
     expect(assignments).toHaveLength(result.counts.assignments);
@@ -549,6 +628,22 @@ describe("demo seed", () => {
       const latest = Math.max(q.createdAt.getTime(), ...q.replies.map((r) => r.createdAt.getTime()));
       expect(q.lastActivityAt.getTime()).toBe(latest);
     }
+
+    // Resources: members' shares in every state, including an uploaded file.
+    const resources = await db.resource.findMany({ include: { file: true } });
+    expect(new Set(resources.map((r) => r.status))).toEqual(new Set(["PENDING", "APPROVED", "REJECTED"]));
+    for (const r of resources) {
+      expect(byId.get(r.createdById!)?.status).toBe("ACTIVE");
+      if (r.status === "PENDING") expect(r.reviewedById).toBeNull();
+      else if (r.reviewedById) expect(byId.get(r.reviewedById)?.role).not.toBe("MEMBER");
+      if (r.status === "REJECTED") expect(r.reviewNote).toBeTruthy();
+      if (r.file) expect(r.url).toBe("");
+      else expect(r.url).toMatch(/^https:\/\//);
+    }
+    const code = resources.find((r) => r.file);
+    expect(code).toMatchObject({ status: "APPROVED", type: "CODE", file: { filename: "TeleOpMain.java" } });
+    expect(new TextDecoder().decode(code!.file!.data)).toContain("public class TeleOpMain");
+    expect(code!.file!.size).toBe(code!.file!.data.byteLength);
   });
 
   it("refuses to run on a database that already has users", async () => {
@@ -564,15 +659,22 @@ describe("demo seed", () => {
     await s.db.emailLog.create({ data: { to: "x@example.com", subject: "old", kind: "test", status: "SKIPPED" } });
     await s.db.rateLimit.create({ data: { key: "old", count: 1, windowStart: TEST_NOW } });
     await s.db.user.create({ data: { name: "Extra", email: "extra@example.com", passwordHash: await hashPassword("whatever-123"), role: "MEMBER", subteam: "BUILD" } });
+    const resourcesBefore = await s.db.resource.count();
+    const filesBefore = await s.db.resourceFile.count();
 
     const result = await seed(s.db, { now: TEST_NOW, timezone: TEST_TZ, reset: true });
     expect(await s.db.user.count()).toBe(27);
     expect(await s.db.task.count()).toBe(result.counts.tasks);
     expect(await s.db.taskAssignment.count()).toBe(result.counts.assignments);
     expect(await s.db.question.count()).toBe(result.counts.questions);
+    expect(await s.db.taskCategory.count()).toBe(result.counts.categories);
     expect(await s.db.session.count()).toBe(0);
     expect(await s.db.emailLog.count()).toBe(0);
     expect(await s.db.rateLimit.count()).toBe(0);
     expect(await s.db.user.findUnique({ where: { email: "extra@example.com" } })).toBeNull();
+    // Resources (and their uploaded files, which cascade) are replaced, not duplicated.
+    expect(await s.db.resource.count()).toBe(resourcesBefore);
+    expect(await s.db.resourceFile.count()).toBe(filesBefore);
+    expect(filesBefore).toBeGreaterThan(0);
   });
 });

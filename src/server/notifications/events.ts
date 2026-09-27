@@ -21,7 +21,14 @@ export type NotificationEvent =
   /** Password reset requested. Recipient: that user. `resetUrl` contains the one-time token. */
   | { type: "password.reset"; userId: string; resetUrl: string }
   /** The password was changed (settings or reset link). Recipient: that user — a security notice. */
-  | { type: "password.changed"; userId: string };
+  | { type: "password.changed"; userId: string }
+  /**
+   * A member shared (or edited and re-sent) a resource that needs approval. Recipients: owners plus the
+   * leaders of the member's subteam (captains when there are none).
+   */
+  | { type: "resource.submitted"; resourceId: string }
+  /** Someone approved or turned down a member's resource. Recipient: the person who shared it. */
+  | { type: "resource.reviewed"; resourceId: string };
 
 export type NotificationType = NotificationEvent["type"];
 

@@ -1,4 +1,4 @@
-import { FolderKanban, Plus, SearchX } from "lucide-react";
+import { FolderKanban, Plus, SearchX, Tags } from "lucide-react";
 import type { Metadata } from "next";
 import { FilterChips, ToggleChip } from "@/components/tasks/filter-chips";
 import { TaskListItem } from "@/components/tasks/task-list-item";
@@ -71,10 +71,16 @@ export default async function ManageTasksPage({ searchParams }: PageProps<"/mana
         title="Tasks"
         description={allScope ? "Assign work to the team and track it." : "Assign work to your subteam and track it."}
         actions={
-          <ButtonLink href="/manage/tasks/new">
-            <Plus className="size-4" aria-hidden />
-            New task
-          </ButtonLink>
+          <>
+            <ButtonLink href="/manage/categories" variant="secondary">
+              <Tags className="size-4" aria-hidden />
+              Categories
+            </ButtonLink>
+            <ButtonLink href="/manage/tasks/new">
+              <Plus className="size-4" aria-hidden />
+              New task
+            </ButtonLink>
+          </>
         }
       />
 

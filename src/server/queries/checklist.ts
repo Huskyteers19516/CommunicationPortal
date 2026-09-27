@@ -25,6 +25,8 @@ export interface ChecklistItemData {
     dueDate: DateOnly;
     priority: Priority;
     creatorName: string;
+    /** Task dashboard category (e.g. "Intake"), if any. */
+    categoryName: string | null;
   };
 }
 
@@ -47,6 +49,7 @@ const itemSelect = {
       dueDate: true,
       priority: true,
       createdBy: { select: { name: true } },
+      category: { select: { name: true } },
     },
   },
 } satisfies Prisma.TaskAssignmentSelect;
@@ -70,6 +73,7 @@ function toItem(row: ItemRow): ChecklistItemData {
       dueDate: dbToDateOnly(row.task.dueDate),
       priority: row.task.priority,
       creatorName: row.task.createdBy.name,
+      categoryName: row.task.category?.name ?? null,
     },
   };
 }

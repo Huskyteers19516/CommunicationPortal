@@ -55,13 +55,20 @@ export function canManageTask(actor: ActorLike, task: { createdById: string; sub
   return task.createdById === actor.id || canManageSubteam(actor, task.subteam);
 }
 
-/** See a task: managers, plus anyone it is assigned to. */
-export function canViewTask(
-  actor: ActorLike,
-  task: { createdById: string; subteam: Subteam | null },
-  assigneeIds: readonly string[],
-): boolean {
-  return canManageTask(actor, task) || assigneeIds.includes(actor.id);
+// Seeing a task needs no rule: every task is on the Task dashboard, which every ACTIVE person can open.
+
+/** Add, rename, reorder, and delete the task categories of `subteam` (null = whole-team categories). */
+export function canManageCategories(actor: ActorLike, subteam: Subteam | null): boolean {
+  return canManageSubteam(actor, subteam);
+}
+
+/**
+ * Sign yourself up for a task from the Task dashboard: sign-ups must be open, and the task must be
+ * for your subteam (whole-team tasks: anyone). Spots, due date, and "already on it" are checked by the service.
+ */
+export function canSignUpForTask(actor: ActorLike, task: { subteam: Subteam | null; signupOpen: boolean }): boolean {
+  if (!task.signupOpen) return false;
+  return task.subteam === null || actor.subteam === task.subteam;
 }
 
 /**
@@ -109,9 +116,77 @@ export function canBeQuestionRecipient(user: { id: string; role: Role; status: A
   return user.status === "ACTIVE" && (STAFF_ROLES.includes(user.role) || user.isAdmin);
 }
 
-/** Approve/reject accounts, change roles, disable users. */
-export function canAdminister(actor: ActorLike): boolean {
+/** The site owner(s) (`isAdmin` flag). Only owners can change owners' accounts or make someone an owner. */
+export function isOwner(actor: ActorLike): boolean {
   return actor.isAdmin;
+}
+
+/**
+ * The Admin area: approve sign-ups and member resources, manage people, email log.
+ * Owners plus every leader, the captain, mentors, and teachers.
+ */
+export function canAdminister(actor: ActorLike): boolean {
+  return isStaff(actor);
+}
+
+/**
+ * How much a position can do, for the guardrails on admin access: members < subteam leaders <
+ * captain/mentors/teachers. Owners (the `isAdmin` flag) are above everyone.
+ */
+export const ROLE_RANK: Record<Role, number> = {
+  MEMBER: 0,
+  SOFTWARE_LEADER: 1,
+  BUILD_LEADER: 1,
+  BUSINESS_LEADER: 1,
+  CAPTAIN: 2,
+  MENTOR: 2,
+  TEACHER: 2,
+};
+
+type AccountLike = { id: string; role: Role; status: AccountStatus; isAdmin: boolean };
+
+function isWaiting(status: AccountStatus): boolean {
+  return status === "PENDING" || status === "REJECTED";
+}
+
+/**
+ * Change someone's account in Admin → People (edit, approve/reject, reset password, sign out, delete).
+ * - Owners: anyone.
+ * - Everyone else with admin access: never an owner; active accounts ranked below their own position
+ *   (leaders → members; captain/mentors/teachers → leaders and members); sign-ups waiting for approval
+ *   up to their own rank (so leaders can approve new leaders); and their own account.
+ * Without this, a leader could turn a second account into a mentor, or take over the captain's account.
+ */
+export function canManageAccount(actor: ActorLike, target: AccountLike): boolean {
+  if (!canAdminister(actor)) return false;
+  if (isOwner(actor)) return true;
+  if (target.isAdmin) return false;
+  if (target.id === actor.id) return true;
+  const rank = ROLE_RANK[target.role];
+  return isWaiting(target.status) ? rank <= ROLE_RANK[actor.role] : rank < ROLE_RANK[actor.role];
+}
+
+/**
+ * A position someone with admin access may give an account: owners any; others only below their own
+ * rank, or — when approving a sign-up — up to their own rank.
+ */
+export function canGrantRole(actor: ActorLike, role: Role, opts: { approving?: boolean } = {}): boolean {
+  if (!canAdminister(actor)) return false;
+  if (isOwner(actor)) return true;
+  return opts.approving ? ROLE_RANK[role] <= ROLE_RANK[actor.role] : ROLE_RANK[role] < ROLE_RANK[actor.role];
+}
+
+/** Positions this admin may give (for the Position menus). */
+export function grantableRoles(actor: ActorLike, opts: { approving?: boolean } = {}): Role[] {
+  return (Object.keys(ROLE_RANK) as Role[]).filter((r) => canGrantRole(actor, r, opts));
+}
+
+/**
+ * The email log shows every notification's subject (e.g. who was sent back, private question titles),
+ * so it stays with the owners.
+ */
+export function canViewEmailLog(actor: ActorLike): boolean {
+  return isOwner(actor);
 }
 
 /** Can open the Manage area (dashboard, tasks, review, progress). */
@@ -127,7 +202,33 @@ export function canViewMemberProgress(actor: ActorLike, member: { id: string; su
   return led !== null && member.subteam === led;
 }
 
-/** Add, edit, and remove links on the Resources page (everyone ACTIVE can view them). */
+/**
+ * Add resources that go live right away, and edit / remove / pin anyone's resources.
+ * Everyone else (members) can still share resources, but theirs wait for approval (see canReviewResources).
+ */
 export function canManageResources(actor: ActorLike): boolean {
-  return isStaff(actor);
+  return canAdminister(actor);
+}
+
+/** Approve or turn down resources that members shared. */
+export function canReviewResources(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
+type ResourceLike = { status: "PENDING" | "APPROVED" | "REJECTED"; createdById: string | null };
+
+/** Approved resources: everyone. Pending / turned-down ones: the person who shared it and reviewers. */
+export function canViewResource(actor: ActorLike, r: ResourceLike): boolean {
+  return r.status === "APPROVED" || r.createdById === actor.id || canReviewResources(actor);
+}
+
+/** Managers: any resource. Members: their own, until it is approved (editing sends it back for approval). */
+export function canEditResource(actor: ActorLike, r: ResourceLike): boolean {
+  if (canManageResources(actor)) return true;
+  return r.createdById === actor.id && r.status !== "APPROVED";
+}
+
+/** Managers: any resource. Members: anything they shared themselves. */
+export function canDeleteResource(actor: ActorLike, r: ResourceLike): boolean {
+  return canManageResources(actor) || (r.createdById !== null && r.createdById === actor.id);
 }

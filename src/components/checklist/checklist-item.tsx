@@ -15,7 +15,7 @@ import {
   useTransition,
 } from "react";
 import { submitAction, updateNoteAction, withdrawAction } from "@/app/(app)/today/actions";
-import { DueBadge, PriorityBadge, SubteamBadge } from "@/components/app/badges";
+import { CategoryBadge, DueBadge, PriorityBadge, SubteamBadge } from "@/components/app/badges";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, Label, Textarea } from "@/components/ui/field";
@@ -220,7 +220,7 @@ export function ChecklistItem({
         <div className="min-w-0 flex-1">
           <p
             className={cn(
-              "break-words font-medium leading-snug",
+              "font-medium leading-snug wrap-anywhere",
               approved ? "text-ink-500 line-through decoration-ink-300" : "text-ink-900",
             )}
           >
@@ -229,6 +229,7 @@ export function ChecklistItem({
 
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <SubteamBadge subteam={task.subteam} />
+            <CategoryBadge name={task.categoryName} />
             <PriorityBadge priority={task.priority} />
             {showDue && <DueBadge due={task.dueDate} today={today} done={!onMyPlate} />}
           </div>

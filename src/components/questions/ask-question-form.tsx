@@ -11,9 +11,10 @@ import { type ActionState, initialActionState } from "@/lib/action-state";
 import { cn } from "@/lib/cn";
 import { LIMITS, SUBTEAM_LABELS, SUBTEAMS } from "@/lib/constants";
 import { type DateOnly, formatDateOnly } from "@/lib/dates";
-import type { AskTaskOption, RecipientGroup } from "@/server/queries/questions";
+import type { AskAboutTask, AskTaskOption, RecipientGroup } from "@/server/queries/questions";
 
-type Choice = "leaders" | "captain" | "person";
+/** "leaders" = the asker's own subteam leaders; "taskLeaders" = the leaders of the task asked about. */
+type Choice = "leaders" | "taskLeaders" | "captain" | "person";
 
 export interface AskQuestionFormProps {
   action: (prev: ActionState, formData: FormData) => Promise<ActionState>;
@@ -24,6 +25,10 @@ export interface AskQuestionFormProps {
   recipientGroups: RecipientGroup[];
   tasks: AskTaskOption[];
   defaultTaskId: string | null;
+  /** Asked from a task's page: shown at the top, and its subteam's leaders (or the captain) are picked. */
+  aboutTask?: AskAboutTask | null;
+  /** Where Cancel goes (back to the task when asked from one). */
+  cancelHref?: string;
   today: DateOnly;
   /** Questions to leaders/the captain are also posted to the leaders-only Discord channel. */
   discordEnabled?: boolean;
@@ -83,6 +88,8 @@ export function AskQuestionForm({
   recipientGroups,
   tasks,
   defaultTaskId,
+  aboutTask = null,
+  cancelHref = "/questions",
   today,
   discordEnabled = false,
 }: AskQuestionFormProps) {
@@ -91,14 +98,31 @@ export function AskQuestionForm({
   const hasSubteamLeaders = !!actorSubteam && recipientGroups.some((g) => g.key === "subteam");
   const hasCaptain = recipientGroups.some((g) => g.key === "captain");
   const hasAnyone = recipientGroups.length > 0;
-  const fallback: Choice = hasSubteamLeaders ? "leaders" : !actorIsCaptain ? "captain" : "person";
-  const [choice, setChoice] = useState<Choice>(fallback);
+  const noLeaders: Choice = !actorIsCaptain ? "captain" : "person";
+  const fallback: Choice = hasSubteamLeaders ? "leaders" : noLeaders;
+  // Another subteam's task goes to that subteam's leaders (the asker's own leaders don't run it).
+  const taskSubteam = aboutTask?.subteam ?? null;
+  const otherSubteamTask = !!taskSubteam && taskSubteam !== actorSubteam;
+  const offerTaskLeaders = otherSubteamTask && !!aboutTask?.subteamHasLeaders;
+  const initialChoice: Choice = !aboutTask
+    ? fallback
+    : taskSubteam === null
+      ? noLeaders // whole-team task → the captain
+      : offerTaskLeaders
+        ? "taskLeaders"
+        : otherSubteamTask
+          ? noLeaders // that subteam has no leaders yet
+          : fallback;
+  const [choice, setChoice] = useState<Choice>(initialChoice);
 
   const v = state?.values;
   const errors = state?.fieldErrors ?? {};
   const upcoming = tasks.filter((t) => t.upcoming);
   const recent = tasks.filter((t) => !t.upcoming);
   const taskDefault = v?.taskId ?? (defaultTaskId && tasks.some((t) => t.taskId === defaultTaskId) ? defaultTaskId : "");
+  // Which task is picked below, so "About:" at the top only shows while it's still the one from the task page.
+  const [pickedTaskId, setPickedTaskId] = useState(taskDefault);
+  const choiceCount = (actorSubteam ? 1 : 0) + (offerTaskLeaders ? 1 : 0) + (actorIsCaptain ? 0 : 1) + 1;
   const taskLabel = (t: AskTaskOption) => `${t.title} · due ${formatDateOnly(t.dueDate, today)}`;
   // React resets the form after every submit, but a <select> only applies defaultValue when it mounts.
   // A new key per submission remounts the selects so they come back with what the user picked.
@@ -108,13 +132,36 @@ export function AskQuestionForm({
     <form action={formAction} className="space-y-6">
       <FormMessage state={state} />
 
+      {aboutTask && pickedTaskId === aboutTask.id && (
+        <div className="rounded-lg border border-ink-200 bg-ink-50 px-3.5 py-2.5 text-sm">
+          <p className="text-ink-800 wrap-anywhere">
+            <span className="text-ink-500">About: </span>
+            <span className="font-medium">{aboutTask.title}</span>
+          </p>
+          <p className="mt-0.5 text-xs text-ink-500">
+            {taskSubteam ? `${SUBTEAM_LABELS[taskSubteam]} task` : "Whole-team task"} · posted by {aboutTask.createdByName}
+          </p>
+        </div>
+      )}
+
       <fieldset className="space-y-2">
         <legend className="mb-2 text-sm font-medium text-ink-800">Who should answer?</legend>
         <input type="hidden" name="to" value={choice === "person" ? "person" : "subteam"} />
         {choice === "leaders" && <input type="hidden" name="subteam" value={actorSubteam ?? ""} />}
+        {choice === "taskLeaders" && <input type="hidden" name="subteam" value={taskSubteam ?? ""} />}
         {choice === "captain" && <input type="hidden" name="subteam" value="" />}
 
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className={cn("grid gap-2", choiceCount > 3 ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
+          {offerTaskLeaders && taskSubteam && (
+            <ChoiceCard
+              value="taskLeaders"
+              checked={choice === "taskLeaders"}
+              onSelect={setChoice}
+              icon={Users}
+              title={`${SUBTEAM_LABELS[taskSubteam]} leaders`}
+              description="They run this task."
+            />
+          )}
           {actorSubteam && (
             <ChoiceCard
               value="leaders"
@@ -139,7 +186,13 @@ export function AskQuestionForm({
               onSelect={setChoice}
               icon={Crown}
               title="Captain"
-              description={hasCaptain ? "For whole-team questions." : "No captain yet — mentors and teachers will see it."}
+              description={
+                !hasCaptain
+                  ? "No captain yet — mentors and teachers will see it."
+                  : aboutTask && taskSubteam === null
+                    ? "They run whole-team tasks."
+                    : "For whole-team questions."
+              }
             />
           )}
           <ChoiceCard
@@ -188,7 +241,7 @@ export function AskQuestionForm({
             <Select
               id="subteam"
               name="subteam"
-              defaultValue={v?.subteam ?? actorSubteam ?? ""}
+              defaultValue={v?.subteam ?? (aboutTask ? (taskSubteam ?? "") : (actorSubteam ?? ""))}
               invalid={!!errors.subteam}
               aria-describedby="subteam-error"
             >
@@ -236,6 +289,7 @@ export function AskQuestionForm({
             id="taskId"
             name="taskId"
             defaultValue={taskDefault}
+            onChange={(e) => setPickedTaskId(e.target.value)}
             invalid={!!errors.taskId}
             aria-describedby="taskId-error"
           >
@@ -263,7 +317,7 @@ export function AskQuestionForm({
       )}
 
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <ButtonLink href="/questions" variant="secondary" className="w-full sm:w-auto">
+        <ButtonLink href={cancelHref} variant="secondary" className="w-full sm:w-auto">
           Cancel
         </ButtonLink>
         <SubmitButton pendingText="Sending…" className="w-full sm:w-auto">

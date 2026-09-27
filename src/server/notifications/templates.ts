@@ -3,9 +3,18 @@
 // in exactly one place (render()), so user content can never inject HTML or mail headers.
 //
 // No "server-only" / next/* imports: this runs inside after() and in tests.
-import type { Priority, Role, Subteam } from "@/generated/prisma/enums";
-import { APP_NAME, PRIORITY_LABELS, ROLE_LABELS, SUBTEAM_LABELS, TEAM_NAME, TEAM_NUMBER } from "@/lib/constants";
+import type { Priority, ResourceType, Role, Subteam } from "@/generated/prisma/enums";
+import {
+  APP_NAME,
+  PRIORITY_LABELS,
+  RESOURCE_TYPE_LABELS,
+  ROLE_LABELS,
+  SUBTEAM_LABELS,
+  TEAM_NAME,
+  TEAM_NUMBER,
+} from "@/lib/constants";
 import { type DateOnly, daysBetween, formatDateOnly } from "@/lib/dates";
+import { formatFileSize } from "@/lib/files";
 
 export interface EmailContent {
   subject: string;
@@ -552,5 +561,89 @@ export function passwordChangedEmail(input: PasswordChangedInput): EmailContent 
     ],
     cta: { label: "Reset my password", url: joinUrl(input.appUrl, "/forgot-password") },
     footer: "none",
+  });
+}
+
+export interface ResourceSubmittedInput extends TemplateBase {
+  resource: {
+    id: string;
+    title: string;
+    description: string;
+    type: ResourceType;
+    url: string;
+    file: { filename: string; size: number } | null;
+  };
+  submitter: EmailPerson;
+}
+
+export function resourceSubmittedEmail(input: ResourceSubmittedInput): EmailContent {
+  const { resource: r, submitter } = input;
+  const description = r.description ? excerpt(r.description) : "";
+  return render({
+    appUrl: input.appUrl,
+    subject: `Approval needed: ${singleLine(submitter.name)} shared ${quoted(r.title)}`,
+    preheader: "The team sees it once someone approves it.",
+    heading: "A resource is waiting for approval",
+    greeting: `Hi ${firstName(input.recipient.name)},`,
+    paragraphs: [
+      [
+        { strong: describe(submitter) },
+        " shared ",
+        { strong: quoted(r.title) },
+        " on the Resources page. The team sees it once someone approves it.",
+      ],
+    ],
+    details: [
+      ["Type", RESOURCE_TYPE_LABELS[r.type]],
+      r.file
+        ? ["File", `${singleLine(r.file.filename)} (${formatFileSize(r.file.size)})`]
+        : ["Link", truncate(singleLine(r.url), 200)],
+    ],
+    quote: description ? { label: "What it is:", text: description } : null,
+    closing: [["Check that it's right for the team, then approve it or say what to change."]],
+    cta: { label: "Review it", url: joinUrl(input.appUrl, `/resources/${encodeURIComponent(r.id)}`) },
+    footer: "preferences",
+  });
+}
+
+export interface ResourceReviewedInput extends TemplateBase {
+  status: "APPROVED" | "REJECTED";
+  resource: { id: string; title: string };
+  reviewerName: string | null;
+  reviewNote: string | null;
+}
+
+export function resourceReviewedEmail(input: ResourceReviewedInput): EmailContent {
+  const { resource: r } = input;
+  const reviewer = input.reviewerName ? singleLine(input.reviewerName) : "A leader";
+  const note = input.reviewNote ? excerpt(input.reviewNote, 1000) : "";
+  const greeting = `Hi ${firstName(input.recipient.name)},`;
+  const cta = { label: "Open it", url: joinUrl(input.appUrl, `/resources/${encodeURIComponent(r.id)}`) };
+  if (input.status === "APPROVED") {
+    return render({
+      appUrl: input.appUrl,
+      subject: `Your resource ${quoted(r.title)} was approved`,
+      preheader: `${reviewer} approved it. The whole team can see it now.`,
+      heading: "Your resource is live",
+      greeting,
+      paragraphs: [
+        [{ strong: reviewer }, " approved ", { strong: quoted(r.title) }, ". Everyone on the team can see it on the Resources page now."],
+      ],
+      quote: note ? { label: `Note from ${reviewer}:`, text: note } : null,
+      cta,
+      footer: "preferences",
+    });
+  }
+  return render({
+    appUrl: input.appUrl,
+    subject: `Your resource ${quoted(r.title)} was sent back`,
+    preheader: note ? preview(note) : `${reviewer} looked at it and sent it back.`,
+    heading: "Your resource was sent back",
+    greeting,
+    paragraphs: [[{ strong: reviewer }, " looked at ", { strong: quoted(r.title) }, " and sent it back to you."]],
+    quote: note ? { label: "Why:", text: note } : null,
+    closing: [["You can change it and send it again, or remove it. Until then only you and the leaders can see it."]],
+    cta,
+    footer: "preferences",
   });
 }

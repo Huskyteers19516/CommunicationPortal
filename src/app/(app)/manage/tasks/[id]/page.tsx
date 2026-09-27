@@ -1,25 +1,47 @@
-import { CopyPlus, MessageCircleQuestionMark, Pencil, RotateCcw, Trash2, UserMinus, Users } from "lucide-react";
+import {
+  CopyPlus,
+  Lock,
+  LockOpen,
+  MessageCircleQuestionMark,
+  Pencil,
+  RotateCcw,
+  SquareKanban,
+  Trash2,
+  UserMinus,
+  Users,
+} from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AssignmentStatusBadge, DueBadge, PriorityBadge, QuestionStatusBadge, SubteamBadge } from "@/components/app/badges";
+import {
+  AssignmentStatusBadge,
+  CategoryBadge,
+  DueBadge,
+  PriorityBadge,
+  QuestionStatusBadge,
+  SignupBadge,
+  SubteamBadge,
+} from "@/components/app/badges";
 import { UserChip } from "@/components/app/user-chip";
 import { ActionForm } from "@/components/tasks/action-form";
 import { BackLink } from "@/components/tasks/back-link";
 import { NoteBlock } from "@/components/tasks/note-block";
 import { ReviewActions } from "@/components/tasks/review-actions";
+import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { RichText } from "@/components/ui/rich-text";
+import { SUBTEAM_LABELS } from "@/lib/constants";
 import { formatDateOnly, timeAgo, todayInTimezone } from "@/lib/dates";
+import { spotsSummary } from "@/lib/signup";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { getManagedTaskDetail, type ManagedAssignment } from "@/server/queries/tasks";
 import { reviewAssignmentAction } from "../../review/actions";
-import { deleteTaskAction, removeAssignmentAction, reopenAssignmentAction } from "../actions";
+import { deleteTaskAction, removeAssignmentAction, reopenAssignmentAction, setSignupOpenAction } from "../actions";
 
 export const metadata: Metadata = { title: "Task" };
 
@@ -37,6 +59,7 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
   const now = currentTime();
   const { counts } = task;
   const allDone = counts.total > 0 && counts.approved === counts.total;
+  const signupTask = task.assignMode === "signup";
   const countParts = [
     counts.approved && `${counts.approved} approved`,
     counts.submitted && `${counts.submitted} waiting for review`,
@@ -48,10 +71,11 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
     <>
       <BackLink href="/manage/tasks">Tasks</BackLink>
       <PageHeader
-        title={<span className="break-words">{task.title}</span>}
+        title={<span className="wrap-anywhere">{task.title}</span>}
         description={
           <>
-            Assigned by {task.createdBy.id === actor.id ? "you" : task.createdBy.name} · due {formatDateOnly(task.dueDate, today)}
+            {signupTask ? "Posted" : "Assigned"} by {task.createdBy.id === actor.id ? "you" : task.createdBy.name} · due{" "}
+            {formatDateOnly(task.dueDate, today)}
           </>
         }
         actions={
@@ -59,6 +83,10 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
             <ButtonLink href={`/manage/tasks/${task.id}/edit`} variant="secondary">
               <Pencil className="size-4" aria-hidden />
               Edit
+            </ButtonLink>
+            <ButtonLink href={`/tasks/${task.id}`} variant="secondary">
+              <SquareKanban className="size-4" aria-hidden />
+              View on dashboard
             </ButtonLink>
             <ButtonLink href={`/manage/tasks/new?from=${encodeURIComponent(task.id)}`} variant="secondary">
               <CopyPlus className="size-4" aria-hidden />
@@ -80,8 +108,15 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
 
       <div className="-mt-3 mb-6 flex flex-wrap gap-1.5">
         <SubteamBadge subteam={task.subteam} />
+        <CategoryBadge name={task.category?.name} />
         <DueBadge due={task.dueDate} today={today} done={allDone} />
         <PriorityBadge priority={task.priority} />
+        <SignupBadge
+          signupMode={signupTask}
+          signupOpen={task.signupOpen}
+          signupLimit={task.signupLimit}
+          spotsTaken={counts.total}
+        />
       </div>
 
       <div className="space-y-4">
@@ -93,22 +128,66 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
               <p className="text-sm text-ink-500">No details were added to this task.</p>
             )}
             <div className="border-t border-ink-100 pt-4">
-              <div className="mb-2 flex items-baseline justify-between gap-3">
+              <div className="flex items-baseline justify-between gap-3">
                 <p className="text-sm font-medium text-ink-800">Progress</p>
-                <p className="text-xs text-ink-500">{counts.total === 0 ? "Nobody assigned" : countParts.join(" · ")}</p>
+                <p className="text-xs text-ink-500">
+                  {counts.total > 0 ? countParts.join(" · ") : signupTask ? "Nobody on it yet" : "Nobody assigned yet"}
+                </p>
               </div>
-              <ProgressBar done={counts.approved} pending={counts.submitted} total={counts.total} />
+              {/* An empty 0/0 bar says nothing. */}
+              {counts.total > 0 && (
+                <ProgressBar className="mt-2" done={counts.approved} pending={counts.submitted} total={counts.total} />
+              )}
             </div>
           </CardBody>
         </Card>
 
+        {signupTask && (
+          <Card>
+            <CardHeader
+              title="Sign-ups"
+              description={
+                task.signupOpen
+                  ? task.subteam
+                    ? `Open — ${SUBTEAM_LABELS[task.subteam]} members can sign themselves up on the Task dashboard.`
+                    : "Open — anyone on the team can sign up on the Task dashboard."
+                  : "Sign-ups are closed."
+              }
+              actions={
+                <ActionForm
+                  action={setSignupOpenAction}
+                  fields={{ taskId: task.id, open: task.signupOpen ? "false" : "true" }}
+                  pendingText={task.signupOpen ? "Closing…" : "Opening…"}
+                >
+                  {task.signupOpen ? <Lock className="size-4" aria-hidden /> : <LockOpen className="size-4" aria-hidden />}
+                  {task.signupOpen ? "Close sign-ups" : "Open sign-ups"}
+                </ActionForm>
+              }
+            />
+            <CardBody>
+              <p className="text-sm text-ink-700">
+                {spotsSummary({ signupOpen: task.signupOpen, signupLimit: task.signupLimit, spotsTaken: counts.total })}
+              </p>
+            </CardBody>
+          </Card>
+        )}
+
         <Card>
-          <CardHeader title={`Assigned people (${counts.total})`} description="Approve submissions so they officially count." />
+          <CardHeader
+            title={`${signupTask ? "People on it" : "Assigned people"} (${counts.total})`}
+            description="Approve submissions so they officially count."
+          />
           {task.assignments.length === 0 ? (
             <EmptyState
               icon={Users}
-              title="Nobody is assigned"
-              description="Edit the task to add people."
+              title={!signupTask ? "Nobody is assigned" : task.signupOpen ? "Nobody has signed up yet" : "Nobody is on it"}
+              description={
+                !signupTask
+                  ? "Edit the task to add people."
+                  : task.signupOpen
+                    ? "People show up here when they sign up. You can also add people yourself."
+                    : "Open sign-ups again, or add people yourself."
+              }
               action={
                 <ButtonLink href={`/manage/tasks/${task.id}/edit`} variant="secondary">
                   Add people
@@ -172,7 +251,10 @@ function AssignmentRow({ assignment: a, now, timeZone }: { assignment: ManagedAs
   return (
     <>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <UserChip name={a.user.name} role={a.user.role} subteam={a.user.subteam} />
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <UserChip name={a.user.name} role={a.user.role} subteam={a.user.subteam} />
+          {a.selfAssigned && <Badge tone="blue">Signed up</Badge>}
+        </div>
         <div className="flex flex-col items-end gap-1">
           <AssignmentStatusBadge status={a.status} />
           {showSubmitted && <span className="text-xs text-ink-500">Submitted {timeAgo(a.submittedAt!, now, timeZone)}</span>}

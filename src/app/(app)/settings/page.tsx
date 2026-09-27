@@ -14,8 +14,8 @@ import { SubmitButton } from "@/components/ui/submit-button";
 import { logoutAction } from "@/server/auth/actions";
 import { getCurrentSessionTokenHash, requireActiveUser } from "@/server/auth/session";
 import { prisma } from "@/server/db";
-import { isStaff } from "@/server/permissions";
-import { getSettings } from "@/server/services/settings";
+import { canAdminister, isStaff } from "@/server/permissions";
+import { editablePrefKeys, getSettings, resourceEmailScope } from "@/server/services/settings";
 import {
   changePasswordAction,
   signOutOtherDevicesAction,
@@ -52,7 +52,7 @@ export default async function SettingsPage() {
                 <dd className="mt-1.5 flex flex-wrap items-center gap-1.5">
                   <RoleBadge role={actor.role} />
                   <SubteamBadge subteam={actor.subteam} />
-                  {actor.isAdmin && <Badge tone="brand">Team admin</Badge>}
+                  {actor.isAdmin ? <Badge tone="brand">Owner</Badge> : canAdminister(actor) && <Badge tone="brand">Admin</Badge>}
                 </dd>
                 <dd className="mt-1 text-xs text-ink-500">Positions are managed by the team admin.</dd>
               </div>
@@ -67,7 +67,9 @@ export default async function SettingsPage() {
               action={updateNotificationPrefsAction}
               prefs={settings.prefs}
               showStaff={isStaff(actor)}
-              showAdmin={actor.isAdmin}
+              showAdmin={canAdminister(actor)}
+              editableKeys={editablePrefKeys(actor)}
+              resourceScope={resourceEmailScope(actor)}
             />
           </CardBody>
         </Card>

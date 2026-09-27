@@ -223,17 +223,33 @@ describe("askQuestion", () => {
     expect((await t.db.question.findUniqueOrThrow({ where: { id } })).taskId).toBe(task.id);
   });
 
-  it("rejects a task the asker can't see", async () => {
+  it("links any task on the Task dashboard, but not one that doesn't exist", async () => {
+    // Everyone can see every task on the Task dashboard, so asking about another subteam's task is fine.
     const other = await makeTask(t.db, p.swLead, { subteam: "SOFTWARE", assigneeIds: [p.swMember.id] });
+    const id = await ask(p.buildMember, { taskId: other.id });
+    expect((await t.db.question.findUniqueOrThrow({ where: { id } })).taskId).toBe(other.id);
     const c = ctx(p.buildMember);
-    const e1 = await catchError(() => askQuestion(c, { title: "Q", body: "B", taskId: other.id }));
-    expect(fieldErrorsOf(e1).taskId).toBe("Pick one of your tasks.");
-    // A build leader can't link a software task either.
-    const e2 = await catchError(() => askQuestion(ctx(p.buildLead1), { title: "Q", body: "B", taskId: other.id }));
-    expect(fieldErrorsOf(e2).taskId).toBe("Pick one of your tasks.");
-    const e3 = await catchError(() => askQuestion(c, { title: "Q", body: "B", taskId: "nope" }));
-    expect(fieldErrorsOf(e3).taskId).toBe("Pick one of your tasks.");
+    const e = await catchError(() => askQuestion(c, { title: "Q", body: "B", taskId: "nope" }));
+    expect(fieldErrorsOf(e).taskId).toBe("That task no longer exists.");
     expect(c.notifier.events).toHaveLength(0);
+  });
+
+  it("asks the leaders of another subteam's task (Ask a question about this on the Task dashboard)", async () => {
+    const asker = await makeUser(t.db, { name: "Curious Coder", role: "MEMBER", subteam: "SOFTWARE" });
+    const buildTask = await makeTask(t.db, p.buildLead1, { subteam: "BUILD" });
+    const c = ctx(asker);
+    const { id } = await askQuestion(c, { title: "Which bolts?", body: "b", to: "subteam", subteam: "BUILD", taskId: buildTask.id });
+    expect(await t.db.question.findUniqueOrThrow({ where: { id } })).toMatchObject({ subteam: "BUILD", taskId: buildTask.id, recipientId: null });
+    expect(c.notifier.events).toEqual([{ type: "question.asked", questionId: id }]);
+    // Build leaders get it; the asker's own (Software) leader doesn't.
+    expect(await getQuestionThread(p.buildLead1, id, t.db)).not.toBeNull();
+    expect(await getQuestionThread(p.swLead, id, t.db)).toBeNull();
+
+    // A whole-team task goes to the captain (subteam "").
+    const teamTask = await makeTask(t.db, p.captain, { subteam: null });
+    const q2 = await askQuestion(ctx(asker), { title: "Team?", body: "b", to: "subteam", subteam: "", taskId: teamTask.id });
+    expect(await t.db.question.findUniqueOrThrow({ where: { id: q2.id } })).toMatchObject({ subteam: null, taskId: teamTask.id });
+    expect(await getQuestionThread(p.captain, q2.id, t.db)).not.toBeNull();
   });
 
   it("rejects accounts that aren't active", async () => {

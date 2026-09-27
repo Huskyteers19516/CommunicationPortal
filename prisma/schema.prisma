@@ -57,6 +57,13 @@ enum QuestionStatus {
   RESOLVED // asker (or staff) closed it
 }
 
+/// Review state of a Resources-page entry. Members' submissions wait for someone with admin access.
+enum ResourceStatus {
+  PENDING // shared by a member, waiting for approval
+  APPROVED
+  REJECTED // turned down (reviewNote says why); the member can edit and resubmit
+}
+
 /// What kind of thing a Resources-page link points to (drives the icon and filter).
 enum ResourceType {
   DOCUMENT
@@ -93,6 +100,7 @@ model User {
   emailOnReview     Boolean @default(true) // everyone: your submission was approved / sent back
   emailOnAssigned   Boolean @default(false) // everyone: you were assigned a new task
   emailOnSignup     Boolean @default(true) // admins: someone registered and needs approval
+  emailOnResource   Boolean @default(true) // admins: a member shared a resource that needs approval
 
   approvedById String?
   approvedBy   User?     @relation("UserApprovals", fields: [approvedById], references: [id], onDelete: SetNull)
@@ -111,6 +119,8 @@ model User {
   questionsReceived   Question[]           @relation("QuestionRecipient")
   questionReplies     QuestionReply[]
   resourcesCreated    Resource[]           @relation("ResourceCreator")
+  resourcesReviewed   Resource[]           @relation("ResourceReviewer")
+  categoriesCreated   TaskCategory[]       @relation("CategoryCreator")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -144,18 +154,27 @@ model PasswordResetToken {
 }
 
 model Task {
-  id          String   @id @default(cuid())
+  id          String        @id @default(cuid())
   title       String
-  description String   @default("")
+  description String        @default("")
   /// Subteam the task belongs to. Null = whole-team task (captain/mentor/teacher/admin only).
   subteam     Subteam?
   /// Calendar day (team timezone) the task should be done by. Stored as a DATE.
-  dueDate     DateTime @db.Date
-  priority    Priority @default(NORMAL)
+  dueDate     DateTime      @db.Date
+  priority    Priority      @default(NORMAL)
+  /// Category the task is sorted under on the Task dashboard (e.g. Build → Intake). Must belong to the task's subteam.
+  categoryId  String?
+  category    TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  /// "Let people sign up" task (true) vs. "Assign people" (false). Closing sign-ups (signupOpen) doesn't change it.
+  signupMode  Boolean       @default(false)
+  /// While on, people in the task's subteam (anyone, for whole-team tasks) can sign themselves up. Only ever on for signupMode tasks.
+  signupOpen  Boolean       @default(false)
+  /// Most people the task takes, counting everyone on it. Null = no limit.
+  signupLimit Int?
   createdById String
-  createdBy   User     @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdBy   User          @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   assignments TaskAssignment[]
   questions   Question[]
@@ -163,6 +182,28 @@ model Task {
   @@index([dueDate])
   @@index([subteam, dueDate])
   @@index([createdById])
+  @@index([categoryId])
+}
+
+/// A kind of job inside a subteam, e.g. Build → Intake, Drivetrain, CAD. Leaders add them with “+”.
+model TaskCategory {
+  id          String   @id @default(cuid())
+  /// Subteam the category belongs to. Null = whole-team category.
+  subteam     Subteam?
+  name        String
+  /// Lower-cased name, so "Intake" and "intake" can't both exist in one subteam.
+  nameKey     String
+  /// Display order inside the subteam (ascending).
+  position    Int      @default(0)
+  createdById String?
+  createdBy   User?    @relation("CategoryCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tasks Task[]
+
+  @@unique([subteam, nameKey])
+  @@index([subteam, position])
 }
 
 model TaskAssignment {
@@ -178,6 +219,8 @@ model TaskAssignment {
   reviewedBy     User?            @relation("AssignmentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
   reviewedAt     DateTime?
   reviewNote     String?
+  /// The person signed themselves up (from the Task dashboard) instead of being assigned by a leader.
+  selfAssigned   Boolean          @default(false)
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
@@ -248,24 +291,50 @@ model RateLimit {
   windowStart DateTime
 }
 
-/// A link on the Resources page (team docs, CAD, inventory tracker, game manual…).
+/// A link or uploaded file on the Resources page (team docs, code, CAD, inventory tracker, game manual…).
 /// Stored in the database — not in code — because the repo is public and some links are team-only.
 model Resource {
-  id          String       @id @default(cuid())
-  title       String
-  url         String
-  description String       @default("")
-  type        ResourceType @default(OTHER)
+  id           String         @id @default(cuid())
+  title        String
+  /// The link. Empty for uploaded files (see `file`).
+  url          String         @default("")
+  description  String         @default("")
+  type         ResourceType   @default(OTHER)
   /// Heading the link is shown under, e.g. "Team Docs" or "Project assets". Empty = "Other".
-  group       String       @default("")
+  group        String         @default("")
   /// Pinned resources are shown first.
-  pinned      Boolean      @default(false)
+  pinned       Boolean        @default(false)
   /// Extra quick links shown as buttons on the card: [{ "label": "Meeting Agenda", "url": "https://…" }].
-  links       Json         @default("[]")
-  createdById String?
-  createdBy   User?        @relation("ResourceCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  links        Json           @default("[]")
+  /// Members' submissions start PENDING; people with admin access add APPROVED ones directly.
+  status       ResourceStatus @default(APPROVED)
+  reviewedById String?
+  reviewedBy   User?          @relation("ResourceReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt   DateTime?
+  /// Why it was turned down (shown to the member).
+  reviewNote   String?
+  createdById  String?
+  createdBy    User?          @relation("ResourceCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  file ResourceFile?
 
   @@index([pinned, group])
+  @@index([status, createdAt])
+  @@index([createdById, status])
+}
+
+/// An uploaded file behind a Resource (code, a PDF, a small CAD export…). Kept small (see LIMITS.resourceFileMaxBytes).
+model ResourceFile {
+  id          String   @id @default(cuid())
+  resourceId  String   @unique
+  resource    Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  /// Original file name, cleaned up (no paths).
+  filename    String
+  /// Type reported by the browser. Only used to pick a safe way to serve it.
+  contentType String
+  size        Int
+  data        Bytes
+  createdAt   DateTime @default(now())
 }

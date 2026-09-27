@@ -389,18 +389,22 @@ export interface AskTaskOption {
 /**
  * The actor's recent checklist items for the "related task" picker: upcoming ones (soonest first),
  * then the last 30 days (most recent first). At most 50.
+ *
+ * `includeTaskId` ("Ask a question about this" from the Task dashboard) adds that task first in its
+ * group when it isn't one of the actor's own — every task is visible to everyone on the dashboard.
  */
 export async function getAskTaskOptions(
   actor: Pick<Actor, "id">,
-  opts: { today?: DateOnly } = {},
+  opts: { today?: DateOnly; includeTaskId?: string } = {},
   db: Db = prisma,
 ): Promise<AskTaskOption[]> {
   const today = opts.today ?? todayInTimezone(env.teamTimezone);
   const todayDb = dateOnlyToDb(today);
   const since = dateOnlyToDb(addDays(today, -30));
   const select = { task: { select: { id: true, title: true, dueDate: true } } } as const;
+  const includeId = opts.includeTaskId && opts.includeTaskId.length <= 64 ? opts.includeTaskId : null;
 
-  const [upcoming, recent] = await Promise.all([
+  const [upcoming, recent, extra] = await Promise.all([
     db.taskAssignment.findMany({
       where: { userId: actor.id, task: { dueDate: { gte: todayDb } } },
       orderBy: [{ task: { dueDate: "asc" } }, { id: "asc" }],
@@ -413,6 +417,7 @@ export async function getAskTaskOptions(
       take: 50,
       select,
     }),
+    includeId ? db.task.findUnique({ where: { id: includeId }, select: { id: true, title: true, dueDate: true } }) : null,
   ]);
 
   // Keep a few recent ones even when the upcoming list is long.
@@ -424,5 +429,48 @@ export async function getAskTaskOptions(
     dueDate: dbToDateOnly(a.task.dueDate),
     upcoming: isUpcoming,
   });
-  return [...upcoming.slice(0, upcomingQuota).map(toOption(true)), ...recent.slice(0, recentQuota).map(toOption(false))];
+  const options = [...upcoming.slice(0, upcomingQuota).map(toOption(true)), ...recent.slice(0, recentQuota).map(toOption(false))];
+  if (!extra || options.some((o) => o.taskId === extra.id)) return options;
+  const extraOption = toOption(extra.dueDate >= todayDb)({ task: extra });
+  // First in its group, so it is easy to spot (and selected by default on the ask page).
+  const at = extraOption.upcoming ? 0 : options.findIndex((o) => !o.upcoming);
+  return at === -1 ? [...options, extraOption] : [...options.slice(0, at), extraOption, ...options.slice(at)];
+}
+
+/** The task a question is being asked about ("Ask a question about this" on /tasks/[id]). */
+export interface AskAboutTask {
+  id: string;
+  title: string;
+  /** Null = whole-team task (the captain handles those). */
+  subteam: Subteam | null;
+  createdByName: string;
+  /** Someone besides the asker leads the task's subteam and can answer (always false for whole-team tasks). */
+  subteamHasLeaders: boolean;
+}
+
+/**
+ * The task behind `?taskId=` on the ask page, so the form can say what the question is about and offer
+ * that task's subteam leaders. Every task is on the Task dashboard, so any existing task will do.
+ */
+export async function getAskAboutTask(
+  actor: Pick<Actor, "id">,
+  taskId: string | undefined,
+  db: Db = prisma,
+): Promise<AskAboutTask | null> {
+  if (!taskId || taskId.length > 64) return null;
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: { id: true, title: true, subteam: true, createdBy: { select: { name: true } } },
+  });
+  if (!task) return null;
+  const leaders = task.subteam
+    ? await db.user.count({ where: { status: "ACTIVE", role: SUBTEAM_LEADER_ROLE[task.subteam], id: { not: actor.id } } })
+    : 0;
+  return {
+    id: task.id,
+    title: task.title,
+    subteam: task.subteam,
+    createdByName: task.createdBy.name,
+    subteamHasLeaders: leaders > 0,
+  };
 }

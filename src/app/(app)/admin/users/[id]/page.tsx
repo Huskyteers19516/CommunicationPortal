@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import type { Role } from "@/generated/prisma/enums";
 import { requireAdminUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { grantableRoles } from "@/server/permissions";
 import { getEmailConfigStatus, getSeatUsage, getUserDetail } from "@/server/queries/admin";
 
 export const metadata: Metadata = { title: "Person" };
@@ -56,7 +57,7 @@ export default async function PersonPage({ params }: PageProps<"/admin/users/[id
             {user.isAdmin && (
               <Badge tone="brand">
                 <ShieldCheck className="size-3" aria-hidden />
-                Admin
+                Owner
               </Badge>
             )}
             {user.isSelf && <Badge tone="gray">You</Badge>}
@@ -74,6 +75,14 @@ export default async function PersonPage({ params }: PageProps<"/admin/users/[id
         </Alert>
       )}
 
+      {!user.canManage ? (
+        <Alert tone="info" className="mb-6" title={user.isAdmin ? "Owner account" : "You can't change this account"}>
+          {user.isAdmin
+            ? "Only an owner can change an owner's account."
+            : "Leaders manage members' accounts; the captain, mentors, and teachers also manage leaders'. Ask an owner to change this one."}
+        </Alert>
+      ) : null}
+
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="min-w-0">
           <UserEditForm
@@ -90,6 +99,9 @@ export default async function PersonPage({ params }: PageProps<"/admin/users/[id
             isSelf={user.isSelf}
             inAdminEmails={user.inAdminEmails}
             seats={seatMap}
+            actorIsOwner={actor.isAdmin}
+            readOnly={!user.canManage}
+            roles={grantableRoles(actor, { approving: user.status === "PENDING" || user.status === "REJECTED" })}
           />
         </div>
         <div className="min-w-0 space-y-6">
@@ -102,11 +114,13 @@ export default async function PersonPage({ params }: PageProps<"/admin/users/[id
               isDisabled: user.status === "DISABLED",
               isSelf: user.isSelf,
               canDelete: user.canDelete,
+              canManage: user.canManage,
               deleteBlockedByActivity:
                 !user.isSelf && user.hasActivity && (user.status === "PENDING" || user.status === "REJECTED"),
               activeSessions: user.activeSessions,
             }}
             emailReady={emailReady}
+            actorIsOwner={actor.isAdmin}
           />
           <UserStats user={user} now={now} timeZone={env.teamTimezone} />
         </div>

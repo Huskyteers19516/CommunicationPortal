@@ -14,7 +14,7 @@ import type { Db } from "../db";
 import { type EmailTransport, sendEmail } from "../email/transport";
 import { type DiscordOptions, type DiscordStatus, postToDiscord, testPayload } from "../notifications/discord";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors";
-import { canAdminister } from "../permissions";
+import { canAdminister, canGrantRole, canManageAccount, isOwner, ROLE_RANK } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
@@ -29,6 +29,33 @@ const userIdInput = z.object({ userId: idSchema });
 
 function assertAdmin(ctx: ServiceContext) {
   if (!canAdminister(ctx.actor)) throw new ForbiddenError();
+}
+
+const OWNER_ONLY = "Only an owner can change an owner's account.";
+const ABOVE_YOU =
+  "You can't change this account. Leaders manage members' accounts; the captain, mentors, and teachers also manage leaders'. Ask an owner.";
+
+type AccountRef = { id: string; role: Role; status: AccountStatus; isAdmin: boolean };
+
+/**
+ * Leaders, the captain, mentors, and teachers have admin access too, but only over accounts ranked
+ * below them (and sign-ups up to their own rank). Owners' accounts are off-limits to them.
+ */
+function assertCanManageAccount(ctx: ServiceContext, target: AccountRef) {
+  if (!canManageAccount(ctx.actor, target)) throw new ForbiddenError(target.isAdmin ? OWNER_ONLY : ABOVE_YOU);
+}
+
+/** The position being given must be one this admin may give (see canGrantRole). */
+function assertCanGrant(ctx: ServiceContext, role: Role, approving: boolean) {
+  if (canGrantRole(ctx.actor, role, { approving })) return;
+  const who = ROLE_RANK[role] >= ROLE_RANK.CAPTAIN ? "an owner" : "the captain, a mentor, a teacher, or an owner";
+  const message = `You can't make someone ${ROLE_LABELS[role]}. Ask ${who}.`;
+  throw new ValidationError(message, { role: message });
+}
+
+/** Non-owners' conditional writes never touch an owner, even if someone became one a moment ago. */
+function notOwnerUnlessOwner(ctx: ServiceContext): Prisma.UserWhereInput {
+  return isOwner(ctx.actor) ? {} : { isAdmin: false };
 }
 
 /**
@@ -77,16 +104,19 @@ export async function approveUser(ctx: ServiceContext, raw: unknown): Promise<vo
   assertAdmin(ctx);
   const data = parseInput(approveInput, raw as Record<string, unknown>);
   const target = await loadUser(ctx.db, data.userId);
+  assertCanManageAccount(ctx, target);
   if (target.status !== "PENDING" && target.status !== "REJECTED") {
     throw new ConflictError(`${target.name}'s account is already ${target.status === "ACTIVE" ? "active" : "disabled"}.`);
   }
 
   const role = data.role ?? target.role;
+  assertCanGrant(ctx, role, true);
   const subteam = resolveSubteam(role, data.subteam ?? target.subteam);
   await assertSeatAvailable(ctx.db, role, target.id, data.overrideSeatLimit);
 
   const { count } = await ctx.db.user.updateMany({
-    where: { id: target.id, status: { in: ["PENDING", "REJECTED"] } },
+    // Same role as when we checked it (so a non-owner can't approve something they couldn't see as such).
+    where: { id: target.id, status: { in: ["PENDING", "REJECTED"] }, role: target.role, ...notOwnerUnlessOwner(ctx) },
     data: { role, subteam, status: "ACTIVE", approvedById: ctx.actor.id, approvedAt: ctx.now },
   });
   if (count === 0) throw new ConflictError("Someone already decided on this account. Refresh to see the latest.");
@@ -98,14 +128,14 @@ export async function approveUser(ctx: ServiceContext, raw: unknown): Promise<vo
 export async function rejectUser(ctx: ServiceContext, raw: unknown): Promise<void> {
   assertAdmin(ctx);
   const { userId } = parseInput(userIdInput, raw as Record<string, unknown>);
+  const target = await loadUser(ctx.db, userId);
+  if (target.status !== "PENDING") throw new ConflictError(`${target.name}'s account isn't waiting for approval anymore.`);
+  assertCanManageAccount(ctx, target);
   const { count } = await ctx.db.user.updateMany({
-    where: { id: userId, status: "PENDING" },
+    where: { id: userId, status: "PENDING", role: target.role, ...notOwnerUnlessOwner(ctx) },
     data: { status: "REJECTED" },
   });
-  if (count === 0) {
-    const target = await loadUser(ctx.db, userId);
-    throw new ConflictError(`${target.name}'s account isn't waiting for approval anymore.`);
-  }
+  if (count === 0) throw new ConflictError(`${target.name}'s account changed in the meantime. Refresh and try again.`);
 }
 
 // ── People ────────────────────────────────────────────────────────────────
@@ -141,11 +171,16 @@ export async function updateUser(ctx: ServiceContext, raw: unknown): Promise<voi
   const data = parseInput(updateInput, raw as Record<string, unknown>);
   const target = await ctx.db.user.findUnique({ where: { id: data.userId }, select: { ...loadSelect, email: true } });
   if (!target) throw new NotFoundError("That account no longer exists.");
+  assertCanManageAccount(ctx, target);
+  // Only owners can make someone an owner (or take it away). For everyone else the box is ignored.
+  const owner = isOwner(ctx.actor) ? data.isAdmin : target.isAdmin;
+  const waiting = target.status === "PENDING" || target.status === "REJECTED";
+  if (data.role !== target.role) assertCanGrant(ctx, data.role, waiting);
 
   if (target.id === ctx.actor.id) {
-    if (!data.isAdmin) {
-      throw new ValidationError("You can't remove your own admin access. Ask another admin to do it.", {
-        isAdmin: "You can't remove your own admin access.",
+    if (target.isAdmin && !owner) {
+      throw new ValidationError("You can't remove yourself as an owner. Ask another owner to do it.", {
+        isAdmin: "You can't remove yourself as an owner.",
       });
     }
     if (data.status !== "ACTIVE") {
@@ -153,9 +188,20 @@ export async function updateUser(ctx: ServiceContext, raw: unknown): Promise<voi
         status: "Your own account must stay active.",
       });
     }
+    // A leader/mentor/teacher who changed their own position could lock themselves out of Admin.
+    if (!isOwner(ctx.actor) && data.role !== target.role) {
+      throw new ValidationError("You can't change your own position. Ask another admin.", {
+        role: "You can't change your own position.",
+      });
+    }
   }
 
   const emailChanged = data.email !== target.email;
+  // A changed email + "forgot password" would hand someone's account to whoever typed the new address.
+  if (emailChanged && !isOwner(ctx.actor) && target.id !== ctx.actor.id) {
+    const message = "Only an owner can change someone else's email.";
+    throw new ValidationError(message, { email: message });
+  }
   if (emailChanged) {
     const taken = await ctx.db.user.findUnique({ where: { email: data.email }, select: { id: true } });
     if (taken && taken.id !== target.id) throw new ValidationError(EMAIL_TAKEN, { email: EMAIL_TAKEN });
@@ -168,14 +214,19 @@ export async function updateUser(ctx: ServiceContext, raw: unknown): Promise<voi
   }
   const isApproval = becomesActive && (target.status === "PENDING" || target.status === "REJECTED");
   const losesAccess = data.status === "DISABLED" || data.status === "REJECTED";
-  const staysActiveAdmin = data.isAdmin && data.status === "ACTIVE";
+  const staysActiveAdmin = owner && data.status === "ACTIVE";
 
   try {
     await ctx.db.$transaction(async (tx) => {
       await lockAdminSet(tx);
       // Re-read under the lock: another admin may have promoted or demoted this person meanwhile.
-      const current = await tx.user.findUnique({ where: { id: target.id }, select: { isAdmin: true, status: true } });
+      const current = await tx.user.findUnique({
+        where: { id: target.id },
+        select: { id: true, role: true, isAdmin: true, status: true },
+      });
       if (!current) throw new NotFoundError("That account no longer exists.");
+      // Check again on the fresh row: an owner may have promoted this person since we first looked.
+      assertCanManageAccount(ctx, current);
       const wasActiveAdmin = current.isAdmin && current.status === "ACTIVE";
 
       await tx.user.update({
@@ -186,7 +237,8 @@ export async function updateUser(ctx: ServiceContext, raw: unknown): Promise<voi
           role: data.role,
           subteam,
           status: data.status,
-          isAdmin: data.isAdmin,
+          // Non-owners never write the owner flag (so a stale form can't undo a promotion).
+          ...(isOwner(ctx.actor) ? { isAdmin: owner } : {}),
           ...(isApproval ? { approvedById: ctx.actor.id, approvedAt: ctx.now } : {}),
         },
       });
@@ -194,7 +246,7 @@ export async function updateUser(ctx: ServiceContext, raw: unknown): Promise<voi
         // Checked after the write, inside the transaction, so a failure rolls it back.
         const admins = await tx.user.count({ where: { isAdmin: true, status: "ACTIVE" } });
         if (admins === 0) {
-          throw new ConflictError("There must always be at least one active admin. Make someone else an admin first.");
+          throw new ConflictError("There must always be at least one active owner. Make someone else an owner first.");
         }
       }
       // Reset links already sent went to the old address: they must not work anymore.
@@ -214,16 +266,19 @@ export async function updateUser(ctx: ServiceContext, raw: unknown): Promise<voi
 
 /**
  * Create a one-time password reset link for someone and email it to them (when email is set up).
- * The link is also returned so the admin can pass it on privately if the email doesn't arrive.
+ * Owners also get the link back, to pass on privately if the email doesn't arrive; other admins don't.
  */
-export async function sendPasswordResetLink(ctx: ServiceContext, raw: unknown): Promise<{ resetUrl: string }> {
+export async function sendPasswordResetLink(ctx: ServiceContext, raw: unknown): Promise<{ resetUrl: string | null }> {
   assertAdmin(ctx);
   const { userId } = parseInput(userIdInput, raw as Record<string, unknown>);
   const target = await loadUser(ctx.db, userId);
+  assertCanManageAccount(ctx, target);
   if (target.status === "DISABLED") {
     throw new ConflictError("This account is disabled. Re-activate it before sending a reset link.");
   }
-  return issuePasswordReset(ctx, target.id);
+  const { resetUrl } = await issuePasswordReset(ctx, target.id);
+  // Only owners see the link itself. Anyone else holding it could sign in as that person.
+  return { resetUrl: isOwner(ctx.actor) ? resetUrl : null };
 }
 
 /** Sign someone out on every device. Returns how many sessions were ended. */
@@ -231,6 +286,7 @@ export async function revokeSessions(ctx: ServiceContext, raw: unknown): Promise
   assertAdmin(ctx);
   const { userId } = parseInput(userIdInput, raw as Record<string, unknown>);
   const target = await loadUser(ctx.db, userId);
+  if (target.id !== ctx.actor.id) assertCanManageAccount(ctx, target);
   const { count } = await ctx.db.session.deleteMany({ where: { userId: target.id } });
   return { count };
 }
@@ -258,20 +314,23 @@ export async function deleteUser(ctx: ServiceContext, raw: unknown): Promise<voi
     where: { id: userId },
     select: {
       id: true,
+      role: true,
       status: true,
+      isAdmin: true,
       _count: {
         select: { tasksCreated: true, assignments: true, reviews: true, questionsAsked: true, questionReplies: true },
       },
     },
   });
   if (!target) throw new NotFoundError("That account no longer exists.");
+  assertCanManageAccount(ctx, target);
   if (target.status !== "PENDING" && target.status !== "REJECTED") {
     throw new ConflictError("Only pending or rejected sign-ups can be deleted. Disable the account instead.");
   }
   if (Object.values(target._count).some((n) => n > 0)) throw new ConflictError(HAS_ACTIVITY_MESSAGE);
   // Conditional delete guards against the account being approved (or doing something) meanwhile.
   const { count } = await ctx.db.user.deleteMany({
-    where: { id: target.id, status: { in: ["PENDING", "REJECTED"] }, ...NO_ACTIVITY },
+    where: { id: target.id, status: { in: ["PENDING", "REJECTED"] }, role: target.role, ...notOwnerUnlessOwner(ctx), ...NO_ACTIVITY },
   });
   if (count === 0) throw new ConflictError("This account changed in the meantime. Refresh and try again.");
 }

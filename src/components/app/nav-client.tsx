@@ -13,6 +13,7 @@ import {
   Menu,
   MessageCircleQuestionMark,
   Settings,
+  SquareKanban,
   UserCheck,
   Users,
   X,
@@ -30,6 +31,7 @@ import type { NavIcon, NavItem, NavSection } from "./nav-data";
 const ICONS: Record<NavIcon, LucideIcon> = {
   today: ListChecks,
   myTasks: ClipboardList,
+  dashboard: SquareKanban,
   questions: MessageCircleQuestionMark,
   resources: BookMarked,
   overview: LayoutDashboard,

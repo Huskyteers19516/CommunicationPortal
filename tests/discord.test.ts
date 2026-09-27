@@ -284,8 +284,11 @@ describe("deleting a question removes its Discord posts", () => {
 });
 
 describe("admin test message", () => {
-  it("only admins can send it; reports whether Discord is set up", async () => {
-    await expect(sendDiscordTest(contextFor(t.db, buildLead), { webhookUrl: WEBHOOK })).rejects.toBeInstanceOf(ForbiddenError);
+  it("only people with admin access can send it; reports whether Discord is set up", async () => {
+    const member = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    await expect(sendDiscordTest(contextFor(t.db, member), { webhookUrl: WEBHOOK })).rejects.toBeInstanceOf(ForbiddenError);
+    // Leaders have admin access too.
+    expect(await sendDiscordTest(contextFor(t.db, buildLead), { webhookUrl: null })).toBe("SKIPPED");
     expect(await sendDiscordTest(contextFor(t.db, admin), { webhookUrl: null })).toBe("SKIPPED");
     const d = fakeDiscord();
     expect(await sendDiscordTest(contextFor(t.db, admin), { webhookUrl: WEBHOOK, fetch: d.fetch })).toBe("SENT");

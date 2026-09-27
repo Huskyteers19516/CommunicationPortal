@@ -2,6 +2,7 @@
 export type NavIcon =
   | "today"
   | "myTasks"
+  | "dashboard"
   | "questions"
   | "resources"
   | "overview"

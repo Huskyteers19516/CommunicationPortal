@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { type ChangeEvent, type FormEvent, useOptimistic, useState, useTransition } from "react";
 import type { ActionState } from "@/lib/action-state";
 import { cn } from "@/lib/cn";
-import type { NotificationPrefs } from "@/server/services/settings";
+import { SUBTEAM_LABELS } from "@/lib/constants";
+import type { NotificationPrefs, ResourceEmailScope } from "@/server/services/settings";
 
 type FormAction = (state: ActionState, formData: FormData) => Promise<ActionState>;
 type PrefKey = keyof NotificationPrefs;
@@ -31,8 +32,8 @@ const GROUPS: { id: "everyone" | "staff" | "admin"; title: string; options: Pref
       },
       {
         key: "emailOnReview",
-        label: "My checklist item is approved or sent back",
-        description: "When a leader reviews something you checked off.",
+        label: "My checklist item or shared resource is reviewed",
+        description: "When someone approves or sends back something you checked off or shared.",
       },
       {
         key: "emailOnAssigned",
@@ -59,16 +60,28 @@ const GROUPS: { id: "everyone" | "staff" | "admin"; title: string; options: Pref
   },
   {
     id: "admin",
-    title: "For the team admin",
+    title: "Approvals",
     options: [
       {
         key: "emailOnSignup",
         label: "Someone signs up and needs approval",
         description: "New leader, mentor, and teacher accounts wait in Approvals.",
       },
+      {
+        key: "emailOnResource",
+        label: "A member shares a resource",
+        description: "Members' links and files wait for approval before the team sees them.",
+      },
     ],
   },
 ];
+
+/** "A member shares a resource": says whose shares reach this person (see resourceEmailScope). */
+function resourceDescription(scope: ResourceEmailScope | null | undefined): string | undefined {
+  if (scope?.kind === "subteam") return `Links and files from ${SUBTEAM_LABELS[scope.subteam]} members, waiting for approval.`;
+  if (scope?.kind === "fallback") return "Only from members whose subteam has no active leader.";
+  return undefined;
+}
 
 /**
  * Email notification switches. Only the groups this person can use are shown.
@@ -85,11 +98,17 @@ export function NotificationPrefsForm({
   prefs,
   showStaff,
   showAdmin,
+  editableKeys,
+  resourceScope,
 }: {
   action: FormAction;
   prefs: NotificationPrefs;
   showStaff: boolean;
   showAdmin: boolean;
+  /** Switches this person may change (editablePrefKeys). Others are hidden. Default: every switch in the shown groups. */
+  editableKeys?: PrefKey[];
+  /** Whose shared resources email this person (resourceEmailScope); tailors that switch's description. */
+  resourceScope?: ResourceEmailScope | null;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -97,7 +116,15 @@ export function NotificationPrefsForm({
   const [result, setResult] = useState<ActionState>(null);
   /** The switch flipped last — its status line shows how the save went. */
   const [lastKey, setLastKey] = useState<PrefKey | null>(null);
-  const groups = GROUPS.filter((g) => g.id === "everyone" || (g.id === "staff" && showStaff) || (g.id === "admin" && showAdmin));
+  const groups = GROUPS.filter((g) => g.id === "everyone" || (g.id === "staff" && showStaff) || (g.id === "admin" && showAdmin))
+    .map((g) => ({ ...g, options: editableKeys ? g.options.filter((o) => editableKeys.includes(o.key)) : g.options }))
+    .filter((g) => g.options.length > 0)
+    .map((g) => ({
+      ...g,
+      options: g.options.map((o) =>
+        o.key === "emailOnResource" ? { ...o, description: resourceDescription(resourceScope) ?? o.description } : o,
+      ),
+    }));
 
   const status: SaveStatus | null = pending ? "saving" : result ? (result.ok ? "saved" : "error") : null;
 
