@@ -5,27 +5,12 @@ import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
-import {
-  createResource,
-  deleteResource,
-  reviewDoneMessage,
-  reviewResource,
-  updateResource,
-  type UploadedFile,
-} from "@/server/services/resources";
+import { readFormFile } from "@/server/files/upload";
+import { createResource, deleteResource, reviewDoneMessage, reviewResource, updateResource } from "@/server/services/resources";
 
-/**
- * The picked file, read from the form (formDataToObject only keeps its name). An empty file input
- * arrives as a nameless 0-byte File: that means "no file chosen".
- */
-async function uploadFrom(formData: FormData): Promise<UploadedFile | undefined> {
-  const file = formData.get("file");
-  if (!(file instanceof File) || (file.size === 0 && !file.name)) return undefined;
-  return { name: file.name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) };
-}
-
+/** The form's fields plus the picked file (formDataToObject only keeps its name). */
 async function resourceInput(formData: FormData): Promise<Record<string, unknown>> {
-  return { ...formDataToObject(formData), file: await uploadFrom(formData) };
+  return { ...formDataToObject(formData), file: await readFormFile(formData) };
 }
 
 export async function createResourceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

@@ -1,12 +1,14 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { refresh, revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { SPONSORSHIP_STAGE_LABELS } from "@/lib/constants";
 import { formatShortDate } from "@/lib/sponsorships";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
+import { readFormFile } from "@/server/files/upload";
+import { deleteSponsorshipFile, uploadSponsorshipFile } from "@/server/services/sponsorship-files";
 import {
   createSponsorship,
   deleteSponsorship,
@@ -93,4 +95,41 @@ export async function importSponsorshipsAction(_prev: ActionState, formData: For
     // No `formData`: the paste box keeps its own text, so a big paste isn't echoed back.
     {},
   );
+}
+
+/**
+ * The file card's actions also re-render the page when they fail: the error is often because the page is out of
+ * date (another tab filled the sponsor up, or removed the file), and the card should show why.
+ */
+function refreshOnFailure(state: ActionState): ActionState {
+  if (!state?.ok) refresh();
+  return state;
+}
+
+/** Attach a file to a sponsor (its page stays open; the card says what was added). */
+export async function uploadSponsorshipFileAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const state = await runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      const { filename } = await uploadSponsorshipFile(ctx, { ...formDataToObject(formData), file: await readFormFile(formData) });
+      revalidatePath("/", "layout");
+      return `Added “${filename}”.`;
+    },
+    { formData },
+  );
+  return refreshOnFailure(state);
+}
+
+/** Remove a sponsor's file. */
+export async function deleteSponsorshipFileAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const state = await runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      const { filename } = await deleteSponsorshipFile(ctx, formDataToObject(formData));
+      revalidatePath("/", "layout");
+      return `Removed “${filename}”.`;
+    },
+    { formData },
+  );
+  return refreshOnFailure(state);
 }

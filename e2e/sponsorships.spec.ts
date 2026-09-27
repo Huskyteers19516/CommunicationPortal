@@ -39,6 +39,9 @@ test.describe("sponsorships", () => {
     const link = page.getByRole("link", { name, exact: true }).filter({ visible: true });
     await expect(link).toBeFocused();
     await expect(page.getByText("Added just now.").filter({ visible: true })).toBeVisible();
+    // Files can only be attached once it exists: the note links to its page.
+    const attach = page.getByRole("link", { name: `Attach forms and files to ${name}` }).filter({ visible: true });
+    await expect(attach).toHaveAttribute("href", await link.getAttribute("href") ?? "missing");
 
     // Change the stage right in the list, like the spreadsheet's dropdown. The list keeps its order.
     const order = () => page.locator("a[data-sponsor-link]").filter({ visible: true }).allTextContents();
@@ -95,11 +98,22 @@ test.describe("sponsorships", () => {
       `INSERT INTO "Sponsorship" (id, name, stage, "createdAt", "updatedAt") VALUES ('e2e_' || md5(random()::text), $1, 'NOT_STARTED', now(), now()) RETURNING id`,
       [name],
     );
+    // Someone attached a signed copy: removing the sponsor removes it too, and the question says so.
+    await sql(
+      `INSERT INTO "SponsorshipFile" (id, "sponsorshipId", filename, "contentType", size, data) VALUES ('e2e_' || md5(random()::text), $1, 'signed.pdf', 'application/pdf', 3, $2)`,
+      [id, Buffer.from("PDF")],
+    );
     await signIn(page, PEOPLE.businessLeader);
     await page.goto(`/sponsors/${id}`);
-    page.once("dialog", (dialog) => void dialog.accept());
+    let question = "";
+    page.once("dialog", (dialog) => {
+      question = dialog.message();
+      void dialog.accept();
+    });
     await page.getByRole("button", { name: `Remove ${name}` }).click();
     await expect(page).toHaveURL(/\/sponsors\?removed=/);
+    expect(question).toBe(`Remove “${name}” and its attached file from Sponsorships? This can't be undone.`);
+    expect(await sql(`SELECT id FROM "SponsorshipFile" WHERE "sponsorshipId" = $1`, [id])).toEqual([]);
     const alert = page.getByRole("status").filter({ hasText: `Removed “${name}”.` });
     await expect(alert).toBeVisible();
     await expect(page.locator(":focus")).toContainText(`Removed “${name}”.`);
@@ -192,6 +206,130 @@ test.describe("sponsorships", () => {
     await expect(page.getByText("Updated 1 sponsor that was already here. Skipped 2 that were already here.")).toBeVisible();
     const [updated] = await sql<{ stage: string }>(`SELECT stage::text AS stage FROM "Sponsorship" WHERE name = $1`, [`Import B ${id}`]);
     expect(updated.stage).toBe("SUBMITTED");
+  });
+
+  test("a business member attaches a form to a sponsor, downloads it, and removes it", async ({ page }, info) => {
+    const name = `E2E Files ${uniq(info.project.name)}`;
+    const [{ id }] = await sql<{ id: string }>(
+      `INSERT INTO "Sponsorship" (id, name, stage, "createdAt", "updatedAt") VALUES ('e2e_' || md5(random()::text), $1, 'NOT_STARTED', now(), now()) RETURNING id`,
+      [name],
+    );
+    const pdf = "%PDF-1.4\n% E2E sponsor application form\n";
+    await signIn(page, PEOPLE.businessMember);
+
+    // Adding a sponsor says files come after saving.
+    await page.goto("/sponsors/new");
+    await expect(page.getByText("To attach forms and files, open the sponsor after you add it.")).toBeVisible();
+
+    await page.goto(`/sponsors/${id}`);
+    const card = page.getByRole("region", { name: "Forms and files" });
+    await expect(card.getByText("No files yet.")).toBeVisible();
+    const picker = card.getByLabel("Add a file");
+    await expect(picker).toHaveAccessibleDescription(/^Uploads as soon as you pick it\. .*up to 4 MB/);
+    await expect(card.getByText(/^Team file storage: .* of 300 MB used/)).toBeVisible();
+    // Picking a file uploads it (there's no separate Upload button to forget before pressing Save changes).
+    await picker.setInputFiles({ name: "sponsor-form.pdf", mimeType: "application/pdf", buffer: Buffer.from(pdf, "utf8") });
+
+    // Listed right away, with focus on it and a status line saying what happened.
+    await expect(card.getByRole("status")).toHaveText("Added “sponsor-form.pdf”.");
+    const fileName = card.locator("[data-file-name]").filter({ hasText: "sponsor-form.pdf" });
+    await expect(fileName).toBeFocused();
+    await expect(card.getByText(/Added by Ava Thompson/)).toBeVisible();
+    await expectNoHorizontalScroll(page);
+
+    const [file] = await sql<{ id: string; size: number }>(`SELECT id, size FROM "SponsorshipFile" WHERE "sponsorshipId" = $1`, [id]);
+    expect(file.size).toBe(Buffer.byteLength(pdf));
+    const download = card.getByRole("link", { name: "Download sponsor-form.pdf" });
+    await expect(download).toHaveAttribute("href", `/sponsors/files/${file.id}?download=1`);
+    await expect(card.getByRole("link", { name: /^View sponsor-form\.pdf/ })).toHaveAttribute("href", `/sponsors/files/${file.id}`);
+
+    // On a 375px phone, View, Download and Remove still fit on one row (Remove is just its icon there, 40×40).
+    if (info.project.name === "mobile") {
+      await page.setViewportSize({ width: 375, height: 812 });
+      const actions = card.locator("[data-file-actions]").first();
+      const boxes = await Promise.all([
+        actions.getByRole("link", { name: /^View sponsor-form\.pdf/ }).boundingBox(),
+        actions.getByRole("link", { name: "Download sponsor-form.pdf" }).boundingBox(),
+        actions.getByRole("button", { name: "Remove sponsor-form.pdf" }).boundingBox(),
+      ]);
+      expect(boxes.map((b) => Math.round(b?.y ?? -1))).toEqual(Array(3).fill(Math.round(boxes[0]?.y ?? -1)));
+      expect(Math.round(boxes[2]?.width ?? 0)).toBe(40);
+      expect(Math.round(boxes[2]?.height ?? 0)).toBe(40);
+      await expectNoHorizontalScroll(page);
+    }
+
+    // Download sends it as an attachment with locked-down headers; View opens the PDF in the browser.
+    const res = await page.request.get(`/sponsors/files/${file.id}?download=1`);
+    expect(res.status()).toBe(200);
+    expect(res.headers()["content-type"]).toBe("application/octet-stream");
+    expect(res.headers()["content-disposition"]).toMatch(/^attachment; filename="sponsor-form\.pdf"/);
+    expect(res.headers()["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers()["cache-control"]).toContain("no-store");
+    expect(await res.text()).toBe(pdf);
+    const view = await page.request.get(`/sponsors/files/${file.id}`);
+    expect(view.headers()["content-type"]).toBe("application/pdf");
+    expect(view.headers()["content-disposition"]).toMatch(/^inline; /);
+
+    // The list shows a paperclip with the count next to the sponsor's name.
+    await page.goto("/sponsors");
+    const nameLink = page.getByRole("link", { name, exact: true }).filter({ visible: true });
+    await expect(nameLink.locator("xpath=..").getByRole("img", { name: "1 file" })).toBeVisible();
+    await expectNoHorizontalScroll(page);
+
+    // Other subteams' members can't open it: it looks missing.
+    await signIn(page, PEOPLE.softwareMember);
+    expect((await page.request.get(`/sponsors/files/${file.id}`)).status()).toBe(404);
+
+    // Remove it: the status says so and focus goes back to the file input.
+    await signIn(page, PEOPLE.businessMember);
+    await page.goto(`/sponsors/${id}`);
+    page.once("dialog", (dialog) => void dialog.accept());
+    await card.getByRole("button", { name: "Remove sponsor-form.pdf" }).click();
+    await expect(card.getByRole("status")).toHaveText("Removed “sponsor-form.pdf”.");
+    await expect(card.getByText("No files yet.")).toBeVisible();
+    await expect(card.getByLabel("Add a file")).toBeFocused();
+    expect(await sql<{ n: number }>(`SELECT count(*)::int AS n FROM "SponsorshipFile" WHERE "sponsorshipId" = $1`, [id])).toEqual([{ n: 0 }]);
+    await expectNoHorizontalScroll(page);
+  });
+
+  test("file changes from a page that's out of date show the sponsor's files as they are now", async ({ page }, info) => {
+    const name = `E2E Stale Files ${uniq(info.project.name)}`;
+    const [{ id }] = await sql<{ id: string }>(
+      `INSERT INTO "Sponsorship" (id, name, stage, "createdById", "createdAt", "updatedAt")
+       VALUES ('e2e_' || md5(random()::text), $1, 'NOT_STARTED', (SELECT id FROM "User" WHERE email = $2), now(), now()) RETURNING id`,
+      [name, PEOPLE.businessMember],
+    );
+    const addFile = (n: number) =>
+      sql(
+        `INSERT INTO "SponsorshipFile" (id, "sponsorshipId", filename, "contentType", size, data, "createdAt")
+         VALUES ('e2e_' || md5(random()::text), $1, $2, 'text/plain', 1, $3, now() + make_interval(secs => $4))`,
+        [id, `page ${n}.txt`, Buffer.from("x"), n],
+      );
+    for (let n = 1; n <= 9; n++) await addFile(n);
+    await signIn(page, PEOPLE.businessMember);
+    await page.goto(`/sponsors/${id}`);
+    const card = page.getByRole("region", { name: "Forms and files" });
+    const names = card.locator("[data-file-name]");
+    await expect(names).toHaveCount(9);
+
+    // Someone else adds the 10th meanwhile: the upload is turned down, and the card catches up (all 10 files,
+    // and the note that it's full, focused since the file picker went away).
+    await addFile(10);
+    await card.getByLabel("Add a file").setInputFiles({ name: "one more.txt", mimeType: "text/plain", buffer: Buffer.from("hello") });
+    await expect(names).toHaveCount(10);
+    await expect(card.getByText(/^This sponsor has 10 files, the most it can have\./)).toBeFocused();
+    await expect(card.getByLabel("Add a file")).toHaveCount(0);
+    expect(await sql<{ n: number }>(`SELECT count(*)::int AS n FROM "SponsorshipFile" WHERE "sponsorshipId" = $1`, [id])).toEqual([{ n: 10 }]);
+
+    // Someone else removes a file meanwhile: removing it here says it's gone, the list drops it, and focus moves on.
+    await sql(`DELETE FROM "SponsorshipFile" WHERE "sponsorshipId" = $1 AND filename = 'page 1.txt'`, [id]);
+    page.once("dialog", (dialog) => void dialog.accept());
+    await card.getByRole("button", { name: "Remove page 1.txt" }).click();
+    await expect(card.getByRole("alert")).toHaveText("That file no longer exists.");
+    await expect(names).toHaveCount(9);
+    await expect(names.first()).toHaveText("page 2.txt");
+    await expect(names.first()).toBeFocused();
+    await expect(card.getByLabel("Add a file")).toBeVisible();
   });
 
   test("the info card can be edited, and focus goes back to Edit", async ({ page }, info) => {

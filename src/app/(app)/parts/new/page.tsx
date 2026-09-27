@@ -28,7 +28,7 @@ export default async function NewPartPage() {
             material: "",
             fileUrl: "",
             notes: "",
-            categoryId: "",
+            forText: "",
             neededBy: "",
           }}
         />

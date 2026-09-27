@@ -311,6 +311,7 @@ export const NO_ACTIVITY = {
   partsRequested: { none: {} },
   partsClaimed: { none: {} },
   sponsorshipsCreated: { none: {} },
+  sponsorshipFiles: { none: {} },
 } satisfies Prisma.UserWhereInput;
 
 export const HAS_ACTIVITY_MESSAGE = "This person has activity in the portal — disable the account instead.";
@@ -337,6 +338,7 @@ export async function deleteUser(ctx: ServiceContext, raw: unknown): Promise<voi
           partsRequested: true,
           partsClaimed: true,
           sponsorshipsCreated: true,
+          sponsorshipFiles: true,
         },
       },
     },

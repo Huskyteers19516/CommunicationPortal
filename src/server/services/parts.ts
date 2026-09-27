@@ -19,6 +19,7 @@ import type { ServiceContext } from "../context";
 import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, ValidationError } from "../errors";
 import { canEditPart, canManageParts, canWorkOnPart } from "../permissions";
 import { consumeRateLimit } from "../rate-limit";
+import { categoryNameKey, normalizeCategoryName } from "./categories";
 import { parseHttpUrl } from "./resources";
 
 type Tx = Prisma.TransactionClient;
@@ -96,6 +97,20 @@ const categoryIdField = z.preprocess(
   z.string({ error: "Pick a category from the list." }).trim().max(64, "Pick a category from the list."),
 );
 
+/**
+ * "For", typed in (with the task categories as suggestions): a category's name links the part to that
+ * category; anything else is kept as plain text. Missing = the older categoryId field decides.
+ */
+const forTextField = z.preprocess(
+  (v) => (v === null ? "" : v),
+  z
+    .string({ error: "Type what it's for, or leave it empty." })
+    .max(LIMITS.partForMax * 2, `Keep it under ${LIMITS.partForMax} characters.`)
+    .transform((v) => normalizeCategoryName(v))
+    .pipe(z.string().max(LIMITS.partForMax, `Keep it under ${LIMITS.partForMax} characters.`))
+    .optional(),
+);
+
 const neededByField = z.preprocess(
   (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? undefined : v),
   dateOnlySchema.optional(),
@@ -109,6 +124,7 @@ const partFields = {
   fileUrl: fileUrlField,
   notes: optionalText("Notes", LIMITS.partNotesMax),
   categoryId: categoryIdField,
+  forText: forTextField,
   neededBy: neededByField,
 };
 
@@ -167,12 +183,34 @@ async function resolveCategory(ctx: ServiceContext, categoryId: string): Promise
   return category.id;
 }
 
+/** Where a part points: a task category, or typed-in text. */
+interface PartTarget {
+  categoryId: string | null;
+  forLabel: string;
+}
+
+/**
+ * The "For" the form sent. Typed text that matches a category name (any case/spacing) links to that
+ * category — Build's first, then the other subteams', then whole-team — otherwise it's kept as text.
+ */
+async function resolveTarget(ctx: ServiceContext, data: PartFields): Promise<PartTarget> {
+  if (data.forText === undefined) return { categoryId: await resolveCategory(ctx, data.categoryId), forLabel: "" };
+  if (data.forText === "") return { categoryId: null, forLabel: "" };
+  const matches = await ctx.db.taskCategory.findMany({
+    where: { nameKey: categoryNameKey(data.forText) },
+    select: { id: true, subteam: true },
+  });
+  const rank = (s: string | null) => (s === "BUILD" ? 0 : s === null ? 2 : 1);
+  const best = matches.sort((a, b) => rank(a.subteam) - rank(b.subteam))[0];
+  return best ? { categoryId: best.id, forLabel: "" } : { categoryId: null, forLabel: data.forText };
+}
+
 /** The category was deleted between our check and the write. */
 function isCategoryGone(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2003";
 }
 
-function columns(data: PartFields, categoryId: string | null) {
+function columns(data: PartFields, target: PartTarget) {
   return {
     name: data.name,
     process: data.process,
@@ -180,7 +218,8 @@ function columns(data: PartFields, categoryId: string | null) {
     material: data.material ?? "",
     fileUrl: data.fileUrl,
     notes: data.notes ?? "",
-    categoryId,
+    categoryId: target.categoryId,
+    forLabel: target.forLabel,
     neededBy: data.neededBy ? dateOnlyToDb(data.neededBy) : null,
   };
 }
@@ -228,7 +267,7 @@ export async function createPart(ctx: ServiceContext, raw: unknown): Promise<{ i
   requireActive(ctx);
   const data = parseInput(createInput, asRecord(raw));
   if (data.neededBy) checkNeededBy(ctx, data.neededBy);
-  const categoryId = await resolveCategory(ctx, data.categoryId);
+  const target = await resolveTarget(ctx, data);
 
   const allowed = await consumeRateLimit(ctx.db, `part:${ctx.actor.id}`, PART_RATE_LIMIT.limit, PART_RATE_LIMIT.windowMs, ctx.now);
   if (!allowed) throw new RateLimitError("You've added a lot of parts in the last hour. Please wait a bit and try again.");
@@ -237,7 +276,7 @@ export async function createPart(ctx: ServiceContext, raw: unknown): Promise<{ i
     return await ctx.db.$transaction(async (tx) => {
       await lockQueue(tx);
       return tx.part.create({
-        data: { ...columns(data, categoryId), position: await endOfQueue(tx), status: "NEEDED", requestedById: ctx.actor.id },
+        data: { ...columns(data, target), position: await endOfQueue(tx), status: "NEEDED", requestedById: ctx.actor.id },
         select: { id: true },
       });
     });
@@ -260,13 +299,13 @@ export async function updatePart(ctx: ServiceContext, raw: unknown): Promise<{ i
   const data = parseInput(updateInput, rec);
   // Keeping the date it already has is fine (so old parts stay editable); a new one must be in range.
   if (data.neededBy && data.neededBy !== (part.neededBy ? dbToDateOnly(part.neededBy) : null)) checkNeededBy(ctx, data.neededBy);
-  const categoryId = await resolveCategory(ctx, data.categoryId);
+  const target = await resolveTarget(ctx, data);
 
   const manager = canManageParts(ctx.actor);
   const where: Prisma.PartWhereInput = manager ? { id: part.id } : { id: part.id, requestedById: ctx.actor.id, status: "NEEDED" };
   let count: number;
   try {
-    ({ count } = await ctx.db.part.updateMany({ where, data: columns(data, categoryId) }));
+    ({ count } = await ctx.db.part.updateMany({ where, data: columns(data, target) }));
   } catch (e) {
     if (isCategoryGone(e)) throw new ValidationError(CATEGORY_GONE, { categoryId: CATEGORY_GONE });
     throw e;

@@ -235,7 +235,7 @@ export function PartCard({
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <ProcessBadge process={part.process} />
             <MaterialBadge material={part.material} />
-            <ForBadge category={part.category} />
+            <ForBadge category={part.category} label={part.forLabel} />
             {!done && <NeededByBadge neededBy={part.neededBy} today={today} />}
           </div>
 

@@ -252,6 +252,12 @@ test.describe("layout", () => {
       "/parts",
       "/parts?view=done",
       "/parts/new",
+      "/fundraising",
+      "/fundraising/new",
+      "/posters",
+      "/posters?view=past",
+      "/posters?who=mine",
+      "/posters/new",
       "/settings",
     ],
     [PEOPLE.buildLeader]: [
@@ -269,6 +275,9 @@ test.describe("layout", () => {
       "/sponsors?filter=todo",
       "/sponsors/new",
       "/sponsors/import",
+      "/fundraising",
+      "/fundraising/new",
+      "/posters",
       "/admin",
       "/admin/users",
     ],
@@ -300,10 +309,14 @@ test.describe("mobile menu", () => {
     // Focus moves into the drawer.
     await expect(dialog.getByRole("button", { name: "Close menu" })).toBeFocused();
 
-    // Tap the link at its real position (no auto-scrolling tricks).
+    // The admin's menu is taller than a phone screen, so scroll the drawer's list to it the way a person would,
+    // then tap the link at its real position (no auto-scrolling tricks): nothing (like the Sign out bar) covers it.
     const settings = dialog.getByRole("link", { name: "Settings" });
+    await settings.scrollIntoViewIfNeeded();
     const s = await settings.boundingBox();
-    await page.mouse.click(s!.x + s!.width / 2, s!.y + s!.height / 2);
+    const [x, y] = [s!.x + s!.width / 2, s!.y + s!.height / 2];
+    expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest("a")?.textContent, [x, y])).toBe("Settings");
+    await page.mouse.click(x, y);
     await expect(page).toHaveURL(/\/settings$/);
     await expect(dialog).toHaveCount(0);
 

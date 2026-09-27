@@ -14,7 +14,8 @@ import {
 import { parseHttpUrl } from "@/lib/urls";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
-import { canDeleteSponsorship, canUseSponsorships } from "../permissions";
+import { canDeleteSponsorship, canDeleteSponsorshipFile, canUseSponsorships } from "../permissions";
+import { previewKind } from "../resources/serve";
 import { loadExistingSponsors, SPONSORSHIP_INFO_KEY, sponsorshipPeopleWhere } from "../services/sponsorships";
 
 /** Most sponsorships the page lists (a team has dozens, not thousands). */
@@ -42,6 +43,8 @@ export interface SponsorshipItem {
   submittedOn: DateOnly | null;
   acceptedOn: DateOnly | null;
   closesOn: DateOnly | null;
+  /** Files attached to it (forms, filled-out copies…). */
+  fileCount: number;
 }
 
 export interface SponsorshipSummary {
@@ -77,6 +80,7 @@ const itemSelect = {
   acceptedOn: true,
   closesOn: true,
   owner: { select: { id: true, name: true } },
+  _count: { select: { files: true } },
 } as const satisfies Prisma.SponsorshipSelect;
 
 type ItemRow = Prisma.SponsorshipGetPayload<{ select: typeof itemSelect }>;
@@ -96,6 +100,7 @@ function toItem(r: ItemRow): SponsorshipItem {
     submittedOn: dateOrNull(r.submittedOn),
     acceptedOn: dateOrNull(r.acceptedOn),
     closesOn: dateOrNull(r.closesOn),
+    fileCount: r._count.files,
   };
 }
 
@@ -182,20 +187,54 @@ export async function listSponsorships(
   };
 }
 
+/** A file attached to a sponsor, for its page (never the bytes). */
+export interface SponsorshipFileItem {
+  id: string;
+  filename: string;
+  size: number;
+  contentType: string;
+  /** Who uploaded it (null when their account is gone). */
+  uploadedByName: string | null;
+  createdAt: Date;
+  canDelete: boolean;
+  /** Opens it in the browser (PDFs, images, text); null for types that are only downloaded. */
+  viewHref: string | null;
+  downloadHref: string;
+}
+
 export interface SponsorshipDetail extends SponsorshipItem {
   notes: string;
   createdByName: string | null;
   createdAt: Date;
   updatedAt: Date;
   canDelete: boolean;
+  /** Oldest first (the order they were added). */
+  files: SponsorshipFileItem[];
 }
 
-/** One sponsorship for its edit page, or null (missing, or the viewer can't use Sponsorships). */
+/** The route that sends a sponsor's file (src/app/(app)/sponsors/files/[id]/route.ts). */
+export function sponsorshipFileHref(id: string, download = false): string {
+  return `/sponsors/files/${encodeURIComponent(id)}${download ? "?download=1" : ""}`;
+}
+
+/** One sponsorship for its edit page (with its files' details), or null (missing, or the viewer can't use Sponsorships). */
 export async function getSponsorship(actor: Actor, id: string, db: Db = prisma): Promise<SponsorshipDetail | null> {
   if (!allowed(actor) || !id || id.length > 64) return null;
   const r = await db.sponsorship.findUnique({
     where: { id },
-    select: { ...itemSelect, notes: true, createdById: true, createdAt: true, updatedAt: true, createdBy: { select: { name: true } } },
+    select: {
+      ...itemSelect,
+      notes: true,
+      createdById: true,
+      createdAt: true,
+      updatedAt: true,
+      createdBy: { select: { name: true } },
+      files: {
+        // Never the bytes.
+        select: { id: true, filename: true, size: true, contentType: true, createdAt: true, uploadedById: true, uploadedBy: { select: { name: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      },
+    },
   });
   if (!r) return null;
   return {
@@ -205,7 +244,27 @@ export async function getSponsorship(actor: Actor, id: string, db: Db = prisma):
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
     canDelete: canDeleteSponsorship(actor, r),
+    files: r.files.map((f) => ({
+      id: f.id,
+      filename: f.filename,
+      size: f.size,
+      contentType: f.contentType,
+      uploadedByName: f.uploadedBy?.name ?? null,
+      createdAt: f.createdAt,
+      canDelete: canDeleteSponsorshipFile(actor, { uploadedById: f.uploadedById, sponsorship: { createdById: r.createdById } }),
+      viewHref: previewKind(f.filename, f.contentType) === "other" ? null : sponsorshipFileHref(f.id),
+      downloadHref: sponsorshipFileHref(f.id, true),
+    })),
   };
+}
+
+/**
+ * A sponsor's file with its bytes, for the file route. Null when it's missing or the viewer can't use
+ * Sponsorships (including accounts that aren't active), so both look the same.
+ */
+export async function getSponsorshipFile(actor: Actor, id: string, db: Db = prisma) {
+  if (!allowed(actor) || !id || id.length > 64) return null;
+  return db.sponsorshipFile.findUnique({ where: { id }, select: { filename: true, contentType: true, data: true } });
 }
 
 export interface SponsorshipInfo {

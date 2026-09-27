@@ -45,13 +45,15 @@ function asRecord(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
-function assertCanUse(ctx: ServiceContext) {
+/** ACTIVE and able to use Sponsorships (the Business team and staff), else ForbiddenError. */
+export function assertCanUseSponsorships(ctx: ServiceContext) {
   if (ctx.actor.status !== "ACTIVE" || !canUseSponsorships(ctx.actor)) {
     throw new ForbiddenError("Sponsorships are for the Business team and leaders.");
   }
 }
 
-async function limitWrites(ctx: ServiceContext) {
+/** The hourly allowance for changes to Sponsorships (shared by sponsors, the info note, and removing files). */
+export async function limitSponsorshipWrites(ctx: ServiceContext) {
   await enforceRateLimit(ctx.db, `sponsorship:${ctx.actor.id}`, SPONSORSHIP_WRITES_PER_HOUR, HOUR, ctx.now);
 }
 
@@ -138,10 +140,10 @@ export interface CreatedSponsorship {
 
 /** Add a sponsor. Picking Submitted or Accepted without a date fills in today. A name that's already here is allowed. */
 export async function createSponsorship(ctx: ServiceContext, raw: unknown): Promise<CreatedSponsorship> {
-  assertCanUse(ctx);
+  assertCanUseSponsorships(ctx);
   const fields = parseInput(sponsorshipFields, asRecord(raw));
   await assertOwner(ctx, fields.ownerId);
-  await limitWrites(ctx);
+  await limitSponsorshipWrites(ctx);
   const data = columns(fields);
   fillStageDate(data, null, today(ctx));
   const sameName = await ctx.db.sponsorship.count({ where: { name: { equals: data.name, mode: "insensitive" } } });
@@ -165,7 +167,7 @@ function parseVersion(value: unknown): Date | null {
  * its stage from the list), nothing is saved and it's a ConflictError, so a stale form can't undo that.
  */
 export async function updateSponsorship(ctx: ServiceContext, raw: unknown): Promise<{ id: string }> {
-  assertCanUse(ctx);
+  assertCanUseSponsorships(ctx);
   const rec = asRecord(raw);
   const { sponsorshipId } = parseInput(idInput, rec);
   const fields = parseInput(sponsorshipFields, rec);
@@ -177,7 +179,7 @@ export async function updateSponsorship(ctx: ServiceContext, raw: unknown): Prom
   if (!existing) throw new NotFoundError(SPONSORSHIP_NOT_FOUND);
   if (version && existing.updatedAt.getTime() !== version.getTime()) throw new ConflictError(SPONSORSHIP_CHANGED);
   await assertOwner(ctx, fields.ownerId, existing.ownerId);
-  await limitWrites(ctx);
+  await limitSponsorshipWrites(ctx);
   const data = columns(fields);
   fillStageDate(data, existing.stage, today(ctx));
   // Conditional on the version the form loaded (or, without one, on the stage the date fill was based on).
@@ -207,9 +209,9 @@ export interface StageChange {
  * a conditional write on the date still being empty).
  */
 export async function setSponsorshipStage(ctx: ServiceContext, raw: unknown): Promise<StageChange> {
-  assertCanUse(ctx);
+  assertCanUseSponsorships(ctx);
   const { sponsorshipId, stage } = parseInput(stageInput, asRecord(raw));
-  await limitWrites(ctx);
+  await limitSponsorshipWrites(ctx);
   const day = today(ctx);
   const field: "submittedOn" | "acceptedOn" | null =
     stage === "SUBMITTED" ? "submittedOn" : stage === "ACCEPTED" ? "acceptedOn" : null;
@@ -229,14 +231,14 @@ export async function setSponsorshipStage(ctx: ServiceContext, raw: unknown): Pr
 
 /** Remove a sponsor: whoever added it, the Business leader, and the captain, mentors, teachers, and owners. */
 export async function deleteSponsorship(ctx: ServiceContext, raw: unknown): Promise<{ name: string }> {
-  assertCanUse(ctx);
+  assertCanUseSponsorships(ctx);
   const { sponsorshipId } = parseInput(idInput, asRecord(raw));
   const existing = await ctx.db.sponsorship.findUnique({ where: { id: sponsorshipId }, select: { createdById: true, name: true } });
   if (!existing) throw new NotFoundError(SPONSORSHIP_NOT_FOUND);
   if (!canDeleteSponsorship(ctx.actor, existing)) {
     throw new ForbiddenError("Only the person who added it, the Business leader, or the captain, mentors, and teachers can remove a sponsor.");
   }
-  await limitWrites(ctx);
+  await limitSponsorshipWrites(ctx);
   const { count } = await ctx.db.sponsorship.deleteMany({ where: { id: sponsorshipId } });
   if (count === 0) throw new NotFoundError(SPONSORSHIP_NOT_FOUND);
   return { name: existing.name };
@@ -246,9 +248,9 @@ const infoInput = z.object({ body: optionalText("Info", LIMITS.teamNoteMax) });
 
 /** The "Info for applications" note (team address, contact person, links). Empty clears it. */
 export async function updateSponsorshipInfo(ctx: ServiceContext, raw: unknown): Promise<void> {
-  assertCanUse(ctx);
+  assertCanUseSponsorships(ctx);
   const { body } = parseInput(infoInput, asRecord(raw));
-  await limitWrites(ctx);
+  await limitSponsorshipWrites(ctx);
   const data = { body: body ?? "", updatedById: ctx.actor.id };
   await ctx.db.teamNote.upsert({ where: { key: SPONSORSHIP_INFO_KEY }, create: { key: SPONSORSHIP_INFO_KEY, ...data }, update: data });
 }
@@ -375,7 +377,7 @@ function updateData(r: PlannedSponsorship): Prisma.SponsorshipUpdateManyMutation
  * writes happen under the import lock.
  */
 export async function importSponsorships(ctx: ServiceContext, raw: unknown): Promise<ImportResult> {
-  assertCanUse(ctx);
+  assertCanUseSponsorships(ctx);
   const input = parseInput(importInput, asRecord(raw));
   const owners = await loadOwnerOptions(ctx.db);
   const prepared = prepareSponsorshipImport(input.text, { today: today(ctx), owners });
@@ -383,7 +385,7 @@ export async function importSponsorships(ctx: ServiceContext, raw: unknown): Pro
   // Checked against what's here now, so a paste that can't be imported fails before it counts.
   assertImportable(matchSponsorshipImport(prepared, { ...options, existing: await loadExistingSponsors(ctx.db) }));
   await enforceRateLimit(ctx.db, `sponsorship-import:${ctx.actor.id}`, SPONSORSHIP_IMPORTS_PER_HOUR, HOUR, ctx.now);
-  await limitWrites(ctx);
+  await limitSponsorshipWrites(ctx);
 
   return ctx.db.$transaction(
     async (tx) => {

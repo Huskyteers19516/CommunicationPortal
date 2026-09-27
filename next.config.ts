@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
     serverActions: {
-      // Resources uploads: files up to LIMITS.resourceFileMaxBytes (4 MB) plus the form's multipart overhead.
+      // File uploads (Resources, sponsor files): up to LIMITS.resourceFileMaxBytes (4 MB) plus the form's multipart overhead.
       // Vercel rejects requests over 4.5 MB anyway, so don't raise the file limit past ~4 MB.
       bodySizeLimit: "5mb",
     },

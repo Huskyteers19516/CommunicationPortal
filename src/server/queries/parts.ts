@@ -42,6 +42,8 @@ export interface PartItem {
   notes: string;
   /** What it's for (a task category, e.g. Build → Intake). */
   category: { id: string; name: string; subteam: Subteam | null } | null;
+  /** What it's for, typed in (only when it isn't a category). */
+  forLabel: string;
   neededBy: DateOnly | null;
   /** Needed-by date has passed and it isn't done yet. */
   late: boolean;
@@ -118,6 +120,7 @@ const partItemSelect = {
   claimedAt: true,
   doneAt: true,
   category: { select: { id: true, name: true, subteam: true } },
+  forLabel: true,
   requestedBy: { select: { id: true, name: true } },
   claimedBy: { select: { id: true, name: true } },
 } satisfies Prisma.PartSelect;
@@ -142,6 +145,7 @@ function toItem(actor: ActorLike, p: PartRow, rank: number | null, today: DateOn
     fileUrl: p.fileUrl ? (parseHttpUrl(p.fileUrl) ?? "") : "",
     notes: p.notes,
     category: p.category,
+    forLabel: p.category ? "" : p.forLabel,
     neededBy,
     late: neededBy !== null && neededBy < today && p.status !== "DONE",
     status: p.status,
@@ -218,7 +222,8 @@ export interface PartFormValues {
   material: string;
   fileUrl: string;
   notes: string;
-  categoryId: string;
+  /** "For" as shown in the form's text box: the category's name, or the typed-in text. */
+  forText: string;
   neededBy: DateOnly | "";
   status: PartStatus;
   /** A manager is editing (not just the person who asked for it). */
@@ -237,7 +242,8 @@ export async function getPartForEdit(actor: ActorLike, id: string, db: Db = pris
       material: true,
       fileUrl: true,
       notes: true,
-      categoryId: true,
+      category: { select: { name: true } },
+      forLabel: true,
       neededBy: true,
       status: true,
       requestedById: true,
@@ -253,7 +259,7 @@ export async function getPartForEdit(actor: ActorLike, id: string, db: Db = pris
     material: p.material,
     fileUrl: p.fileUrl,
     notes: p.notes,
-    categoryId: p.categoryId ?? "",
+    forText: p.category?.name ?? p.forLabel,
     neededBy: p.neededBy ? dbToDateOnly(p.neededBy) : "",
     status: p.status,
     byManager: canManageParts(actor),

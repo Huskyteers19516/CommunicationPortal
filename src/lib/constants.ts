@@ -4,6 +4,8 @@ import {
   AssignmentStatus,
   PartProcess,
   PartStatus,
+  FundraiserKind,
+  FundraiserStatus,
   Priority,
   QuestionStatus,
   ResourceStatus,
@@ -18,6 +20,8 @@ export {
   AssignmentStatus,
   PartProcess,
   PartStatus,
+  FundraiserKind,
+  FundraiserStatus,
   Priority,
   QuestionStatus,
   ResourceStatus,
@@ -129,6 +133,26 @@ export const PART_STATUS_LABELS: Record<PartStatus, string> = {
   DONE: "Done",
 };
 
+export const FUNDRAISER_KINDS: FundraiserKind[] = ["EVENT", "SALE", "ONLINE", "OTHER"];
+
+export const FUNDRAISER_KIND_LABELS: Record<FundraiserKind, string> = {
+  EVENT: "Event",
+  SALE: "Sale",
+  ONLINE: "Online",
+  OTHER: "Other",
+};
+
+/** In the order a fundraiser moves through them. */
+export const FUNDRAISER_STATUSES: FundraiserStatus[] = ["PLANNING", "UPCOMING", "ACTIVE", "DONE", "CANCELLED"];
+
+export const FUNDRAISER_STATUS_LABELS: Record<FundraiserStatus, string> = {
+  PLANNING: "Planning",
+  UPCOMING: "Upcoming",
+  ACTIVE: "Happening now",
+  DONE: "Done",
+  CANCELLED: "Cancelled",
+};
+
 export const ROLES = Object.values(Role) as Role[];
 export const SUBTEAMS = Object.values(Subteam) as Subteam[];
 
@@ -216,8 +240,19 @@ export const LIMITS = {
   /** Biggest amount received that can be entered, in dollars. */
   sponsorAmountMax: 10_000_000,
   teamNoteMax: 5000,
+  /** Files attached to one sponsor (forms, filled-out copies…). */
+  sponsorFilesMax: 10,
   partNameMax: 120,
   partMaterialMax: 80,
   partNotesMax: 2000,
+  /** "For" on a part, when typed in instead of picked from the categories. */
+  partForMax: 60,
+  posterTitleMax: 120,
+  posterEventMax: 80,
+  posterDescriptionMax: 1000,
+  fundraiserNameMax: 120,
+  fundraiserLocationMax: 160,
+  fundraiserDescriptionMax: 5000,
+  fundraiserVolunteersMax: 200,
   partQuantityMax: 500,
 } as const;

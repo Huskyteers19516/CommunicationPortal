@@ -1,3 +1,4 @@
+import { Paperclip } from "lucide-react";
 import type { Metadata } from "next";
 import { NoSponsorshipAccess } from "@/components/sponsors/no-access";
 import { SponsorshipForm } from "@/components/sponsors/sponsorship-form";
@@ -17,6 +18,10 @@ export default async function NewSponsorshipPage() {
     <div className="mx-auto w-full max-w-3xl min-w-0">
       <BackLink href="/sponsors">Sponsorships</BackLink>
       <PageHeader title="Add sponsor" description="A company, donor, or grant we're asking for support." />
+      <p className="-mt-3 mb-5 flex gap-1.5 text-sm text-ink-500">
+        <Paperclip className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <span className="min-w-0">To attach forms and files, open the sponsor after you add it.</span>
+      </p>
       <SponsorshipForm
         action={createSponsorshipAction}
         owners={owners}

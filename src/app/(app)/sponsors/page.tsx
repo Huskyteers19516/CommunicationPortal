@@ -65,7 +65,8 @@ function emptyText(filter: SponsorshipFilter, mine: boolean): string {
 
 /**
  * After adding or saving a sponsor ("?added=<id>" / "?saved=<id>"): that row is highlighted and focused,
- * with a note (and whether another sponsor already had the name). Null when it isn't in the list shown.
+ * with a note (and whether another sponsor already had the name). A new sponsor's note links to its page to
+ * attach forms and files. Null when it isn't in the list shown.
  */
 function highlightFor(sp: Record<string, string | string[] | undefined>, items: { id: string; name: string }[]): SponsorHighlight | null {
   const added = first(sp.added);
@@ -74,9 +75,14 @@ function highlightFor(sp: Record<string, string | string[] | undefined>, items: 
   if (!item) return null;
   if (!added) return { id: item.id, tone: "success", message: "Changes saved." };
   if (first(sp.same) === "1") {
-    return { id: item.id, tone: "warning", message: `Added. You already had a sponsor named ${item.name} — both are kept.` };
+    return {
+      id: item.id,
+      tone: "warning",
+      message: `Added. You already had a sponsor named ${item.name} — both are kept.`,
+      attachFiles: true,
+    };
   }
-  return { id: item.id, tone: "success", message: "Added just now." };
+  return { id: item.id, tone: "success", message: "Added just now.", attachFiles: true };
 }
 
 export default async function SponsorshipsPage({ searchParams }: PageProps<"/sponsors">) {

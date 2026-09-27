@@ -22,6 +22,8 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
         { href: "/parts", label: "Parts queue", icon: "parts" },
         { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
         { href: "/resources", label: "Resources", icon: "resources", count: counts.pendingResources },
+        { href: "/posters", label: "Posters", icon: "posters" },
+        { href: "/fundraising", label: "Fundraising", icon: "fundraising" },
         ...(canUseSponsorships(actor) ? [{ href: "/sponsors", label: "Sponsorships", icon: "sponsors" } satisfies NavItem] : []),
       ],
     },

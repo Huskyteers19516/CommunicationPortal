@@ -893,10 +893,187 @@ function sponsorshipRows(
   }));
 }
 
+// ── Posters ───────────────────────────────────────────────────────────────────
+
+interface PosterSpec {
+  title: string;
+  description?: string;
+  event?: string;
+  /** Days from today. */
+  date?: number;
+  link?: string;
+  /** A tiny generated PNG (24×32, base64), or none for a link-only poster. */
+  png?: string;
+  creator: PersonKey;
+  addedHoursAgo: number;
+}
+
+/** Demo posters: three small generated pictures (one for a past event) and one link-only. Placeholder links only. */
+const POSTERS: PosterSpec[] = [
+  {
+    title: "Robot demo at the library",
+    description: "Tape one up by the front desk and one in the kids' section.",
+    event: "Library demo",
+    date: 9,
+    png: "iVBORw0KGgoAAAANSUhEUgAAABgAAAAgCAIAAACHPC9vAAAARElEQVR42mMQSzWhCmIYNWgoGvTm+weqoMFskNe9BjIQLQ0axIENcTAxJD6DyDNl1EWjLhq8WYT4UpVeBg3jMnuwGAQAvFNiKk9hXecAAAAASUVORK5CYII=",
+    creator: "ava",
+    addedHoursAgo: 20,
+  },
+  {
+    title: "Join the Huskyteers!",
+    description: "For the club fair and the STEM hallway.",
+    event: "Recruiting",
+    link: "https://design.example.com/huskyteers-recruiting",
+    png: "iVBORw0KGgoAAAANSUhEUgAAABgAAAAgCAIAAACHPC9vAAAARElEQVR42mM45MhDFcQwatBQNOj/97dUQYPZoN+TbMhAtDRoEAc2xMHEkPgMIs+UUReNumjwZhHiS1V6GTSMy+zBYhAAUPPV/bdL+NoAAAAASUVORK5CYII=",
+    creator: "amara",
+    addedHoursAgo: 24 * 6,
+  },
+  {
+    title: "Car wash fundraiser",
+    event: "Car wash",
+    date: 20,
+    link: "https://design.example.com/car-wash-flyer",
+    creator: "grace",
+    addedHoursAgo: 30,
+  },
+  {
+    title: "Summer showcase",
+    event: "Summer showcase",
+    date: -40,
+    png: "iVBORw0KGgoAAAANSUhEUgAAABgAAAAgCAIAAACHPC9vAAAARElEQVR42mOQc1hPFcQwatBQNOj9t/9UQYPZoISlv8hAtDRoEAc2xMHEkPgMIs+UUReNumjwZhHiS1V6GTSMy+zBYhAAi0TrMPLSmhwAAAAASUVORK5CYII=",
+    creator: "daniel",
+    addedHoursAgo: 24 * 50,
+  },
+];
+
+// ── Fundraising ───────────────────────────────────────────────────────────────
+
+interface FundraiserSpec {
+  name: string;
+  kind: NonNullable<Prisma.FundraiserCreateManyInput["kind"]>;
+  status: NonNullable<Prisma.FundraiserCreateManyInput["status"]>;
+  description?: string;
+  location?: string;
+  link?: string;
+  /** Days from today. */
+  starts?: number;
+  ends?: number;
+  goal?: number;
+  raised?: number;
+  lead?: PersonKey;
+  /** Most helpers (none = no limit). */
+  limit?: number;
+  creator: PersonKey;
+  /** Signed up with "I'll help", in this order (ACTIVE people only). */
+  helpers?: PersonKey[];
+}
+
+/** Demo fundraisers in every status: one full, one past its goal, placeholder links only. */
+const FUNDRAISERS: FundraiserSpec[] = [
+  {
+    name: "Car wash at the high school",
+    kind: "EVENT",
+    status: "UPCOMING",
+    description: "Bring towels, sponges, and a water bottle. Wear clothes that can get wet. Signs and buckets are in the Business closet.",
+    location: "School parking lot (north side)",
+    starts: 9,
+    goal: 600,
+    lead: "ava",
+    limit: 8,
+    creator: "amara",
+    helpers: ["ava", "grace", "ethan", "maya", "lucas"],
+  },
+  {
+    name: "Restaurant night",
+    kind: "EVENT",
+    status: "UPCOMING",
+    description: "Tell the cashier you're with the Huskyteers and part of the bill comes back to the team. Hand out flyers at the door.",
+    location: "Pizza place on Main St",
+    link: "https://flyers.example.com/restaurant-night",
+    starts: 16,
+    goal: 400,
+    lead: "daniel",
+    creator: "daniel",
+    helpers: ["daniel", "chloe"],
+  },
+  {
+    name: "Online donation drive",
+    kind: "ONLINE",
+    status: "ACTIVE",
+    description: "Share the link with family and friends. Every donation helps pay for parts and the competition fee.",
+    location: "Online",
+    link: "https://donate.example.com/huskyteers",
+    starts: -10,
+    ends: 20,
+    goal: 2000,
+    raised: 850,
+    lead: "amara",
+    limit: 3,
+    creator: "amara",
+    helpers: ["amara", "leila", "grace"],
+  },
+  {
+    name: "Candy grams for spirit week",
+    kind: "SALE",
+    status: "PLANNING",
+    description: "Idea: sell candy grams at lunch for a week. Need to ask the school office first.",
+    starts: 30,
+    ends: 34,
+    goal: 300,
+    lead: "grace",
+    limit: 6,
+    creator: "grace",
+  },
+  {
+    name: "Bake sale at back-to-school night",
+    kind: "SALE",
+    status: "DONE",
+    location: "School front lobby",
+    starts: -25,
+    goal: 400,
+    raised: 465,
+    lead: "leila",
+    creator: "amara",
+    helpers: ["leila", "samuel", "isabella", "aiden", "zara"],
+  },
+  {
+    name: "Team T-shirt sale",
+    kind: "SALE",
+    status: "DONE",
+    starts: -45,
+    ends: -30,
+    goal: 500,
+    raised: 380,
+    lead: "ava",
+    creator: "ava",
+    helpers: ["ava", "hannah"],
+  },
+  {
+    name: "Farmers market booth",
+    kind: "EVENT",
+    status: "CANCELLED",
+    description: "Cancelled: the market closed for the heat wave. Try again in the spring.",
+    location: "Downtown farmers market",
+    starts: -5,
+    goal: 300,
+    lead: "daniel",
+    limit: 4,
+    creator: "daniel",
+    helpers: ["daniel", "mateo"],
+  },
+];
+
+/** The season goal (TeamNote "fundraising-season-goal"), whole dollars. */
+const FUNDRAISING_SEASON_GOAL = 5000;
+/** When the season started (TeamNote "fundraising-season-start"), days from today: every demo fundraiser counts. */
+const FUNDRAISING_SEASON_START_DAYS = -60;
+
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 /** Delete every app row, children first. */
 async function wipeAppData(tx: Tx): Promise<void> {
+  await tx.fundraiser.deleteMany(); // helper lists cascade
+  await tx.poster.deleteMany(); // poster files cascade
   await tx.sponsorship.deleteMany();
   await tx.teamNote.deleteMany();
   await tx.part.deleteMany();
@@ -1163,6 +1340,62 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
       await tx.sponsorship.createMany({ data: sponsorshipRows(today, ago, uid) });
       // Key "sponsorship-info" = SPONSORSHIP_INFO_KEY in src/server/services/sponsorships.ts (not imported: server-only).
       await tx.teamNote.create({ data: { key: "sponsorship-info", body: SPONSORSHIP_INFO, updatedById: uid("amara") } });
+
+      // Posters (whole team): pictures for upcoming, undated, and past events, and one link-only.
+      for (const p of POSTERS) {
+        const bytes = p.png ? Uint8Array.from(Buffer.from(p.png, "base64")) : null;
+        const createdAt = ago(p.addedHoursAgo);
+        await tx.poster.create({
+          data: {
+            title: p.title,
+            description: p.description ?? "",
+            event: p.event ?? "",
+            eventDate: p.date === undefined ? null : dateOnlyToDb(addDays(today, p.date)),
+            link: p.link ?? "",
+            createdById: uid(p.creator),
+            createdAt,
+            file: bytes
+              ? { create: { filename: `${p.title.replace(/[^A-Za-z0-9 ]+/g, "").trim()}.png`, contentType: "image/png", size: bytes.byteLength, data: bytes, createdAt } }
+              : undefined,
+          },
+          select: { id: true },
+        });
+      }
+
+      // Fundraising: every status, helpers signed up (one fundraiser full), and a season goal.
+      for (const [i, f] of FUNDRAISERS.entries()) {
+        const day = (n: number | undefined) => (n === undefined ? null : dateOnlyToDb(addDays(today, n)));
+        const createdAt = ago(24 * (Math.max(7, 12 - (f.starts ?? 0)) + i));
+        await tx.fundraiser.create({
+          data: {
+            name: f.name,
+            kind: f.kind,
+            status: f.status,
+            description: f.description ?? "",
+            location: f.location ?? "",
+            link: f.link ?? "",
+            startsOn: day(f.starts),
+            endsOn: day(f.ends),
+            goalAmount: f.goal ?? null,
+            raisedAmount: f.raised ?? 0,
+            leadId: f.lead ? uid(f.lead) : null,
+            volunteerLimit: f.limit ?? null,
+            createdById: uid(f.creator),
+            createdAt,
+            volunteers: {
+              create: (f.helpers ?? []).map((who, j) => ({ userId: uid(who), createdAt: new Date(createdAt.getTime() + (j + 1) * 3 * HOUR) })),
+            },
+          },
+          select: { id: true },
+        });
+      }
+      // Keys = FUNDRAISING_SEASON_GOAL_KEY / _START_KEY in src/server/services/fundraising.ts (not imported: server-only).
+      await tx.teamNote.create({
+        data: { key: "fundraising-season-goal", body: String(FUNDRAISING_SEASON_GOAL), updatedById: uid("amara") },
+      });
+      await tx.teamNote.create({
+        data: { key: "fundraising-season-start", body: addDays(today, FUNDRAISING_SEASON_START_DAYS), updatedById: uid("amara") },
+      });
 
       return {
         users: keys.length,

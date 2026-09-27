@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleCheck, Globe, Mail, TriangleAlert } from "lucide-react";
+import { CircleCheck, Globe, Mail, Paperclip, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
@@ -50,6 +50,23 @@ function Amount({ value }: { value: number | null }) {
   return value === null ? <Empty /> : <span className="font-medium tabular-nums text-ink-900">{formatDollars(value)}</span>;
 }
 
+/** A paperclip with how many files are attached (forms, filled-out copies…), next to the sponsor's name. */
+function FileCount({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const label = `${count} ${count === 1 ? "file" : "files"}`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-ink-100 px-1.5 py-0.5 text-xs font-medium tabular-nums text-ink-600"
+    >
+      <Paperclip className="size-3" aria-hidden />
+      {count}
+    </span>
+  );
+}
+
 /** Website and email links under the sponsor's name. */
 function ContactLinks({ item, className }: { item: SponsorshipItem; className?: string }) {
   if (!item.website && !item.contactEmail) return null;
@@ -79,15 +96,30 @@ export interface SponsorHighlight {
   id: string;
   message: string;
   tone: "success" | "warning";
+  /** Just added: a link to its page to attach forms and files (they can only be added once it exists). */
+  attachFiles?: boolean;
 }
 
-function HighlightNote({ highlight, id }: { highlight: SponsorHighlight; id: string }) {
+/** `id` is on the message only: the sponsor's link is described by it, not by the "Attach" link. */
+function HighlightNote({ highlight, id, name }: { highlight: SponsorHighlight; id: string; name: string }) {
   const Icon = highlight.tone === "warning" ? TriangleAlert : CircleCheck;
   return (
-    <p id={id} className={cn("flex gap-1.5 text-sm font-medium", highlight.tone === "warning" ? "text-amber-900" : "text-brand-800")}>
-      <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
-      <span className="min-w-0 wrap-anywhere">{highlight.message}</span>
-    </p>
+    <div>
+      <p id={id} className={cn("flex gap-1.5 text-sm font-medium", highlight.tone === "warning" ? "text-amber-900" : "text-brand-800")}>
+        <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <span className="min-w-0 wrap-anywhere">{highlight.message}</span>
+      </p>
+      {highlight.attachFiles && (
+        <Link
+          href={sponsorHref(highlight.id)}
+          className="inline-flex min-h-10 items-center gap-1.5 rounded-md text-sm font-medium text-brand-700 underline underline-offset-2 hover:text-brand-800 md:min-h-8"
+        >
+          <Paperclip className="size-4 shrink-0" aria-hidden />
+          Attach forms and files
+          <span className="sr-only"> to {name}</span>
+        </Link>
+      )}
+    </div>
   );
 }
 
@@ -145,16 +177,19 @@ export function SponsorshipList({
           <ul className="divide-y divide-ink-100 md:hidden">
             {shown.map((item) => (
               <li key={item.id} className={cn("space-y-2 px-4 py-3", rowTone(item.id))}>
-                {highlight && marked(item.id) && <HighlightNote highlight={highlight} id={`sponsor-note-phone-${item.id}`} />}
+                {highlight && marked(item.id) && <HighlightNote highlight={highlight} id={`sponsor-note-phone-${item.id}`} name={item.name} />}
                 <div className="flex items-start justify-between gap-3">
-                  <Link
-                    href={sponsorHref(item.id)}
-                    data-sponsor-link={item.id}
-                    aria-describedby={marked(item.id) ? `sponsor-note-phone-${item.id}` : undefined}
-                    className="-my-1 flex min-h-10 min-w-0 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
-                  >
-                    {item.name}
-                  </Link>
+                  <div className="-my-1 flex min-w-0 items-center gap-1.5">
+                    <Link
+                      href={sponsorHref(item.id)}
+                      data-sponsor-link={item.id}
+                      aria-describedby={marked(item.id) ? `sponsor-note-phone-${item.id}` : undefined}
+                      className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
+                    >
+                      {item.name}
+                    </Link>
+                    <FileCount count={item.fileCount} />
+                  </div>
                   {item.amountReceived !== null && (
                     <span className="shrink-0 pt-1.5 text-sm">
                       <Amount value={item.amountReceived} />
@@ -220,14 +255,17 @@ export function SponsorshipList({
                 return (
                   <tr key={item.id} className={cn("align-top", rowTone(item.id))}>
                     <td className="min-w-0 px-3 py-2 lg:px-4">
-                      <Link
-                        href={sponsorHref(item.id)}
-                        data-sponsor-link={item.id}
-                        aria-describedby={marked(item.id) ? `sponsor-note-table-${item.id}` : undefined}
-                        className="flex min-h-10 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
-                      >
-                        {item.name}
-                      </Link>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <Link
+                          href={sponsorHref(item.id)}
+                          data-sponsor-link={item.id}
+                          aria-describedby={marked(item.id) ? `sponsor-note-table-${item.id}` : undefined}
+                          className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
+                        >
+                          {item.name}
+                        </Link>
+                        <FileCount count={item.fileCount} />
+                      </div>
                       <ContactLinks item={item} />
                       {folded.length > 0 && (
                         <p className="mt-0.5 text-xs text-ink-500 wrap-anywhere xl:hidden">
@@ -241,7 +279,7 @@ export function SponsorshipList({
                       )}
                       {highlight && marked(item.id) && (
                         <div className="mt-1">
-                          <HighlightNote highlight={highlight} id={`sponsor-note-table-${item.id}`} />
+                          <HighlightNote highlight={highlight} id={`sponsor-note-table-${item.id}`} name={item.name} />
                         </div>
                       )}
                     </td>

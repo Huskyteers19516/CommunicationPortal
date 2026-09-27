@@ -75,7 +75,7 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 
 The Business team's sponsor tracker (replaces their spreadsheet). Only the Business subteam and staff can see or change it
 (`canUseSponsorships`; pages show everyone else a short explanation, never data); deleting is for whoever added it, the Business leader, and all-scope
-staff (`canDeleteSponsorship`). Stages: Haven't started → Do soon → Needs work → Submitted → Accepted / Declined → Finished.
+staff (`canDeleteSponsorship`; the Business leader and all-scope staff are `canManageSponsorships`). Stages: Haven't started → Do soon → Needs work → Submitted → Accepted / Declined → Finished.
 Moving into Submitted/Accepted fills that date with today (team timezone) only if it's empty. `amountReceived` is whole
 dollars (`src/lib/money.ts`). "Info for applications" is a `TeamNote` (key `sponsorship-info`) — never store passwords in it.
 The edit form sends `version` (the `updatedAt` it loaded): a stale save is a `ConflictError`, so it can't undo a stage change
@@ -84,6 +84,16 @@ Field validation lives in `src/lib/sponsorship-fields.ts` (client-safe). `/spons
 with the same pure parser and field checks on the client (preview) and the server (`src/lib/sponsorship-import.ts`; bounded:
 1,000 rows, 40 columns, 300k characters, all read before the import lock), then imports all-or-nothing — optionally
 updating sponsors already here from the sheet's non-empty cells.
+Each sponsor can have attached files (`SponsorshipFile`, `services/sponsorship-files.ts`; e.g. a paper application form to
+print, or the filled-out copy): up to `LIMITS.sponsorFilesMax` per sponsor, checked like Resources uploads
+(`src/server/files/upload.ts`) and counted toward the same storage cap (`src/server/files/storage.ts`: one advisory lock,
+both tables summed). Each person's sponsor files stay under `SPONSOR_FILE_BYTES_PER_PERSON` (50 MB, checked under the same
+lock) unless they `canManageSponsorships`, so one account can't fill the storage. Everyone who can use Sponsorships adds
+and downloads them (served only by `src/app/(app)/sponsors/files/[id]/route.ts` with the Resources headers; 404 for
+everyone else); removing one is for its uploader and whoever can delete the sponsor (`canDeleteSponsorshipFile`).
+Deleting a sponsor deletes its files (its Remove question says how many). The card uploads as soon as a file is picked
+(nothing is left behind when the edit form is saved), and its actions `refresh()` the page when they fail, so a stale
+page catches up.
 
 ## Parts queue (`src/server/services/parts.ts`, `/parts`)
 
@@ -94,6 +104,45 @@ leaders + all-scope staff) reorder (up/down/top, advisory lock + renumber), edit
 (end of the queue). Requesters edit/remove their own part until someone claims it (`canEditPart`). No emails.
 Filters: process chips plus `?who=making` (claimed by me — Today's "You're making N parts" links here) and `?who=asked`;
 counts follow the active filters, ranks always come from the full queue. File links get `https://` added when missing.
+
+## Posters (`src/server/services/posters.ts`, `/posters`)
+
+The team's posters and flyers. Everyone ACTIVE sees them and adds one directly (no approval); whoever added it and everyone
+with admin access edit/remove it (`canEditPoster`). A poster needs an uploaded file (`PosterFile`, one per poster) or an
+http(s) design link (`https://` added to a bare `canva.com/…`), or both; `event` + optional `eventDate` (`@db.Date`, at most
+5 years back / 2 years ahead; an edit that keeps the saved date isn't re-checked) drive the tabs: **Upcoming** = no date or today and later (newest first), **Past** = earlier
+(latest event first), plus `?who=mine`; 48 per page (`queries/posters.ts`, metadata only, never bytes). Files are checked by
+their **contents** (magic bytes), not the name: PNG, JPG, GIF, WebP, or PDF only (SVG/HTML/HEIC are refused, with a HEIC
+hint; a PDF must start with `%PDF-`, only blank bytes before it), pictures must have a readable pixel size of at most
+`POSTER_IMAGE_MAX_SIDE` (12,000) a side and `POSTER_IMAGE_MAX_PIXELS` (50 million) in all (read from the header, GIFs
+including every frame, so a tiny file can't freeze everyone's phone), stored with the matching extension and type, ≤ 4 MB,
+under the shared storage lock and cap, and each person's poster
+files stay under `POSTER_FILE_BYTES_PER_PERSON` (50 MB) unless they have admin access. Creates (and edits that bring a new
+file) are rate-limited (`POSTER_RATE_LIMIT`, 30/hour). Editing can replace the file (a new `PosterFile` row, so its URL
+changes) or remove it (`removeFile`). Served by `src/app/(app)/posters/files/[id]/route.ts` (PosterFile id, any ACTIVE user,
+Resources headers, except inline responses are `immutable`: `private, max-age=604800`, safe because a file id never shows
+different bytes, so the grid isn't downloaded again on every visit). The form keeps the picked file in client state (browsers
+clear file inputs after a failed save), checks size/type before sending (`src/lib/posters.ts`), makes a PNG/JPG/WebP over
+4 MB into a smaller JPG in the browser (`components/posters/shrink-picture.ts`), previews pictures (one the browser can't
+show is taken off), and drops a picked file the server refused. Deleting a poster deletes its file. No emails.
+
+## Fundraising (`src/server/services/fundraising.ts`, `/fundraising`)
+
+Fundraisers (car wash, bake sale, donation page…) with a kind, status (Planning → Upcoming → Happening now → Done, or
+Cancelled), dates (`startsOn`/`endsOn`, `@db.Date`; no end date = one day; within 5 years back / 2 years ahead so a year
+typo like 0026 is caught — an edit may keep a date it already has), location, an http(s) link, a goal and amount
+raised (whole dollars via `src/lib/money.ts`), a lead (must be ACTIVE; an edit may keep a lead who left), and an optional
+number of helper spots. Everyone ACTIVE sees them and taps **I'll help** / **Leave**; the Business subteam and staff
+(`canManageFundraisers`) add, edit, remove, update the amount raised, take people off the helper list (any time), and set
+the season goal and start (`TeamNote`s `fundraising-season-goal` — empty = the page adds up each fundraiser's goal — and
+`fundraising-season-start`: only fundraisers whose last day is on or after it count toward the totals; empty = all-time).
+Helping and leaving are only while it's open (`fundraiserClosedReason` in `src/lib/fundraising.ts`: not Done/Cancelled and
+its last day, team timezone, hasn't passed); open ones whose dates passed are listed apart ("Dates passed") until someone
+marks them done. Sign-ups and edits lock the fundraiser row (`SELECT … FOR UPDATE`) before counting helpers — only ACTIVE
+ones count and are listed while it's open — so the spots limit holds under races and an edit can't set fewer spots than
+people signed up. The edit form sends the amount raised it loaded (`loadedRaisedAmount`): left as is, a newer amount from
+the quick box is kept; changed while someone else changed it, the save is refused on that field and the page refreshes so
+saving again replaces it. Totals leave out cancelled fundraisers. No emails.
 
 ## Dates
 
@@ -205,8 +254,13 @@ requests over 4.5 MB, so don't raise the file limit).
   approved or turned down (`reviewResource`, `canReviewResources`). A member's edit sends it back to PENDING.
 - Files are served only by `src/app/(app)/resources/files/[id]/route.ts` with the headers from `src/server/resources/serve.ts`:
   text as `text/plain`, png/jpeg/gif/webp and PDF inline, everything else (HTML, SVG, …) as an `application/octet-stream`
-  download; always `nosniff`, a sandboxing CSP (PDFs skip `sandbox`, which Chrome's PDF viewer refuses), and `no-store`.
+  download; always `nosniff`, a sandboxing CSP (PDFs skip `sandbox`, which Chrome's PDF viewer refuses), and `no-store`
+  (only poster files opt into browser caching, `immutable`).
   Windows executables/scripts are refused at upload (`BLOCKED_EXTENSIONS`). Never render uploaded content as HTML.
+- Upload checks (`src/server/files/upload.ts`) and the storage cap (`src/server/files/storage.ts`) are shared with sponsor
+  files and posters; any new kind of stored file must use `assertFileStorageRoom` so every file counts toward the same cap.
+  "Full" messages start with `storageFullSentence(usage)` (how much is Resources files vs sponsor files, plus posters when
+  there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
 
 ## Notifications (email)
 

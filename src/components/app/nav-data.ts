@@ -5,6 +5,8 @@ export type NavIcon =
   | "dashboard"
   | "parts"
   | "sponsors"
+  | "posters"
+  | "fundraising"
   | "questions"
   | "resources"
   | "overview"

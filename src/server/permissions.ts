@@ -240,10 +240,30 @@ export function canUseSponsorships(actor: ActorLike): boolean {
   return actor.subteam === "BUSINESS" || isStaff(actor);
 }
 
+/**
+ * Manage everything in Sponsorships: remove any sponsor or attached file, and upload sponsor files without the
+ * per-person limit. The Business leader and all-scope staff (captain, mentors, teachers, owners).
+ */
+export function canManageSponsorships(actor: ActorLike): boolean {
+  return hasAllScope(actor) || ledSubteam(actor) === "BUSINESS";
+}
+
 /** Delete a sponsorship: whoever added it, the Business leader, and all-scope staff. */
 export function canDeleteSponsorship(actor: ActorLike, s: { createdById: string | null }): boolean {
   if (!canUseSponsorships(actor)) return false;
-  return hasAllScope(actor) || ledSubteam(actor) === "BUSINESS" || (s.createdById !== null && s.createdById === actor.id);
+  return canManageSponsorships(actor) || (s.createdById !== null && s.createdById === actor.id);
+}
+
+/**
+ * Remove a file attached to a sponsorship: whoever uploaded it, plus everyone who can delete the sponsorship
+ * itself (whoever added the sponsor, the Business leader, all-scope staff).
+ */
+export function canDeleteSponsorshipFile(
+  actor: ActorLike,
+  f: { uploadedById: string | null; sponsorship: { createdById: string | null } },
+): boolean {
+  if (!canUseSponsorships(actor)) return false;
+  return (f.uploadedById !== null && f.uploadedById === actor.id) || canDeleteSponsorship(actor, f.sponsorship);
 }
 
 // ── Parts queue ───────────────────────────────────────────────────────────────
@@ -264,4 +284,18 @@ export function canEditPart(actor: ActorLike, p: PartLike): boolean {
 /** Drop a claim or mark a part done: the person making it, and managers. */
 export function canWorkOnPart(actor: ActorLike, p: PartLike): boolean {
   return canManageParts(actor) || (p.claimedById !== null && p.claimedById === actor.id);
+}
+
+// ── Posters (whole team) ──────────────────────────────────────────────────────
+
+/** Change or remove a poster: whoever added it, plus everyone with admin access (leaders, captain, mentors, teachers, owners). */
+export function canEditPoster(actor: ActorLike, poster: { createdById: string | null }): boolean {
+  return canAdminister(actor) || (poster.createdById !== null && poster.createdById === actor.id);
+}
+
+// ── Fundraising (whole team sees it and signs up to help) ─────────────────────
+
+/** Create, edit, and remove fundraisers: the Business subteam and staff (same people as Sponsorships). */
+export function canManageFundraisers(actor: ActorLike): boolean {
+  return canUseSponsorships(actor);
 }

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PartProcess, PartStatus } from "@/generated/prisma/enums";
+import { LIMITS } from "@/lib/constants";
 import { addDays, dateOnlyToDb } from "@/lib/dates";
 import type { Actor } from "@/server/actor";
 import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, ValidationError } from "@/server/errors";
@@ -714,6 +715,46 @@ describe("getPartsQueue", () => {
   });
 });
 
+describe("typing what a part is for", () => {
+  it("a category's name (any case or spacing) links to the category — Build's first; anything else is kept as text", async () => {
+    const linked = await createPart(ctxFor(p.asker), { ...validFields, forText: "  INTAKE " });
+    expect(await row(linked.id)).toMatchObject({ categoryId: cat.intake, forLabel: "" });
+
+    const typed = await createPart(ctxFor(p.asker), { ...validFields, forText: "Practice   field" });
+    expect(await row(typed.id)).toMatchObject({ categoryId: null, forLabel: "Practice field" });
+
+    // Empty = nothing specific.
+    const none = await createPart(ctxFor(p.asker), { ...validFields, forText: "" });
+    expect(await row(none.id)).toMatchObject({ categoryId: null, forLabel: "" });
+
+    // The same name in two subteams: Build's wins.
+    await t.db.taskCategory.create({ data: { subteam: "SOFTWARE", name: "Intake", nameKey: "intake", position: 9 } });
+    const both = await createPart(ctxFor(p.asker), { ...validFields, forText: "intake" });
+    expect((await row(both.id)).categoryId).toBe(cat.intake);
+    await t.db.taskCategory.deleteMany({ where: { subteam: "SOFTWARE", nameKey: "intake" } });
+  });
+
+  it("editing switches between a category and typed text, and the edit form and queue show it", async () => {
+    const { id } = await createPart(ctxFor(p.asker), { ...validFields, forText: "Scrimmage demo" });
+    expect((await getPartForEdit(p.asker, id, t.db))?.forText).toBe("Scrimmage demo");
+    const queue = await getPartsQueue(p.asker, { view: "queue", today: TEST_TODAY, now: TEST_NOW }, t.db);
+    expect(queue.items.find((i) => i.id === id)).toMatchObject({ category: null, forLabel: "Scrimmage demo" });
+
+    await updatePart(ctxFor(p.asker), { ...validFields, partId: id, forText: "Intake" });
+    expect(await row(id)).toMatchObject({ categoryId: cat.intake, forLabel: "" });
+    expect((await getPartForEdit(p.asker, id, t.db))?.forText).toBe("Intake");
+
+    await updatePart(ctxFor(p.asker), { ...validFields, partId: id, forText: "" });
+    expect(await row(id)).toMatchObject({ categoryId: null, forLabel: "" });
+  });
+
+  it("keeps it short", async () => {
+    const e = await createPart(ctxFor(p.asker), { ...validFields, forText: "x".repeat(LIMITS.partForMax + 1) }).catch((err) => err);
+    expect(e).toBeInstanceOf(ValidationError);
+    expect((e as ValidationError).fieldErrors.forText).toMatch(/under 60 characters/);
+  });
+});
+
 describe("getPartForEdit, category groups, and parts I'm making", () => {
   it("returns form values only to people who may change the part", async () => {
     const part = await makePart({ name: "Plate", neededBy: TEST_TODAY });
@@ -722,7 +763,7 @@ describe("getPartForEdit, category groups, and parts I'm making", () => {
       id: part.id,
       name: "Plate",
       quantity: 3,
-      categoryId: cat.intake,
+      forText: "Intake",
       neededBy: TEST_TODAY,
       byManager: false,
     });

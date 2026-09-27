@@ -112,20 +112,25 @@ model User {
 
   sessions            Session[]
   passwordResetTokens PasswordResetToken[]
-  tasksCreated        Task[]               @relation("TaskCreator")
-  assignments         TaskAssignment[]     @relation("AssignmentAssignee")
-  reviews             TaskAssignment[]     @relation("AssignmentReviewer")
-  questionsAsked      Question[]           @relation("QuestionAsker")
-  questionsReceived   Question[]           @relation("QuestionRecipient")
+  tasksCreated        Task[]                @relation("TaskCreator")
+  assignments         TaskAssignment[]      @relation("AssignmentAssignee")
+  reviews             TaskAssignment[]      @relation("AssignmentReviewer")
+  questionsAsked      Question[]            @relation("QuestionAsker")
+  questionsReceived   Question[]            @relation("QuestionRecipient")
   questionReplies     QuestionReply[]
-  resourcesCreated    Resource[]           @relation("ResourceCreator")
-  resourcesReviewed   Resource[]           @relation("ResourceReviewer")
-  categoriesCreated   TaskCategory[]       @relation("CategoryCreator")
-  sponsorshipsOwned   Sponsorship[]        @relation("SponsorshipOwner")
-  sponsorshipsCreated Sponsorship[]        @relation("SponsorshipCreator")
-  teamNotesEdited     TeamNote[]           @relation("TeamNoteEditor")
-  partsRequested      Part[]               @relation("PartRequester")
-  partsClaimed        Part[]               @relation("PartClaimer")
+  resourcesCreated    Resource[]            @relation("ResourceCreator")
+  resourcesReviewed   Resource[]            @relation("ResourceReviewer")
+  categoriesCreated   TaskCategory[]        @relation("CategoryCreator")
+  sponsorshipsOwned   Sponsorship[]         @relation("SponsorshipOwner")
+  sponsorshipsCreated Sponsorship[]         @relation("SponsorshipCreator")
+  sponsorshipFiles    SponsorshipFile[]     @relation("SponsorshipFileUploader")
+  postersCreated      Poster[]              @relation("PosterCreator")
+  fundraisersLed      Fundraiser[]          @relation("FundraiserLead")
+  fundraisersCreated  Fundraiser[]          @relation("FundraiserCreator")
+  fundraiserHelping   FundraiserVolunteer[] @relation("FundraiserVolunteer")
+  teamNotesEdited     TeamNote[]            @relation("TeamNoteEditor")
+  partsRequested      Part[]                @relation("PartRequester")
+  partsClaimed        Part[]                @relation("PartClaimer")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -383,8 +388,29 @@ model Sponsorship {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
+  files SponsorshipFile[]
+
   @@index([stage, closesOn])
   @@index([ownerId])
+}
+
+/// A file attached to a sponsorship, e.g. a paper application form to print and fill out, or the filled-out copy.
+/// Stored in Postgres like ResourceFile, so it counts toward the same storage cap.
+model SponsorshipFile {
+  id            String      @id @default(cuid())
+  sponsorshipId String
+  sponsorship   Sponsorship @relation(fields: [sponsorshipId], references: [id], onDelete: Cascade)
+  /// Original file name, cleaned up (no paths).
+  filename      String
+  /// Type reported by the browser. Only used to pick a safe way to serve it.
+  contentType   String
+  size          Int
+  data          Bytes
+  uploadedById  String?
+  uploadedBy    User?       @relation("SponsorshipFileUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime    @default(now())
+
+  @@index([sponsorshipId, createdAt])
 }
 
 /// Small shared notes edited in the app, by key (e.g. "sponsorship-info": team address, contact person, links).
@@ -426,6 +452,8 @@ model Part {
   notes         String        @default("")
   /// What it's for, e.g. Build → Intake (optional).
   categoryId    String?
+  /// What it's for, typed in, when it isn't one of the task categories (e.g. "Practice field"). Empty when categoryId is set.
+  forLabel      String        @default("")
   category      TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   neededBy      DateTime?     @db.Date
   /// Queue order among parts that aren't done (ascending = make it sooner).
@@ -442,4 +470,97 @@ model Part {
 
   @@index([status, position])
   @@index([claimedById, status])
+}
+
+/// A poster or flyer on the Posters page (whole team): an uploaded image/PDF and/or a link to the design (Canva, Drive…).
+model Poster {
+  id          String    @id @default(cuid())
+  title       String
+  description String    @default("")
+  /// Link to the editable design or the full-size file (http(s) only). Empty = none.
+  link        String    @default("")
+  /// What it's for, e.g. "Library demo" or "Recruiting" (optional).
+  event       String    @default("")
+  /// When that event is (optional); drives "Upcoming" vs "Past".
+  eventDate   DateTime? @db.Date
+  createdById String?
+  createdBy   User?     @relation("PosterCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  file PosterFile?
+
+  @@index([eventDate])
+  @@index([createdAt])
+}
+
+/// The uploaded image/PDF behind a Poster. Stored in Postgres like ResourceFile (same storage cap).
+model PosterFile {
+  id          String   @id @default(cuid())
+  posterId    String   @unique
+  poster      Poster   @relation(fields: [posterId], references: [id], onDelete: Cascade)
+  filename    String
+  contentType String
+  size        Int
+  data        Bytes
+  createdAt   DateTime @default(now())
+}
+
+/// What kind of fundraiser it is (drives the icon).
+enum FundraiserKind {
+  EVENT // car wash, restaurant night, demo day…
+  SALE // bake sale, merch, candy grams
+  ONLINE // donation page, crowdfunding
+  OTHER
+}
+
+enum FundraiserStatus {
+  PLANNING
+  UPCOMING
+  ACTIVE // happening now
+  DONE
+  CANCELLED
+}
+
+/// A fundraiser on the Fundraising page (whole team sees it and can sign up to help).
+model Fundraiser {
+  id             String           @id @default(cuid())
+  name           String
+  kind           FundraiserKind   @default(EVENT)
+  status         FundraiserStatus @default(PLANNING)
+  description    String           @default("")
+  location       String           @default("")
+  /// Donation page, sign-up sheet, flyer… (http(s) only). Empty = none.
+  link           String           @default("")
+  startsOn       DateTime?        @db.Date
+  endsOn         DateTime?        @db.Date
+  /// Goal and money raised so far, in whole US dollars.
+  goalAmount     Int?
+  raisedAmount   Int              @default(0)
+  /// Team member running it.
+  leadId         String?
+  lead           User?            @relation("FundraiserLead", fields: [leadId], references: [id], onDelete: SetNull)
+  /// Most helpers it needs. Null = no limit.
+  volunteerLimit Int?
+  createdById    String?
+  createdBy      User?            @relation("FundraiserCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  volunteers FundraiserVolunteer[]
+
+  @@index([status, startsOn])
+}
+
+/// Someone who tapped "I'll help" on a fundraiser.
+model FundraiserVolunteer {
+  id           String     @id @default(cuid())
+  fundraiserId String
+  fundraiser   Fundraiser @relation(fields: [fundraiserId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User       @relation("FundraiserVolunteer", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([fundraiserId, userId])
+  @@index([userId])
 }

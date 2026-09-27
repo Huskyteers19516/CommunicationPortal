@@ -17,7 +17,7 @@ test.describe("parts queue", () => {
     await page.getByLabel("Quantity").fill("3");
     await page.getByLabel("Material").fill("1/8 in polycarbonate");
     await page.getByLabel("File link").fill("ftp://cad.example.com/e2e-bracket.dxf");
-    await page.getByLabel(/^For\b/).selectOption({ label: "Intake" });
+    await page.getByLabel(/^For\b/).fill("intake"); // typed, any case — it links to the Build "Intake" category
     await page.getByRole("button", { name: "Add to the queue" }).click();
     await expect(page.locator("#fileUrl-error")).toHaveText("Enter a web link to the file, like drive.google.com/…");
     await expect(page.getByLabel("File link")).toBeFocused();

@@ -46,6 +46,16 @@ test("member", async ({ page }, info) => {
   await shoot(page, p, "16e-member-dashboard", "/tasks");
   await shoot(page, p, "16g-member-parts", "/parts");
   await shoot(page, p, "16h-member-add-part", "/parts/new");
+  await shoot(page, p, "16i-member-fundraising", "/fundraising");
+  const [fundraiser] = await sql<{ id: string }>(`SELECT id FROM "Fundraiser" WHERE status = 'ACTIVE' ORDER BY "createdAt" LIMIT 1`);
+  if (fundraiser) await shoot(page, p, "16j-member-fundraiser", `/fundraising/${fundraiser.id}`);
+  await shoot(page, p, "16k-member-posters", "/posters");
+  await shoot(page, p, "16l-member-posters-past", "/posters?view=past");
+  await shoot(page, p, "16m-member-add-poster", "/posters/new");
+  const [poster] = await sql<{ id: string }>(
+    `SELECT p.id FROM "Poster" p JOIN "PosterFile" f ON f."posterId" = p.id WHERE p."eventDate" IS NOT NULL ORDER BY p."eventDate" DESC LIMIT 1`,
+  );
+  if (poster) await shoot(page, p, "16n-member-poster", `/posters/${poster.id}`);
   const [signupTask] = await sql<{ id: string }>(`SELECT id FROM "Task" WHERE "signupOpen" = true ORDER BY "dueDate" LIMIT 1`);
   if (signupTask) await shoot(page, p, "16f-member-dashboard-task", `/tasks/${signupTask.id}`);
   await shoot(page, p, "16c-member-share-resource", "/resources/new");
@@ -116,6 +126,13 @@ test("business member (sponsorships)", async ({ page }, info) => {
     .fill("AMOUNT RECEIVED\tCOMPLETION STAGE\tBRAND/COMPANY\tEmail\tDATE ANNOUNCED\tDATE COMPLETED\tPERSON\n$250\tSubmitted\tTour Sponsor\ttour@example.com\t\t9/1\tAva\n\tsomeday\tAnother Sponsor\tnot-an-email\t\t\tBob");
   await page.waitForLoadState("networkidle");
   await page.screenshot({ path: `${dir(p)}/39e-business-import-preview.png`, fullPage: true });
+  await shoot(page, p, "39f-business-fundraising", "/fundraising");
+  await shoot(page, p, "39g-business-add-fundraiser", "/fundraising/new");
+  const [fundraiser] = await sql<{ id: string }>(`SELECT id FROM "Fundraiser" WHERE status = 'UPCOMING' ORDER BY "startsOn" LIMIT 1`);
+  if (fundraiser) {
+    await shoot(page, p, "39h-business-fundraiser", `/fundraising/${fundraiser.id}`);
+    await shoot(page, p, "39i-business-edit-fundraiser", `/fundraising/${fundraiser.id}?edit=1`);
+  }
 });
 
 test("admin", async ({ page }, info) => {

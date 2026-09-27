@@ -1,11 +1,13 @@
-// How uploaded Resources files are shown and served. Pure functions (no DB, no next/*), so the
-// route handler (src/app/(app)/resources/files/[id]/route.ts), the queries, and tests share them.
+// How uploaded files (Resources files, files attached to sponsors, and posters) are shown and served. Pure
+// functions (no DB, no next/*), so the route handlers (src/app/(app)/{resources,sponsors,posters}/files/[id]/route.ts,
+// via src/server/files/respond.ts), the queries, and tests share them.
 //
 // Uploaded files come from members, so they are never trusted:
 // - only plain text, a few image types, and PDF are shown in the browser; everything else
 //   (HTML, SVG, archives, CAD…) is always downloaded as application/octet-stream;
 // - text is served as text/plain, never as its own type, so code can't run;
-// - every response gets nosniff, a locked-down CSP, and no caching.
+// - every response gets nosniff, a locked-down CSP, and no caching (poster files, whose address never shows
+//   different bytes, may be kept by the viewer's browser: `immutable`).
 
 /** Shown inline as text/plain (and previewed on the resource's page). */
 const TEXT_EXTENSIONS = new Set([
@@ -104,8 +106,23 @@ export interface ServedFile {
   byteLength: number;
 }
 
-/** Response headers for sending an uploaded file. `download` forces a download (the "Download" button). */
-export function fileResponseHeaders(file: ServedFile, options: { download?: boolean } = {}): Record<string, string> {
+/** No caching: the default for uploaded files (Resources files and sponsor files can be replaced at the same address). */
+export const NO_STORE = "private, no-store";
+/**
+ * For files whose address never shows different bytes (a poster file: a new file gets a new id, and a removed one
+ * is a 404). Only the viewer's own browser keeps it, for a week, so the Posters grid isn't downloaded on every visit.
+ */
+export const IMMUTABLE_FILE_CACHE = "private, max-age=604800, immutable";
+
+export interface FileResponseOptions {
+  /** Force a download (the "Download" button). */
+  download?: boolean;
+  /** The bytes at this address never change: let the browser keep them when shown inline (downloads stay no-store). */
+  immutable?: boolean;
+}
+
+/** Response headers for sending an uploaded file. */
+export function fileResponseHeaders(file: ServedFile, options: FileResponseOptions = {}): Record<string, string> {
   const kind = previewKind(file.filename, file.contentType);
   const inline = !options.download && kind !== "other";
   let type = "application/octet-stream";
@@ -118,7 +135,7 @@ export function fileResponseHeaders(file: ServedFile, options: { download?: bool
     "Content-Disposition": contentDisposition(inline ? "inline" : "attachment", file.filename),
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": inline && kind === "pdf" ? PDF_CSP : FILE_CSP,
-    "Cache-Control": "private, no-store",
+    "Cache-Control": inline && options.immutable ? IMMUTABLE_FILE_CACHE : NO_STORE,
     "Cross-Origin-Resource-Policy": "same-origin",
   };
 }

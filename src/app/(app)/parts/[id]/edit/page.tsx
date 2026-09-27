@@ -57,7 +57,7 @@ export default async function EditPartPage({ params }: PageProps<"/parts/[id]/ed
             material: part.material,
             fileUrl: part.fileUrl,
             notes: part.notes,
-            categoryId: part.categoryId,
+            forText: part.forText,
             neededBy: part.neededBy,
           }}
         />

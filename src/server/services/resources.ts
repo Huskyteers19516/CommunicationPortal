@@ -13,6 +13,18 @@ import { checkbox, idSchema, optionalText, text } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors";
+import { assertFileStorageRoom, posterCleanupSentence, storageFullSentence } from "../files/storage";
+import {
+  BLOCKED_EXTENSIONS,
+  checkUploadedFile,
+  type CleanUpload,
+  cleanFilename,
+  fileError,
+  readUpload,
+  storedFileData,
+  type UploadedFile,
+  type UploadMessages,
+} from "../files/upload";
 import {
   canDeleteResource,
   canEditResource,
@@ -21,7 +33,6 @@ import {
   canViewResource,
 } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
-import { fileExtension } from "../resources/serve";
 
 export const RESOURCE_NOT_FOUND = "That resource no longer exists.";
 export const RESOURCE_ALREADY_REVIEWED = "Someone already reviewed this.";
@@ -97,81 +108,14 @@ export function parseLinksText(value: string): ResourceLink[] {
 // Uploaded files
 // ---------------------------------------------------------------------------------------------
 
-/** A file picked in the form. The Server Action reads it from FormData (formDataToObject only keeps its name). */
-export interface UploadedFile {
-  name: string;
-  /** Type reported by the browser (may be empty or wrong). */
-  type: string;
-  bytes: Uint8Array;
-}
+// Shared with sponsor files (src/server/files/upload.ts); re-exported so existing imports keep working.
+export { BLOCKED_EXTENSIONS, cleanFilename, type UploadedFile };
 
-/** Programs, scripts, and shortcuts that run on Windows when opened. Never accepted. */
-export const BLOCKED_EXTENSIONS: ReadonlySet<string> = new Set([
-  "exe", "msi", "msp", "msix", "msixbundle", "appx", "appxbundle", "bat", "cmd", "com", "scr", "pif", "cpl", "dll",
-  "sys", "drv", "ocx", "ps1", "ps1xml", "ps2", "psm1", "psd1", "psc1", "vb", "vbs", "vbe", "jse", "wsf", "wsh", "ws",
-  "wsc", "sct", "hta", "lnk", "url", "reg", "inf", "scf", "msc", "gadget", "application", "chm", "iso", "img", "vhd",
-  "vhdx", "appref-ms", "settingcontent-ms", "library-ms", "xll", "xbap",
-  // Run on double-click too (Windows Script Host / Java). Share JavaScript as a link or a .txt instead.
-  "js", "jar",
-]);
-
-/** C0/C1 controls, line/paragraph separators, BOM, and bidi overrides (which can disguise "exe.txt" as "txt.exe"). */
-function isUnsafeFilenameChar(code: number): boolean {
-  return (
-    code < 0x20 ||
-    (code >= 0x7f && code < 0xa0) ||
-    code === 0x200e ||
-    code === 0x200f ||
-    (code >= 0x2028 && code <= 0x202e) ||
-    (code >= 0x2066 && code <= 0x2069) ||
-    code === 0xfeff
-  );
-}
-
-/**
- * A safe display/download name: the base name only (no folders), no control or bidi characters,
- * no trailing dots/spaces, at most LIMITS.resourceFilenameMax characters (keeping the extension),
- * and "file" when nothing usable is left.
- */
-export function cleanFilename(name: string): string {
-  const base = name.split(/[\\/]/).pop() ?? "";
-  let out = "";
-  for (const ch of base) if (!isUnsafeFilenameChar(ch.codePointAt(0) ?? 0)) out += ch;
-  out = out
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[. ]+$/, ""); // Windows drops these, which could turn "x.exe." into "x.exe"
-  if (!out || /^\.+$/.test(out)) return "file";
-  const chars = Array.from(out);
-  const max = LIMITS.resourceFilenameMax;
-  if (chars.length <= max) return out;
-  const ext = fileExtension(out);
-  const tail = ext && ext.length <= 16 ? `.${ext}` : "";
-  return `${chars.slice(0, max - tail.length).join("").trimEnd()}${tail}`;
-}
-
-/** The browser's MIME type if it looks like one, else application/octet-stream. Only a hint for serving. */
-function cleanContentType(type: string): string {
-  const t = type.trim().toLowerCase().split(";")[0].trim();
-  return /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/.test(t) ? t : "application/octet-stream";
-}
-
-function readUpload(value: unknown): UploadedFile | null {
-  if (!value || typeof value !== "object") return null;
-  const v = value as Partial<Record<keyof UploadedFile, unknown>>;
-  if (!(v.bytes instanceof Uint8Array)) return null;
-  return { name: typeof v.name === "string" ? v.name : "", type: typeof v.type === "string" ? v.type : "", bytes: v.bytes };
-}
-
-interface CleanUpload {
-  filename: string;
-  contentType: string;
-  bytes: Uint8Array<ArrayBuffer>;
-}
-
-function fileError(message: string): ValidationError {
-  return new ValidationError(message, { file: message });
-}
+const RESOURCE_UPLOAD_MESSAGES: UploadMessages = {
+  tooBig: (size) =>
+    `That file is ${formatFileSize(size)}. Files can be up to ${RESOURCE_FILE_MAX_MB} MB, so for bigger files (like CAD) share a link instead.`,
+  blocked: (ext) => `.${ext} files can't be uploaded because they can run programs on a computer. Share a link instead.`,
+};
 
 /** Checks the picked file. `hasCurrentFile`: editing a file resource, so no new file = keep the old one. */
 function checkUpload(value: unknown, hasCurrentFile: boolean): CleanUpload | null {
@@ -180,19 +124,7 @@ function checkUpload(value: unknown, hasCurrentFile: boolean): CleanUpload | nul
     if (hasCurrentFile) return null;
     throw fileError("Choose a file to upload.");
   }
-  const size = upload.bytes.byteLength;
-  if (size === 0) throw fileError("That file is empty. Choose another one.");
-  if (size > LIMITS.resourceFileMaxBytes) {
-    throw fileError(
-      `That file is ${formatFileSize(size)}. Files can be up to ${RESOURCE_FILE_MAX_MB} MB, so for bigger files (like CAD) share a link instead.`,
-    );
-  }
-  const filename = cleanFilename(upload.name);
-  const ext = fileExtension(filename);
-  if (BLOCKED_EXTENSIONS.has(ext)) {
-    throw fileError(`.${ext} files can't be uploaded because they can run programs on a computer. Share a link instead.`);
-  }
-  return { filename, contentType: cleanContentType(upload.type), bytes: new Uint8Array(upload.bytes) };
+  return checkUploadedFile(upload, RESOURCE_UPLOAD_MESSAGES);
 }
 
 /** Files one member can have waiting for approval (or turned down) at once, so one account can't fill the storage. */
@@ -201,20 +133,22 @@ export const MEMBER_UNAPPROVED_FILE_BYTES = 20 * 1024 * 1024;
 type Tx = Prisma.TransactionClient;
 
 /**
- * Every uploaded file together must stay under LIMITS.resourceStorageMaxBytes (they live in Postgres),
- * and a member's files that aren't approved yet under MEMBER_UNAPPROVED_FILE_BYTES. Takes a transaction
- * lock first, so two uploads at the same moment can't both squeeze into the last bit of room.
+ * Every uploaded file together (Resources and sponsor files) must stay under LIMITS.resourceStorageMaxBytes
+ * (they live in Postgres), and a member's files that aren't approved yet under MEMBER_UNAPPROVED_FILE_BYTES.
+ * Takes the storage lock first (assertFileStorageRoom), so two uploads at the same moment can't both squeeze
+ * into the last bit of room.
  */
 async function assertStorageRoom(
   tx: Tx,
   ctx: ServiceContext,
   change: { adding: number; freeing: number; resourceId?: string },
 ): Promise<void> {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('hk-resource-storage'))`;
-  const { _sum } = await tx.resourceFile.aggregate({ _sum: { size: true } });
-  if ((_sum.size ?? 0) - change.freeing + change.adding > LIMITS.resourceStorageMaxBytes) {
-    throw fileError("The team's file storage is full. Share a link instead, or ask an admin to remove old files.");
-  }
+  await assertFileStorageRoom(
+    tx,
+    change,
+    (usage) =>
+      `${storageFullSentence(usage)} Share a link instead, or ask an admin to remove old Resources files. The Business leader, captain, mentors, and teachers can clear out sponsor files.${posterCleanupSentence(usage)}`,
+  );
   if (canManageResources(ctx.actor)) return;
   const mine = await tx.resourceFile.aggregate({
     _sum: { size: true },
@@ -231,10 +165,6 @@ async function assertStorageRoom(
       `You have ${formatFileSize(mine._sum.size ?? 0)} of files waiting for approval. Wait until a leader reviews them, or remove some.`,
     );
   }
-}
-
-function fileData(upload: CleanUpload) {
-  return { filename: upload.filename, contentType: upload.contentType, size: upload.bytes.byteLength, data: upload.bytes };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -350,7 +280,7 @@ export async function createResource(ctx: ServiceContext, raw: unknown): Promise
         pinned: manager && input.pinned,
         status: manager ? "APPROVED" : "PENDING",
         createdById: ctx.actor.id,
-        file: upload ? { create: fileData(upload) } : undefined,
+        file: upload ? { create: storedFileData(upload) } : undefined,
       },
       select: { id: true },
     });
@@ -408,7 +338,7 @@ export async function updateResource(ctx: ServiceContext, raw: unknown): Promise
     if (input.kind === "link") {
       await tx.resourceFile.deleteMany({ where: { resourceId } });
     } else if (input.upload) {
-      const file = fileData(input.upload);
+      const file = storedFileData(input.upload);
       await tx.resourceFile.upsert({ where: { resourceId }, create: { resourceId, ...file }, update: { ...file, createdAt: ctx.now } });
     }
   });

@@ -49,9 +49,16 @@ export function MaterialBadge({ material }: { material: string }) {
   return <WrappingBadge label="Material:">{material}</WrappingBadge>;
 }
 
-/** "For: Intake" (a Build category), "For: Vision · Software", "For: Events · Whole team". */
-export function ForBadge({ category }: { category: { name: string; subteam: Subteam | null } | null }) {
-  if (!category) return null;
+/** "For: Intake" (a Build category), "For: Vision · Software", "For: Events · Whole team", or typed-in text. */
+export function ForBadge({
+  category,
+  label = "",
+}: {
+  category: { name: string; subteam: Subteam | null } | null;
+  /** Typed-in "For" when it isn't a category. */
+  label?: string;
+}) {
+  if (!category) return label ? <WrappingBadge label="For:">{label}</WrappingBadge> : null;
   const where = category.subteam === "BUILD" ? "" : ` · ${category.subteam ? SUBTEAM_LABELS[category.subteam] : "Whole team"}`;
   return <WrappingBadge label="For:">{`${category.name}${where}`}</WrappingBadge>;
 }

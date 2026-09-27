@@ -687,6 +687,52 @@ describe("demo seed", () => {
     expect(info.body.toLowerCase()).not.toContain("password");
   });
 
+  it("has demo fundraisers in every status, with active helpers within the spots, and a season goal", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const fundraisers = await db.fundraiser.findMany({ include: { volunteers: true } });
+    expect(new Set(fundraisers.map((f) => f.status))).toEqual(new Set(["PLANNING", "UPCOMING", "ACTIVE", "DONE", "CANCELLED"]));
+    expect(fundraisers.some((f) => f.volunteerLimit !== null && f.volunteers.length === f.volunteerLimit)).toBe(true);
+    for (const f of fundraisers) {
+      if (f.link) expect(f.link, f.name).toMatch(/^https:\/\/[a-z]+\.example\.com\//);
+      if (f.leadId) expect(users.get(f.leadId)?.status, f.name).toBe("ACTIVE");
+      if (f.volunteerLimit !== null) expect(f.volunteers.length, f.name).toBeLessThanOrEqual(f.volunteerLimit);
+      if (f.startsOn && f.endsOn) expect(f.endsOn.getTime(), f.name).toBeGreaterThanOrEqual(f.startsOn.getTime());
+      for (const v of f.volunteers) {
+        expect(users.get(v.userId)?.status, f.name).toBe("ACTIVE");
+        expect(v.createdAt.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+      }
+    }
+    const goal = await db.teamNote.findUniqueOrThrow({ where: { key: "fundraising-season-goal" } });
+    expect(Number(goal.body)).toBeGreaterThan(0);
+    // The season started before every demo fundraiser, so they all count toward it.
+    const start = await db.teamNote.findUniqueOrThrow({ where: { key: "fundraising-season-start" } });
+    expect(start.body).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    for (const f of fundraisers) {
+      const lastDay = f.endsOn ?? f.startsOn ?? f.createdAt;
+      expect(lastDay.getTime(), f.name).toBeGreaterThanOrEqual(dateOnlyToDb(start.body).getTime());
+    }
+  });
+
+  it("has demo posters: small real PNGs and a link-only one, upcoming, undated, and past", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const posters = await db.poster.findMany({ include: { file: true } });
+    expect(posters.some((p) => p.file === null && p.link !== "")).toBe(true);
+    expect(posters.some((p) => p.eventDate === null)).toBe(true);
+    expect(posters.some((p) => p.eventDate && p.eventDate >= dateOnlyToDb(TEST_TODAY))).toBe(true);
+    expect(posters.some((p) => p.eventDate && p.eventDate < dateOnlyToDb(TEST_TODAY))).toBe(true);
+    for (const p of posters) {
+      expect(users.get(p.createdById!)?.status, p.title).toBe("ACTIVE");
+      expect(p.createdAt.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+      if (p.link) expect(p.link).toMatch(/^https:\/\/design\.example\.com\//);
+      if (!p.file) continue;
+      expect(p.file).toMatchObject({ contentType: "image/png", size: p.file.data.byteLength });
+      expect(p.file.filename).toMatch(/^[A-Za-z0-9 ]+\.png$/);
+      expect(Array.from(p.file.data.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    }
+  });
+
   it("refuses to run on a database that already has users", async () => {
     const before = await s.db.task.count();
     await expect(seed(s.db, { now: TEST_NOW, timezone: TEST_TZ })).rejects.toBeInstanceOf(SeedRefusedError);
@@ -704,13 +750,20 @@ describe("demo seed", () => {
     const filesBefore = await s.db.resourceFile.count();
     const partsBefore = await s.db.part.count();
     const sponsorshipsBefore = await s.db.sponsorship.count();
+    const fundraisersBefore = await s.db.fundraiser.count();
+    const helpersBefore = await s.db.fundraiserVolunteer.count();
+    const postersBefore = await s.db.poster.count();
+    const posterFilesBefore = await s.db.posterFile.count();
 
     const result = await seed(s.db, { now: TEST_NOW, timezone: TEST_TZ, reset: true });
     expect(await s.db.part.count()).toBe(partsBefore);
     expect(partsBefore).toBeGreaterThan(0);
     expect(await s.db.sponsorship.count()).toBe(sponsorshipsBefore);
     expect(sponsorshipsBefore).toBeGreaterThan(0);
-    expect(await s.db.teamNote.count()).toBe(1);
+    expect(await s.db.fundraiser.count()).toBe(fundraisersBefore);
+    expect(await s.db.fundraiserVolunteer.count()).toBe(helpersBefore);
+    expect(fundraisersBefore).toBeGreaterThan(0);
+    expect(await s.db.teamNote.count()).toBe(3); // sponsorship info + fundraising season goal and start
     expect(await s.db.user.count()).toBe(27);
     expect(await s.db.task.count()).toBe(result.counts.tasks);
     expect(await s.db.taskAssignment.count()).toBe(result.counts.assignments);
@@ -724,5 +777,9 @@ describe("demo seed", () => {
     expect(await s.db.resource.count()).toBe(resourcesBefore);
     expect(await s.db.resourceFile.count()).toBe(filesBefore);
     expect(filesBefore).toBeGreaterThan(0);
+    // Posters (and their files) too.
+    expect(await s.db.poster.count()).toBe(postersBefore);
+    expect(await s.db.posterFile.count()).toBe(posterFilesBefore);
+    expect(posterFilesBefore).toBeGreaterThan(0);
   });
 });

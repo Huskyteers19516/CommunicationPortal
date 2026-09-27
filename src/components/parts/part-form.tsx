@@ -5,7 +5,7 @@ import type { PartProcess } from "@/generated/prisma/enums";
 import { useFocusFirstError } from "@/components/auth/use-focus-first-error";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
-import { Field, FieldError, Input, Select, Textarea } from "@/components/ui/field";
+import { Field, FieldError, Input, Textarea } from "@/components/ui/field";
 import { FormMessage } from "@/components/ui/form-message";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { type ActionState, initialActionState } from "@/lib/action-state";
@@ -22,7 +22,8 @@ export interface PartFormInitial {
   material: string;
   fileUrl: string;
   notes: string;
-  categoryId: string;
+  /** "For": a category's name or anything typed in ("" = nothing specific). */
+  forText: string;
   neededBy: string;
 }
 
@@ -86,8 +87,8 @@ function PartFields({
   const value = (key: keyof PartFormInitial) => v?.[key] ?? initial[key] ?? "";
   const described = (key: string) => (errors[key] ? `${key}-error` : undefined);
   const process = value("process");
-  const categoryId = value("categoryId");
-  const knownCategory = categoryGroups.some((g) => g.options.some((o) => o.id === categoryId));
+  // Suggestions for "For": every category name once (Build's first, as the groups come in).
+  const suggestions = [...new Set(categoryGroups.flatMap((g) => g.options.map((o) => o.name)))];
 
   return (
     <CardBody className="space-y-5">
@@ -197,26 +198,32 @@ function PartFields({
       </Field>
 
       <div className="grid gap-5 sm:grid-cols-2">
-        <Field label="For" htmlFor="categoryId" error={errors.categoryId} optional hint="What it's for, like Intake or Drivetrain.">
-          <Select
-            id="categoryId"
-            name="categoryId"
-            defaultValue={knownCategory ? categoryId : ""}
-            invalid={!!errors.categoryId}
-            aria-describedby={described("categoryId")}
-          >
-            <option value="">Nothing specific</option>
-            {categoryGroups.map((g) => (
-              <optgroup key={g.label} label={g.label}>
-                {g.options.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </Select>
+        <Field
+          label="For"
+          htmlFor="forText"
+          error={errors.forText ?? errors.categoryId}
+          optional
+          hint="What it's for, like Intake or Drivetrain. Pick a suggestion or type your own."
+        >
+          <Input
+            id="forText"
+            name="forText"
+            list={suggestions.length ? "part-for-suggestions" : undefined}
+            maxLength={LIMITS.partForMax}
+            autoComplete="off"
+            defaultValue={value("forText")}
+            invalid={!!(errors.forText ?? errors.categoryId)}
+            aria-describedby={described(errors.forText ? "forText" : "categoryId")}
+            placeholder="e.g. Intake"
+          />
         </Field>
+        {suggestions.length > 0 && (
+          <datalist id="part-for-suggestions">
+            {suggestions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        )}
         <Field label="Needed by" htmlFor="neededBy" error={errors.neededBy} optional>
           <Input
             id="neededBy"
