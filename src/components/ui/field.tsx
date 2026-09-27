@@ -2,10 +2,13 @@ import { Children, cloneElement, isValidElement, type ComponentProps, type React
 import { cn } from "@/lib/cn";
 
 const control =
-  "block w-full rounded-lg border bg-white px-3 text-sm text-ink-900 shadow-sm placeholder:text-ink-400 transition-colors focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25 disabled:bg-ink-50 disabled:text-ink-500";
+  "block w-full rounded-lg border bg-white px-3 text-sm text-ink-900 shadow-sm placeholder:text-ink-400 transition-colors focus:outline-none focus:ring-2 disabled:bg-ink-50 disabled:text-ink-500";
 
 function border(invalid?: boolean) {
-  return invalid ? "border-red-400" : "border-ink-200";
+  // Border + focus ring together, so an invalid field stays red while focused (no competing focus colors).
+  return invalid
+    ? "border-red-400 focus:border-red-500 focus:ring-red-500/25"
+    : "border-ink-200 focus:border-brand-500 focus:ring-brand-500/25";
 }
 
 export function Input({ className, invalid, ...props }: ComponentProps<"input"> & { invalid?: boolean }) {
@@ -69,7 +72,8 @@ export function Field({
     <div className={cn("space-y-1.5", className)}>
       <Label htmlFor={htmlFor}>
         {label}
-        {optional && <span className="ml-1 font-normal text-ink-500">(optional)</span>}
+        {/* A real space, so screen readers say "Contact name (optional)", not "name(optional)". */}
+        {optional && <span className="font-normal text-ink-500"> (optional)</span>}
       </Label>
       {withDescription(children, hint && !error ? `${htmlFor}-hint` : undefined)}
       {hint && !error && (

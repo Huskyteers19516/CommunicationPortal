@@ -112,7 +112,7 @@ export function ResourceReviewActions({
           {hidden("reject")}
           <Label htmlFor={noteId}>
             Note for {first ?? "the member"}
-            <span className="ml-1 font-normal text-ink-500">(optional)</span>
+            <span className="font-normal text-ink-500"> (optional)</span>
           </Label>
           <Textarea
             // Remount after a failed send so it shows what was typed (and takes focus again).

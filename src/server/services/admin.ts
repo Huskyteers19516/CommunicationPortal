@@ -253,7 +253,14 @@ export async function updateUser(ctx: ServiceContext, raw: unknown): Promise<voi
       if (emailChanged) {
         await tx.passwordResetToken.updateMany({ where: { userId: target.id, usedAt: null }, data: { usedAt: ctx.now } });
       }
-      if (losesAccess) await tx.session.deleteMany({ where: { userId: target.id } });
+      if (losesAccess) {
+        await tx.session.deleteMany({ where: { userId: target.id } });
+        // Parts they were making go back up for grabs (they can't finish them now).
+        await tx.part.updateMany({
+          where: { claimedById: target.id, status: "CLAIMED" },
+          data: { status: "NEEDED", claimedById: null, claimedAt: null },
+        });
+      }
     });
   } catch (e) {
     // Someone else took the address between the check above and the write.
@@ -301,6 +308,9 @@ export const NO_ACTIVITY = {
   reviews: { none: {} },
   questionsAsked: { none: {} },
   questionReplies: { none: {} },
+  partsRequested: { none: {} },
+  partsClaimed: { none: {} },
+  sponsorshipsCreated: { none: {} },
 } satisfies Prisma.UserWhereInput;
 
 export const HAS_ACTIVITY_MESSAGE = "This person has activity in the portal — disable the account instead.";
@@ -318,7 +328,16 @@ export async function deleteUser(ctx: ServiceContext, raw: unknown): Promise<voi
       status: true,
       isAdmin: true,
       _count: {
-        select: { tasksCreated: true, assignments: true, reviews: true, questionsAsked: true, questionReplies: true },
+        select: {
+          tasksCreated: true,
+          assignments: true,
+          reviews: true,
+          questionsAsked: true,
+          questionReplies: true,
+          partsRequested: true,
+          partsClaimed: true,
+          sponsorshipsCreated: true,
+        },
       },
     },
   });

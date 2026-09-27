@@ -2,15 +2,30 @@
 import {
   AccountStatus,
   AssignmentStatus,
+  PartProcess,
+  PartStatus,
   Priority,
   QuestionStatus,
   ResourceStatus,
   ResourceType,
   Role,
+  SponsorshipStage,
   Subteam,
 } from "@/generated/prisma/enums";
 
-export { AccountStatus, AssignmentStatus, Priority, QuestionStatus, ResourceStatus, ResourceType, Role, Subteam };
+export {
+  AccountStatus,
+  AssignmentStatus,
+  PartProcess,
+  PartStatus,
+  Priority,
+  QuestionStatus,
+  ResourceStatus,
+  ResourceType,
+  Role,
+  SponsorshipStage,
+  Subteam,
+};
 
 export const TEAM_NAME = "The Huskyteers";
 export const TEAM_NUMBER = "19516";
@@ -74,6 +89,44 @@ export const RESOURCE_STATUS_LABELS: Record<ResourceStatus, string> = {
   PENDING: "Waiting for approval",
   APPROVED: "Approved",
   REJECTED: "Sent back",
+};
+
+/** In the order a sponsorship moves through them (used for sorting and the stage menu). */
+export const SPONSORSHIP_STAGES: SponsorshipStage[] = [
+  "NOT_STARTED",
+  "DO_SOON",
+  "IN_PROGRESS",
+  "SUBMITTED",
+  "ACCEPTED",
+  "DECLINED",
+  "FINISHED",
+];
+
+export const SPONSORSHIP_STAGE_LABELS: Record<SponsorshipStage, string> = {
+  NOT_STARTED: "Haven't started",
+  DO_SOON: "Do soon",
+  IN_PROGRESS: "Needs work",
+  SUBMITTED: "Submitted",
+  ACCEPTED: "Accepted",
+  DECLINED: "Declined",
+  FINISHED: "Finished",
+};
+
+export const PART_PROCESSES: PartProcess[] = ["PRINT_3D", "LASER_CUT", "CNC", "CUT", "MACHINE", "OTHER"];
+
+export const PART_PROCESS_LABELS: Record<PartProcess, string> = {
+  PRINT_3D: "3D print",
+  LASER_CUT: "Laser cut",
+  CNC: "CNC",
+  CUT: "Cut",
+  MACHINE: "Machine",
+  OTHER: "Other",
+};
+
+export const PART_STATUS_LABELS: Record<PartStatus, string> = {
+  NEEDED: "Up for grabs",
+  CLAIMED: "Being made",
+  DONE: "Done",
 };
 
 export const ROLES = Object.values(Role) as Role[];
@@ -157,4 +210,14 @@ export const LIMITS = {
   categoriesPerSubteamMax: 30,
   /** Most people a sign-up task can take. */
   signupLimitMax: 150,
+  sponsorNameMax: 120,
+  sponsorAskingMax: 200,
+  sponsorNotesMax: 5000,
+  /** Biggest amount received that can be entered, in dollars. */
+  sponsorAmountMax: 10_000_000,
+  teamNoteMax: 5000,
+  partNameMax: 120,
+  partMaterialMax: 80,
+  partNotesMax: 2000,
+  partQuantityMax: 500,
 } as const;

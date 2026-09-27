@@ -455,6 +455,16 @@ describe("updateUser", () => {
     expect(await t.db.user.findUniqueOrThrow({ where: { id: admin.id } })).toMatchObject({ isAdmin: true, status: "ACTIVE" });
   });
 
+  it("disabling someone puts the parts they were making back up for grabs", async () => {
+    const maker = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    const part = await t.db.part.create({
+      data: { name: "Spacer", status: "CLAIMED", claimedById: maker.id, claimedAt: TEST_NOW, requestedById: admin.id },
+    });
+    await updateUser(adminCtx(), { ...base(maker), status: "DISABLED" });
+    expect(await t.db.part.findUniqueOrThrow({ where: { id: part.id } })).toMatchObject({ status: "NEEDED", claimedById: null });
+    await t.db.part.deleteMany({ where: { id: part.id } });
+  });
+
   it("disabling or rejecting deletes that person's sessions", async () => {
     const m = await makeUser(t.db, { role: "MEMBER" });
     const r = await makeUser(t.db, { role: "MENTOR", status: "PENDING" });

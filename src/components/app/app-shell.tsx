@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { Actor } from "@/server/actor";
-import { canAccessManage, canAdminister, canViewEmailLog } from "@/server/permissions";
+import { canAccessManage, canAdminister, canUseSponsorships, canViewEmailLog } from "@/server/permissions";
 import type { NavCounts } from "@/server/queries/nav";
 import { HuskyMark, Logo } from "../brand/logo";
 import { BottomTabs, MobileNav, SidebarNav, SignOutButton } from "./nav-client";
@@ -19,8 +19,10 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
         { href: "/today", label: "Today", icon: "today" },
         { href: "/my-tasks", label: "My tasks", icon: "myTasks" },
         { href: "/tasks", label: "Task dashboard", icon: "dashboard" },
+        { href: "/parts", label: "Parts queue", icon: "parts" },
         { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
         { href: "/resources", label: "Resources", icon: "resources", count: counts.pendingResources },
+        ...(canUseSponsorships(actor) ? [{ href: "/sponsors", label: "Sponsorships", icon: "sponsors" } satisfies NavItem] : []),
       ],
     },
   ];

@@ -13,6 +13,7 @@ export const PEOPLE = {
   softwareMember: "maya.patel@example.com",
   buildMember: "ethan.chen@example.com",
   businessMember: "ava.thompson@example.com",
+  businessLeader: "amara.okafor@example.com",
 } as const;
 
 /** Unique suffix per test run + project so desktop and mobile runs don't collide. */

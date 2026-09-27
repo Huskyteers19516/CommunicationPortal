@@ -71,6 +71,30 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 - `/tasks` (Task dashboard) and `/tasks/[id]` are for every ACTIVE user (`queries/board.ts`). They show who's on each task
   with a **public** status only (done / checked off / to do — "sent back" shows as to do) and never notes.
 
+## Sponsorships (`src/server/services/sponsorships.ts`, `/sponsors`)
+
+The Business team's sponsor tracker (replaces their spreadsheet). Only the Business subteam and staff can see or change it
+(`canUseSponsorships`; pages show everyone else a short explanation, never data); deleting is for whoever added it, the Business leader, and all-scope
+staff (`canDeleteSponsorship`). Stages: Haven't started → Do soon → Needs work → Submitted → Accepted / Declined → Finished.
+Moving into Submitted/Accepted fills that date with today (team timezone) only if it's empty. `amountReceived` is whole
+dollars (`src/lib/money.ts`). "Info for applications" is a `TeamNote` (key `sponsorship-info`) — never store passwords in it.
+The edit form sends `version` (the `updatedAt` it loaded): a stale save is a `ConflictError`, so it can't undo a stage change
+made from the list meanwhile (the list's stage menu itself is last-write-wins and only writes the stage and an empty date).
+Field validation lives in `src/lib/sponsorship-fields.ts` (client-safe). `/sponsors/import` parses rows pasted from a sheet
+with the same pure parser and field checks on the client (preview) and the server (`src/lib/sponsorship-import.ts`; bounded:
+1,000 rows, 40 columns, 300k characters, all read before the import lock), then imports all-or-nothing — optionally
+updating sponsors already here from the sheet's non-empty cells.
+
+## Parts queue (`src/server/services/parts.ts`, `/parts`)
+
+What needs to be 3D printed, laser cut, CNC'd, cut, or machined, in priority order (`Part.position`, smaller = sooner).
+Everyone ACTIVE can add parts and claim one ("I'll make it": NEEDED → CLAIMED, conditional write so only one person wins).
+The claimer (or a manager) drops it (→ NEEDED, keeps its place) or marks it done (→ DONE). Managers (`canManageParts`: Build
+leaders + all-scope staff) reorder (up/down/top, advisory lock + renumber), edit/remove anything, and put done parts back
+(end of the queue). Requesters edit/remove their own part until someone claims it (`canEditPart`). No emails.
+Filters: process chips plus `?who=making` (claimed by me — Today's "You're making N parts" links here) and `?who=asked`;
+counts follow the active filters, ranks always come from the full queue. File links get `https://` added when missing.
+
 ## Dates
 
 Due dates are calendar days in the team timezone (`TEAM_TIMEZONE`, default America/Los_Angeles), stored as `@db.Date`.
@@ -163,7 +187,7 @@ export async function createThingAction(_prev: ActionState, formData: FormData):
 - `params` / `searchParams` are Promises: `export default async function Page({ params }: PageProps<"/manage/tasks/[id]">) { const { id } = await params; }`. Use `notFound()` for missing/forbidden items the user shouldn't know exist.
 - Set `export const metadata = { title: "..." }` on pages (title template adds " · Huskyteers Portal").
 - Forms: client components with `useActionState(action, initialActionState)`, `<SubmitButton>` (pending state), `<FormMessage state={state} />`, per-field errors via `<Field error={state?.fieldErrors?.title}>`, and `defaultValue={state?.values?.title ?? initial}` so input survives validation errors.
-- Use the UI kit: `Button/ButtonLink/buttonClasses`, `SubmitButton` (supports `confirm="Are you sure?"`), `Field/Input/Textarea/Select/CheckboxField`, `Card/CardHeader/CardBody`, `Badge/CountBubble`, `Alert`, `FormMessage`, `EmptyState`, `PageHeader`, `Avatar`, `ProgressBar`, `StatCard`, `LinkTabs`, `Pagination/parsePage`, `RichText` (user text; never `dangerouslySetInnerHTML`).
+- Use the UI kit: `Button/ButtonLink/buttonClasses` (size `icon` = 40px square icon button; `cn` only joins classes, so an override only wins if the kit leaves that property out — padding is left out when you pass your own `p-*`/`px-*`), `SubmitButton` (supports `confirm="Are you sure?"`), `Field/Input/Textarea/Select/CheckboxField`, `Card/CardHeader/CardBody`, `Badge/CountBubble`, `Alert`, `FormMessage`, `EmptyState`, `PageHeader`, `Avatar`, `ProgressBar`, `StatCard`, `LinkTabs`, `Pagination/parsePage`, `RichText` (user text; never `dangerouslySetInnerHTML`).
   Domain badges: `RoleBadge`, `SubteamBadge` (null = "Whole team"), `AccountStatusBadge`, `AssignmentStatusBadge`, `QuestionStatusBadge`, `PriorityBadge`, `DueBadge`; `UserChip`, `describeRole`.
 - Icons: `lucide-react` (v1 names, e.g. `MessageCircleQuestionMark`, `CircleCheck`, `LoaderCircle`).
 - **Mobile first**: most members use phones. Tap targets ≥ 40px, no horizontal page scroll at 375px wide (tables → stacked cards on small screens or `overflow-x-auto` wrappers), bottom tab bar occupies ~64px.

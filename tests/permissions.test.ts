@@ -1,8 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Actor } from "@/server/actor";
 import {
+  canAdminister,
   canAssignTo,
+  canDeleteSponsorship,
+  canEditPart,
+  canGrantRole,
+  canManageAccount,
   canManageCategories,
+  canManageParts,
+  canUseSponsorships,
+  canViewEmailLog,
+  canWorkOnPart,
+  grantableRoles,
+  isOwner,
   canManageTask,
   canReviewAssignment,
   canSignUpForTask,
@@ -223,5 +234,91 @@ describe("task dashboard rules", () => {
       expect(canSignUpForTask(who, { ...build, signupOpen: false }), who.name).toBe(false);
       expect(canSignUpForTask(who, { ...team, signupOpen: false }), who.name).toBe(false);
     }
+  });
+});
+
+describe("admin access and its guardrails", () => {
+  const acct = (a: Actor, over: Partial<{ status: Actor["status"]; isAdmin: boolean }> = {}) => ({
+    id: a.id,
+    role: a.role,
+    status: over.status ?? a.status,
+    isAdmin: over.isAdmin ?? a.isAdmin,
+  });
+
+  it("every leader, the captain, mentors, teachers, and owners have admin access; members don't", () => {
+    const p = people;
+    for (const who of [p.admin, p.captain, p.mentor, p.teacher, p.swLead, p.buildLead1, p.bizLead]) expect(canAdminister(who), who.name).toBe(true);
+    for (const who of [p.swMember, p.buildMember, p.bizMember]) expect(canAdminister(who), who.name).toBe(false);
+    expect(isOwner(p.admin)).toBe(true);
+    expect(isOwner(p.captain)).toBe(false);
+    expect(canViewEmailLog(p.admin)).toBe(true);
+    for (const who of [p.captain, p.mentor, p.buildLead1]) expect(canViewEmailLog(who), who.name).toBe(false);
+  });
+
+  it("accounts: leaders manage members and sign-ups up to their rank; captain/mentors/teachers also manage leaders; owners manage everyone", () => {
+    const p = people;
+    // Build leader
+    expect(canManageAccount(p.buildLead1, acct(p.buildMember))).toBe(true);
+    expect(canManageAccount(p.buildLead1, acct(p.swMember))).toBe(true);
+    expect(canManageAccount(p.buildLead1, acct(p.buildLead2))).toBe(false);
+    expect(canManageAccount(p.buildLead1, acct(p.captain))).toBe(false);
+    expect(canManageAccount(p.buildLead1, acct(p.pendingLead))).toBe(true); // a waiting leader sign-up
+    expect(canManageAccount(p.buildLead1, acct(p.mentor, { status: "PENDING" }))).toBe(false);
+    expect(canManageAccount(p.buildLead1, acct(p.buildLead1))).toBe(true); // yourself
+    // Captain / mentor / teacher
+    for (const who of [p.captain, p.mentor, p.teacher]) {
+      expect(canManageAccount(who, acct(p.buildLead2)), who.name).toBe(true);
+      expect(canManageAccount(who, acct(p.bizMember)), who.name).toBe(true);
+      expect(canManageAccount(who, acct(p.mentor.id === who.id ? p.teacher : p.mentor)), who.name).toBe(false);
+      expect(canManageAccount(who, acct(p.admin)), who.name).toBe(false); // an owner
+    }
+    // Owners: everyone. Members: nobody (not even themselves in Admin).
+    for (const target of Object.values(p)) expect(canManageAccount(p.admin, acct(target))).toBe(true);
+    expect(canManageAccount(p.buildMember, acct(p.buildMember))).toBe(false);
+  });
+
+  it("positions: below your own rank (up to it when approving); owners any", () => {
+    const p = people;
+    expect(grantableRoles(p.buildLead1)).toEqual(["MEMBER"]);
+    expect(grantableRoles(p.buildLead1, { approving: true })).toEqual(["MEMBER", "SOFTWARE_LEADER", "BUILD_LEADER", "BUSINESS_LEADER"]);
+    expect(grantableRoles(p.captain)).toEqual(["MEMBER", "SOFTWARE_LEADER", "BUILD_LEADER", "BUSINESS_LEADER"]);
+    expect(canGrantRole(p.captain, "MENTOR")).toBe(false);
+    expect(canGrantRole(p.captain, "MENTOR", { approving: true })).toBe(true);
+    expect(grantableRoles(p.admin)).toHaveLength(7);
+    expect(grantableRoles(p.buildMember, { approving: true })).toEqual([]);
+  });
+});
+
+describe("sponsorships and parts queue rules", () => {
+  it("sponsorships: the Business subteam and staff; deleting is for the creator, the Business leader, and all-scope staff", () => {
+    const p = people;
+    for (const who of [p.bizMember, p.bizLead, p.swLead, p.buildLead1, p.captain, p.mentor, p.teacher, p.admin]) {
+      expect(canUseSponsorships(who), who.name).toBe(true);
+    }
+    for (const who of [p.swMember, p.buildMember]) expect(canUseSponsorships(who), who.name).toBe(false);
+
+    const mine = { createdById: p.bizMember.id };
+    expect(canDeleteSponsorship(p.bizMember, mine)).toBe(true);
+    expect(canDeleteSponsorship(p.bizLead, mine)).toBe(true);
+    expect(canDeleteSponsorship(p.captain, mine)).toBe(true);
+    expect(canDeleteSponsorship(p.swLead, mine)).toBe(false); // can use the tracker, but it's not theirs
+    expect(canDeleteSponsorship(p.swMember, { createdById: p.swMember.id })).toBe(false); // no access at all
+    expect(canDeleteSponsorship(p.bizMember, { createdById: null })).toBe(false);
+  });
+
+  it("parts: Build leaders and all-scope staff manage the queue; requesters edit until someone grabs it; claimers finish", () => {
+    const p = people;
+    for (const who of [p.buildLead1, p.captain, p.mentor, p.teacher, p.admin]) expect(canManageParts(who), who.name).toBe(true);
+    for (const who of [p.swLead, p.bizLead, p.buildMember, p.swMember]) expect(canManageParts(who), who.name).toBe(false);
+
+    const waiting = { requestedById: p.swMember.id, claimedById: null, status: "NEEDED" as const };
+    const grabbed = { requestedById: p.swMember.id, claimedById: p.buildMember.id, status: "CLAIMED" as const };
+    expect(canEditPart(p.swMember, waiting)).toBe(true);
+    expect(canEditPart(p.swMember, grabbed)).toBe(false);
+    expect(canEditPart(p.buildMember, waiting)).toBe(false);
+    expect(canEditPart(p.buildLead1, grabbed)).toBe(true);
+    expect(canWorkOnPart(p.buildMember, grabbed)).toBe(true);
+    expect(canWorkOnPart(p.swMember, grabbed)).toBe(false);
+    expect(canWorkOnPart(p.buildLead2, grabbed)).toBe(true);
   });
 });

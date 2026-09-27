@@ -232,3 +232,36 @@ export function canEditResource(actor: ActorLike, r: ResourceLike): boolean {
 export function canDeleteResource(actor: ActorLike, r: ResourceLike): boolean {
   return canManageResources(actor) || (r.createdById !== null && r.createdById === actor.id);
 }
+
+// ── Sponsorships (Business team tracker) ──────────────────────────────────────
+
+/** See and edit the Sponsorships tracker: the Business subteam plus staff (leaders, captain, mentors, teachers, owners). */
+export function canUseSponsorships(actor: ActorLike): boolean {
+  return actor.subteam === "BUSINESS" || isStaff(actor);
+}
+
+/** Delete a sponsorship: whoever added it, the Business leader, and all-scope staff. */
+export function canDeleteSponsorship(actor: ActorLike, s: { createdById: string | null }): boolean {
+  if (!canUseSponsorships(actor)) return false;
+  return hasAllScope(actor) || ledSubteam(actor) === "BUSINESS" || (s.createdById !== null && s.createdById === actor.id);
+}
+
+// ── Parts queue ───────────────────────────────────────────────────────────────
+
+/** Reorder the parts queue and change or remove anyone's parts: Build leaders and all-scope staff. */
+export function canManageParts(actor: ActorLike): boolean {
+  return hasAllScope(actor) || ledSubteam(actor) === "BUILD";
+}
+
+type PartLike = { requestedById: string | null; claimedById: string | null; status: "NEEDED" | "CLAIMED" | "DONE" };
+
+/** Edit or remove a part: managers any; whoever asked for it while nobody has claimed it yet. */
+export function canEditPart(actor: ActorLike, p: PartLike): boolean {
+  if (canManageParts(actor)) return true;
+  return p.requestedById !== null && p.requestedById === actor.id && p.status === "NEEDED";
+}
+
+/** Drop a claim or mark a part done: the person making it, and managers. */
+export function canWorkOnPart(actor: ActorLike, p: PartLike): boolean {
+  return canManageParts(actor) || (p.claimedById !== null && p.claimedById === actor.id);
+}

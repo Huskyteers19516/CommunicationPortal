@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ChecklistList, ChecklistSection, DueGroupedList } from "@/components/checklist/checklist-list";
 import { firstName, greetingFor, longDate } from "@/components/checklist/format";
 import { ReviewQueueLink, TodaySummary } from "@/components/checklist/today-summary";
+import { PartsMakingLink } from "@/components/parts/parts-making-link";
 import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -14,6 +15,7 @@ import { env } from "@/server/env";
 import { canAccessManage } from "@/server/permissions";
 import { getTodayView } from "@/server/queries/checklist";
 import { getNavCounts } from "@/server/queries/nav";
+import { countPartsImMaking } from "@/server/queries/parts";
 
 export const metadata: Metadata = { title: "Today" };
 
@@ -29,10 +31,11 @@ export default async function TodayPage() {
   const today = todayInTimezone(timeZone, now);
   const nowIso = now.toISOString();
 
-  const [view, navCounts] = await Promise.all([
+  const [view, navCounts, partsMaking] = await Promise.all([
     getTodayView(actor, today),
     // Cached per request — the layout already loaded these for the nav badges.
     canAccessManage(actor) ? getNavCounts(actor) : null,
+    countPartsImMaking(actor),
   ]);
   const reviewCount = navCounts?.reviewQueue ?? 0;
 
@@ -50,6 +53,7 @@ export default async function TodayPage() {
       <div className="max-w-3xl space-y-6">
         {!allEmpty && <TodaySummary summary={view.summary} />}
         <ReviewQueueLink count={reviewCount} />
+        <PartsMakingLink count={partsMaking} />
 
         {allEmpty ? (
           <Card>

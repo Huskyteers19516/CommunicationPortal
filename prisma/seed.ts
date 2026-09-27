@@ -615,10 +615,291 @@ public class TeleOpMain extends LinearOpMode {
 }
 `;
 
+// ── Parts queue ───────────────────────────────────────────────────────────────
+
+interface PartSpec {
+  name: string;
+  process: Prisma.PartCreateManyInput["process"];
+  quantity?: number;
+  material: string;
+  file?: string;
+  notes?: string;
+  /** A Build category (see CATEGORIES). */
+  category?: string;
+  /** Needed by, in days from today. */
+  neededIn?: number;
+  asker: PersonKey;
+  askedHoursAgo: number;
+  /** Grabbed ("I'll make it") by, hours ago. */
+  maker?: { who: PersonKey; hoursAgo: number };
+  /** Marked done, hours ago (after being grabbed). */
+  doneHoursAgo?: number;
+}
+
+/** Parts that aren't done are listed in queue order (the first gets made first). */
+const PARTS: PartSpec[] = [
+  {
+    name: "Intake roller hub",
+    process: "PRINT_3D",
+    quantity: 4,
+    material: "PETG",
+    file: "https://cad.example.com/huskyteers/intake-roller-hub.stl",
+    notes: "40% infill, 4 walls. Two of them are spares.",
+    category: "Intake",
+    neededIn: 1,
+    asker: "ethan",
+    askedHoursAgo: 20,
+  },
+  {
+    name: "Outtake side plates",
+    process: "LASER_CUT",
+    quantity: 2,
+    material: "1/8 in polycarbonate",
+    file: "https://cad.example.com/huskyteers/outtake-side-plate.dxf",
+    notes: "Mirror the second one.",
+    category: "Outtake",
+    neededIn: 3,
+    asker: "marcus",
+    askedHoursAgo: 30,
+    maker: { who: "isabella", hoursAgo: 5 },
+  },
+  {
+    name: "Drivetrain motor mount",
+    process: "CNC",
+    quantity: 2,
+    material: "1/4 in aluminum (6061)",
+    file: "https://cad.example.com/huskyteers/drivetrain-motor-mount.step",
+    category: "Drivetrain",
+    neededIn: 6,
+    asker: "kenji",
+    askedHoursAgo: 48,
+  },
+  {
+    name: "Lift string spool",
+    process: "PRINT_3D",
+    quantity: 2,
+    material: "PLA",
+    file: "https://cad.example.com/huskyteers/lift-spool.stl",
+    category: "Lift",
+    asker: "sofia",
+    askedHoursAgo: 50,
+    maker: { who: "liam", hoursAgo: 26 },
+  },
+  {
+    name: "Lift extrusions cut to length",
+    process: "CUT",
+    quantity: 4,
+    material: "goBILDA U-channel",
+    notes: "Cut to 336 mm and deburr the ends.",
+    category: "Lift",
+    neededIn: 4,
+    asker: "zara",
+    askedHoursAgo: 8,
+  },
+  {
+    name: "Axle spacers",
+    process: "MACHINE",
+    quantity: 8,
+    material: "Delrin rod",
+    notes: "8 mm bore, 5 mm long. The lathe is in the back room.",
+    category: "Drivetrain",
+    asker: "mateo",
+    askedHoursAgo: 3,
+  },
+  {
+    name: "Driver station phone holder",
+    process: "PRINT_3D",
+    material: "PLA",
+    file: "https://cad.example.com/huskyteers/phone-holder.stl",
+    asker: "ethan",
+    askedHoursAgo: 72,
+    maker: { who: "hannah", hoursAgo: 60 },
+    doneHoursAgo: 40,
+  },
+  {
+    name: "Intake flap",
+    process: "OTHER",
+    material: "Polycarbonate sheet, heat-bent",
+    category: "Intake",
+    asker: "marcus",
+    askedHoursAgo: 120,
+    maker: { who: "ethan", hoursAgo: 100 },
+    doneHoursAgo: 90,
+  },
+];
+
+function partRows(
+  today: DateOnly,
+  ago: (hours: number) => Date,
+  uid: (key: PersonKey) => string,
+  buildCategory: (name: string) => string,
+): Prisma.PartCreateManyInput[] {
+  let position = 0;
+  return PARTS.map((p) => {
+    const done = p.doneHoursAgo !== undefined;
+    return {
+      name: p.name,
+      process: p.process,
+      quantity: p.quantity ?? 1,
+      material: p.material,
+      fileUrl: p.file ?? "",
+      notes: p.notes ?? "",
+      categoryId: p.category ? buildCategory(p.category) : null,
+      neededBy: p.neededIn === undefined ? null : dateOnlyToDb(addDays(today, p.neededIn)),
+      position: done ? 0 : position++,
+      status: done ? "DONE" : p.maker ? "CLAIMED" : "NEEDED",
+      requestedById: uid(p.asker),
+      claimedById: p.maker ? uid(p.maker.who) : null,
+      claimedAt: p.maker ? ago(p.maker.hoursAgo) : null,
+      doneAt: done ? ago(p.doneHoursAgo!) : null,
+      createdAt: ago(p.askedHoursAgo),
+    };
+  });
+}
+
+// ── Sponsorships ──────────────────────────────────────────────────────────────
+
+interface SponsorshipSpec {
+  name: string;
+  website?: string;
+  contactName?: string;
+  contactEmail?: string;
+  asking?: string;
+  amountReceived?: number;
+  stage: Prisma.SponsorshipCreateManyInput["stage"];
+  owner?: PersonKey;
+  creator: PersonKey;
+  /** Days from today. */
+  submitted?: number;
+  accepted?: number;
+  closes?: number;
+  notes?: string;
+}
+
+/** Demo asks in every stage: public company names with placeholder links and contacts (no real team info). */
+const SPONSORSHIPS: SponsorshipSpec[] = [
+  {
+    name: "Polymaker",
+    website: "https://sponsors.example.com/polymaker",
+    contactEmail: "education@polymaker.example.com",
+    asking: "10 spools of PLA filament",
+    stage: "SUBMITTED",
+    owner: "ava",
+    creator: "ava",
+    submitted: -9,
+    notes: "Sent the packet and our season plan. They usually reply within 3 weeks.",
+  },
+  {
+    name: "REV Robotics",
+    website: "https://sponsors.example.com/rev-robotics",
+    contactName: "Sponsorship team",
+    contactEmail: "sponsors@rev.example.com",
+    asking: "$500 in parts credit",
+    amountReceived: 500,
+    stage: "ACCEPTED",
+    owner: "amara",
+    creator: "amara",
+    submitted: -24,
+    accepted: -3,
+    notes: "Send a thank-you card and tag them in our next post.",
+  },
+  {
+    name: "Bambu Lab",
+    website: "https://sponsors.example.com/bambu-lab",
+    asking: "A1 mini printer for the build room",
+    stage: "DO_SOON",
+    owner: "daniel",
+    creator: "daniel",
+    closes: 4,
+  },
+  {
+    name: "Boeing",
+    website: "https://sponsors.example.com/boeing-stem",
+    asking: "$2,500 STEM grant",
+    stage: "IN_PROGRESS",
+    owner: "leila",
+    creator: "amara",
+    closes: 12,
+    notes: "Needs two letters of recommendation (ask Mr. Kim and Elena).",
+  },
+  { name: "Costco", asking: "Snacks and water for competition day", stage: "NOT_STARTED", creator: "grace", closes: 30 },
+  {
+    name: "Home Depot",
+    website: "https://sponsors.example.com/home-depot",
+    contactEmail: "community@homedepot.example.com",
+    asking: "$750 gift card for tools and lumber",
+    amountReceived: 750,
+    stage: "FINISHED",
+    owner: "ava",
+    creator: "ava",
+    submitted: -60,
+    accepted: -41,
+  },
+  {
+    name: "Lockheed Martin",
+    website: "https://sponsors.example.com/lockheed-martin",
+    asking: "$1,000 team grant",
+    stage: "DECLINED",
+    owner: "amara",
+    creator: "amara",
+    submitted: -35,
+    notes: "They fund in the spring. Try again in February.",
+  },
+  {
+    name: "Qualcomm",
+    website: "https://sponsors.example.com/qualcomm",
+    asking: "Robot parts sponsorship",
+    stage: "NOT_STARTED",
+    owner: "grace",
+    creator: "grace",
+    closes: -2,
+    notes: "Missed this round. Check when the next one opens.",
+  },
+];
+
+/** The "Info for applications" card (TeamNote "sponsorship-info"): placeholders only, never passwords. */
+const SPONSORSHIP_INFO = [
+  "Demo info: replace it with the team's details.",
+  "Team address: 123 Example Ave, Anaheim, CA",
+  "Person of contact: Amara Okafor (Business lead)",
+  "Team email: team@example.com",
+  "Sponsorship packet: https://docs.example.com/sponsorship-packet",
+  "Grant list: https://docs.example.com/grant-list",
+  "Instagram: @example_team",
+].join("\n");
+
+function sponsorshipRows(
+  today: DateOnly,
+  ago: (hours: number) => Date,
+  uid: (key: PersonKey) => string,
+): Prisma.SponsorshipCreateManyInput[] {
+  const day = (n: number | undefined) => (n === undefined ? null : dateOnlyToDb(addDays(today, n)));
+  return SPONSORSHIPS.map((s, i) => ({
+    name: s.name,
+    website: s.website ?? "",
+    contactName: s.contactName ?? "",
+    contactEmail: s.contactEmail ?? "",
+    asking: s.asking ?? "",
+    amountReceived: s.amountReceived ?? null,
+    stage: s.stage,
+    ownerId: s.owner ? uid(s.owner) : null,
+    submittedOn: day(s.submitted),
+    acceptedOn: day(s.accepted),
+    closesOn: day(s.closes),
+    notes: s.notes ?? "",
+    createdById: uid(s.creator),
+    // Added a few days before it was sent (or a couple of weeks ago).
+    createdAt: ago(24 * Math.max(14, 3 - (s.submitted ?? 0)) + i),
+  }));
+}
+
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 /** Delete every app row, children first. */
 async function wipeAppData(tx: Tx): Promise<void> {
+  await tx.sponsorship.deleteMany();
+  await tx.teamNote.deleteMany();
+  await tx.part.deleteMany();
   await tx.resource.deleteMany();
   await tx.emailLog.deleteMany();
   await tx.rateLimit.deleteMany();
@@ -869,6 +1150,19 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
           reviewNote: "That album is private, so the team can't open it. Share it with the team first, then send it again.",
         },
       });
+
+      // Parts queue: Build's parts to make, most important first; two being made, two done.
+      const buildCategory = (name: string) => {
+        const found = categories.find((c) => c.subteam === "BUILD" && c.name === name);
+        if (!found) throw new Error(`seed: no Build category "${name}"`);
+        return found.id;
+      };
+      await tx.part.createMany({ data: partRows(today, ago, uid, buildCategory) });
+
+      // Sponsorships (Business): every stage, money in on two, deadlines coming up, one missed.
+      await tx.sponsorship.createMany({ data: sponsorshipRows(today, ago, uid) });
+      // Key "sponsorship-info" = SPONSORSHIP_INFO_KEY in src/server/services/sponsorships.ts (not imported: server-only).
+      await tx.teamNote.create({ data: { key: "sponsorship-info", body: SPONSORSHIP_INFO, updatedById: uid("amara") } });
 
       return {
         users: keys.length,

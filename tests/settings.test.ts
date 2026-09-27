@@ -644,6 +644,47 @@ describe("demo seed", () => {
     expect(code).toMatchObject({ status: "APPROVED", type: "CODE", file: { filename: "TeleOpMain.java" } });
     expect(new TextDecoder().decode(code!.file!.data)).toContain("public class TeleOpMain");
     expect(code!.file!.size).toBe(code!.file!.data.byteLength);
+
+    // Parts queue: every process, a clear order (positions 0..n-1), two being made by active members, two done.
+    const parts = await db.part.findMany({ include: { category: true }, orderBy: { position: "asc" } });
+    expect(new Set(parts.map((x) => x.process))).toEqual(new Set(["PRINT_3D", "LASER_CUT", "CNC", "CUT", "MACHINE", "OTHER"]));
+    const queue = parts.filter((x) => x.status !== "DONE");
+    expect(queue.map((x) => x.position)).toEqual(queue.map((_, i) => i));
+    expect(queue.filter((x) => x.status === "CLAIMED")).toHaveLength(2);
+    expect(parts.filter((x) => x.status === "DONE")).toHaveLength(2);
+    for (const x of parts) {
+      expect(byId.get(x.requestedById!)?.status, x.name).toBe("ACTIVE");
+      if (x.category) expect(x.category.subteam, x.name).toBe("BUILD");
+      if (x.fileUrl) expect(x.fileUrl).toMatch(/^https:\/\/cad\.example\.com\//);
+      if (x.status === "NEEDED") expect(x.claimedById).toBeNull();
+      else {
+        expect(byId.get(x.claimedById!)?.status, x.name).toBe("ACTIVE");
+        expect(x.claimedAt!.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+      }
+      if (x.status === "DONE") expect(x.doneAt!.getTime()).toBeGreaterThanOrEqual(x.claimedAt!.getTime());
+      else expect(x.doneAt).toBeNull();
+    }
+  });
+
+  it("has demo sponsorships in every stage and placeholder application info", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const sponsorships = await db.sponsorship.findMany();
+    expect(new Set(sponsorships.map((x) => x.stage))).toEqual(
+      new Set(["NOT_STARTED", "DO_SOON", "IN_PROGRESS", "SUBMITTED", "ACCEPTED", "DECLINED", "FINISHED"]),
+    );
+    expect(sponsorships.some((x) => x.amountReceived !== null)).toBe(true);
+    expect(sponsorships.some((x) => x.ownerId === null)).toBe(true);
+    for (const x of sponsorships) {
+      if (x.ownerId) expect(users.get(x.ownerId), x.name).toMatchObject({ status: "ACTIVE", subteam: "BUSINESS" });
+      expect(users.get(x.createdById!)?.status, x.name).toBe("ACTIVE");
+      if (x.website) expect(x.website).toMatch(/^https:\/\/sponsors\.example\.com\//);
+      if (x.contactEmail) expect(x.contactEmail).toMatch(/@([a-z]+\.)*example\.com$/);
+      if (["SUBMITTED", "ACCEPTED", "FINISHED"].includes(x.stage)) expect(x.submittedOn, x.name).not.toBeNull();
+    }
+    const info = await db.teamNote.findUniqueOrThrow({ where: { key: "sponsorship-info" } });
+    expect(info.body).toContain("123 Example Ave, Anaheim, CA");
+    expect(info.body.toLowerCase()).not.toContain("password");
   });
 
   it("refuses to run on a database that already has users", async () => {
@@ -661,8 +702,15 @@ describe("demo seed", () => {
     await s.db.user.create({ data: { name: "Extra", email: "extra@example.com", passwordHash: await hashPassword("whatever-123"), role: "MEMBER", subteam: "BUILD" } });
     const resourcesBefore = await s.db.resource.count();
     const filesBefore = await s.db.resourceFile.count();
+    const partsBefore = await s.db.part.count();
+    const sponsorshipsBefore = await s.db.sponsorship.count();
 
     const result = await seed(s.db, { now: TEST_NOW, timezone: TEST_TZ, reset: true });
+    expect(await s.db.part.count()).toBe(partsBefore);
+    expect(partsBefore).toBeGreaterThan(0);
+    expect(await s.db.sponsorship.count()).toBe(sponsorshipsBefore);
+    expect(sponsorshipsBefore).toBeGreaterThan(0);
+    expect(await s.db.teamNote.count()).toBe(1);
     expect(await s.db.user.count()).toBe(27);
     expect(await s.db.task.count()).toBe(result.counts.tasks);
     expect(await s.db.taskAssignment.count()).toBe(result.counts.assignments);

@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
 import { LIMITS, RESOURCE_TYPES } from "@/lib/constants";
 import { formatFileSize, RESOURCE_FILE_MAX_MB } from "@/lib/files";
+import { parseHttpUrl } from "@/lib/urls";
 import { checkbox, idSchema, optionalText, text } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
@@ -29,20 +30,8 @@ const HOUR = 60 * 60 * 1000;
 /** Adds per person per hour: people with admin access / everyone else (their shares email the reviewers). */
 const RATE_LIMITS = { manager: 60, member: 20 } as const;
 
-/** An absolute http(s) URL, normalised. Anything else (javascript:, data:, relative…) is rejected. */
-export function parseHttpUrl(value: string): string | null {
-  const raw = value.trim();
-  if (!raw || raw.length > LIMITS.resourceUrlMax) return null;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (url.username || url.password) return null;
-    // Percent-encoding can lengthen it; the stored value must still fit so it can be saved again.
-    return url.href.length <= LIMITS.resourceUrlMax ? url.href : null;
-  } catch {
-    return null;
-  }
-}
+// Lives in src/lib/urls.ts (the browser uses it too); re-exported so existing imports keep working.
+export { parseHttpUrl };
 
 const urlField = z
   .string({ error: "Link is required." })

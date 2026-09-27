@@ -121,6 +121,11 @@ model User {
   resourcesCreated    Resource[]           @relation("ResourceCreator")
   resourcesReviewed   Resource[]           @relation("ResourceReviewer")
   categoriesCreated   TaskCategory[]       @relation("CategoryCreator")
+  sponsorshipsOwned   Sponsorship[]        @relation("SponsorshipOwner")
+  sponsorshipsCreated Sponsorship[]        @relation("SponsorshipCreator")
+  teamNotesEdited     TeamNote[]           @relation("TeamNoteEditor")
+  partsRequested      Part[]               @relation("PartRequester")
+  partsClaimed        Part[]               @relation("PartClaimer")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -201,6 +206,7 @@ model TaskCategory {
   updatedAt   DateTime @updatedAt
 
   tasks Task[]
+  parts Part[]
 
   @@unique([subteam, nameKey])
   @@index([subteam, position])
@@ -337,4 +343,103 @@ model ResourceFile {
   size        Int
   data        Bytes
   createdAt   DateTime @default(now())
+}
+
+/// Where a sponsorship ask stands (the stages the Business team used in their spreadsheet).
+enum SponsorshipStage {
+  NOT_STARTED // "Haven't started"
+  DO_SOON
+  IN_PROGRESS // "Needs work"
+  SUBMITTED // sent, waiting to hear back
+  ACCEPTED
+  DECLINED
+  FINISHED // received / wrapped up
+}
+
+/// One sponsor, donor, or grant the Business team is asking (Sponsorships page).
+model Sponsorship {
+  id             String           @id @default(cuid())
+  /// Company, brand, or grant, e.g. "Polymaker" or "FIRST team grant".
+  name           String
+  /// Their website or application page (http(s) only). Empty = none.
+  website        String           @default("")
+  contactName    String           @default("")
+  contactEmail   String           @default("")
+  /// What we're hoping to get, e.g. "$1,000" or "10 spools of filament".
+  asking         String           @default("")
+  /// Money received, in whole US dollars. Null = nothing yet (or not money).
+  amountReceived Int?
+  stage          SponsorshipStage @default(NOT_STARTED)
+  /// Team member handling it.
+  ownerId        String?
+  owner          User?            @relation("SponsorshipOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  submittedOn    DateTime?        @db.Date
+  acceptedOn     DateTime?        @db.Date
+  /// Application deadline.
+  closesOn       DateTime?        @db.Date
+  notes          String           @default("")
+  createdById    String?
+  createdBy      User?            @relation("SponsorshipCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([stage, closesOn])
+  @@index([ownerId])
+}
+
+/// Small shared notes edited in the app, by key (e.g. "sponsorship-info": team address, contact person, links).
+model TeamNote {
+  key         String   @id
+  body        String   @default("")
+  updatedById String?
+  updatedBy   User?    @relation("TeamNoteEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+  updatedAt   DateTime @updatedAt
+}
+
+/// How a part gets made (Parts queue).
+enum PartProcess {
+  PRINT_3D
+  LASER_CUT
+  CNC
+  CUT // saw / shear / hand cut
+  MACHINE // mill, lathe, drill press
+  OTHER
+}
+
+/// NEEDED (up for grabs) -> CLAIMED (someone is making it) -> DONE.
+enum PartStatus {
+  NEEDED
+  CLAIMED
+  DONE
+}
+
+/// A part someone needs printed, cut, or machined. The queue is ordered by `position` (smaller = sooner).
+model Part {
+  id            String        @id @default(cuid())
+  name          String
+  process       PartProcess   @default(PRINT_3D)
+  quantity      Int           @default(1)
+  /// e.g. "PLA", "1/8 in aluminum".
+  material      String        @default("")
+  /// Link to the CAD / STL / drawing (http(s) only). Empty = none.
+  fileUrl       String        @default("")
+  notes         String        @default("")
+  /// What it's for, e.g. Build → Intake (optional).
+  categoryId    String?
+  category      TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  neededBy      DateTime?     @db.Date
+  /// Queue order among parts that aren't done (ascending = make it sooner).
+  position      Int           @default(0)
+  status        PartStatus    @default(NEEDED)
+  requestedById String?
+  requestedBy   User?         @relation("PartRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  claimedById   String?
+  claimedBy     User?         @relation("PartClaimer", fields: [claimedById], references: [id], onDelete: SetNull)
+  claimedAt     DateTime?
+  doneAt        DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([status, position])
+  @@index([claimedById, status])
 }

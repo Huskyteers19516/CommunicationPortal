@@ -44,6 +44,8 @@ test("member", async ({ page }, info) => {
   await shoot(page, p, "16-member-settings", "/settings");
   await shoot(page, p, "16b-member-resources", "/resources");
   await shoot(page, p, "16e-member-dashboard", "/tasks");
+  await shoot(page, p, "16g-member-parts", "/parts");
+  await shoot(page, p, "16h-member-add-part", "/parts/new");
   const [signupTask] = await sql<{ id: string }>(`SELECT id FROM "Task" WHERE "signupOpen" = true ORDER BY "dueDate" LIMIT 1`);
   if (signupTask) await shoot(page, p, "16f-member-dashboard-task", `/tasks/${signupTask.id}`);
   await shoot(page, p, "16c-member-share-resource", "/resources/new");
@@ -92,8 +94,28 @@ test("build leader", async ({ page }, info) => {
   await shoot(page, p, "33-leader-add-resource", "/resources/new");
   await shoot(page, p, "36-leader-dashboard", "/tasks");
   await shoot(page, p, "37-leader-categories", "/manage/categories");
+  await shoot(page, p, "38-leader-parts", "/parts");
+  await shoot(page, p, "38b-leader-parts-done", "/parts?view=done");
+  const [part] = await sql<{ id: string }>(`SELECT id FROM "Part" WHERE status = 'NEEDED' ORDER BY position LIMIT 1`);
+  if (part) await shoot(page, p, "38c-leader-edit-part", `/parts/${part.id}/edit`);
   const [waiting] = await sql<{ id: string }>(`SELECT id FROM "Resource" WHERE status = 'PENDING' ORDER BY "createdAt" LIMIT 1`);
   if (waiting) await shoot(page, p, "34-leader-resource-waiting", `/resources/${waiting.id}`);
+});
+
+test("business member (sponsorships)", async ({ page }, info) => {
+  const p = info.project.name;
+  await signIn(page, PEOPLE.businessMember);
+  await shoot(page, p, "39-business-sponsors", "/sponsors");
+  await shoot(page, p, "39b-business-sponsors-todo", "/sponsors?filter=todo");
+  await shoot(page, p, "39c-business-add-sponsor", "/sponsors/new");
+  const [sponsor] = await sql<{ id: string }>(`SELECT id FROM "Sponsorship" WHERE notes <> '' ORDER BY name LIMIT 1`);
+  if (sponsor) await shoot(page, p, "39d-business-sponsor", `/sponsors/${sponsor.id}`);
+  await page.goto("/sponsors/import");
+  await page
+    .getByLabel("Paste rows from your spreadsheet")
+    .fill("AMOUNT RECEIVED\tCOMPLETION STAGE\tBRAND/COMPANY\tEmail\tDATE ANNOUNCED\tDATE COMPLETED\tPERSON\n$250\tSubmitted\tTour Sponsor\ttour@example.com\t\t9/1\tAva\n\tsomeday\tAnother Sponsor\tnot-an-email\t\t\tBob");
+  await page.waitForLoadState("networkidle");
+  await page.screenshot({ path: `${dir(p)}/39e-business-import-preview.png`, fullPage: true });
 });
 
 test("admin", async ({ page }, info) => {

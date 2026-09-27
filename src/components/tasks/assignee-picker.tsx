@@ -105,7 +105,7 @@ export function AssigneePicker({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p aria-hidden className="text-sm font-medium text-ink-800">
           {label}
-          {optional && <span className="ml-1 font-normal text-ink-500">(optional)</span>}
+          {optional && <span className="font-normal text-ink-500"> (optional)</span>}
         </p>
         <div className="flex items-center gap-1">
           <span className="text-sm tabular-nums text-ink-600" aria-live="polite">
