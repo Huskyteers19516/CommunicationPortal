@@ -1,5 +1,6 @@
 import { BadgeDollarSign, CalendarClock, CircleCheck, FileSpreadsheet, HandCoins, Hourglass, Plus, SearchX } from "lucide-react";
 import type { Metadata } from "next";
+import { BulkSelectToggle, SponsorBulkRemove } from "@/components/sponsors/bulk-remove";
 import { FocusAlert } from "@/components/sponsors/focus-alert";
 import { NoSponsorshipAccess } from "@/components/sponsors/no-access";
 import { SponsorshipInfoCard } from "@/components/sponsors/sponsorship-info-card";
@@ -16,7 +17,7 @@ import { timeAgo, todayInTimezone } from "@/lib/dates";
 import { formatDollars, formatDollarsCompact } from "@/lib/money";
 import { parseSponsorshipFilter, SPONSORSHIP_FILTER_KEYS, SPONSORSHIP_FILTERS, type SponsorshipFilter } from "@/lib/sponsorships";
 import { env } from "@/server/env";
-import { getSponsorshipInfo, listSponsorships } from "@/server/queries/sponsorships";
+import { getSponsorshipInfo, listSponsorships, sponsorshipExists } from "@/server/queries/sponsorships";
 import { getSponsorshipUser } from "./access";
 
 export const metadata: Metadata = { title: "Sponsorships" };
@@ -100,8 +101,11 @@ export default async function SponsorshipsPage({ searchParams }: PageProps<"/spo
   const skipped = count(sp.skipped) ?? 0;
   const removed = first(sp.removed)?.slice(0, LIMITS.sponsorNameMax);
   const highlight = highlightFor(sp, items);
-  // Added or saved, but not in this list (it's cut off): say so at the top instead.
-  const flashFallback = !highlight && (first(sp.added) ? "Sponsor added." : first(sp.saved) ? "Changes saved." : null);
+  // Added or saved, but not in this list (it's cut off): say so at the top instead. Not once it's been removed
+  // (e.g. with Select → Remove while the URL still says ?added=), which would announce it again.
+  const flashId = first(sp.added) ?? first(sp.saved);
+  const flashFallback =
+    !highlight && flashId && (await sponsorshipExists(actor, flashId)) ? (first(sp.added) ? "Sponsor added." : "Changes saved.") : null;
 
   const addButton = (
     <ButtonLink href="/sponsors/new">
@@ -160,59 +164,70 @@ export default async function SponsorshipsPage({ searchParams }: PageProps<"/spo
 
         <SponsorshipInfoCard body={info.body} updatedLabel={infoUpdated} />
 
-        {summary.total === 0 ? (
-          <Card>
-            <EmptyState
-              icon={HandCoins}
-              title="No sponsors yet"
-              description="Add your first sponsor, or import your spreadsheet."
-              action={
-                <div className="flex flex-wrap justify-center gap-2">
-                  {addButton}
-                  {importButton}
-                </div>
-              }
-            />
-          </Card>
-        ) : (
-          <section aria-labelledby="sponsor-list-heading" className="space-y-3">
-            <h2 id="sponsor-list-heading" className="sr-only">
-              Sponsors
-            </h2>
-            <div className="space-y-2 md:flex md:items-center md:gap-2 md:space-y-0">
-              <FilterChips
-                label="Filter by stage"
-                className="md:flex-1"
-                chips={SPONSORSHIP_FILTER_KEYS.map((key) => ({
-                  href: hrefFor(key, mine),
-                  label: SPONSORSHIP_FILTERS[key].label,
-                  active: filter === key,
-                }))}
+        {/* Keyed by the filter like the list: a new filter starts a new selection. It also holds the "Removed 12
+            sponsors." line, which stays when the list below empties. */}
+        <SponsorBulkRemove
+          key={`${filter}:${mine ? 1 : 0}`}
+          items={items.map((i) => ({ id: i.id, name: i.name, canDelete: i.canDelete, fileCount: i.fileCount }))}
+          canBulkRemove={list.canBulkRemove}
+        >
+          {summary.total === 0 ? (
+            <Card>
+              <EmptyState
+                icon={HandCoins}
+                title="No sponsors yet"
+                description="Add your first sponsor, or import your spreadsheet."
+                action={
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {addButton}
+                    {importButton}
+                  </div>
+                }
               />
-              <ToggleChip href={hrefFor(filter, !mine)} label="Mine" active={mine} />
-            </div>
-
-            {list.truncated && <Alert>Showing the first {items.length} sponsors. Pick a filter to see the rest.</Alert>}
-
-            {items.length === 0 ? (
-              <Card>
-                <EmptyState
-                  icon={SearchX}
-                  title="Nothing here"
-                  description={emptyText(filter, mine)}
-                  action={
-                    <ButtonLink href={hrefFor("all", false)} variant="secondary">
-                      Show all sponsors
-                    </ButtonLink>
-                  }
+            </Card>
+          ) : (
+            <section aria-labelledby="sponsor-list-heading" className="space-y-3">
+              <h2 id="sponsor-list-heading" className="sr-only">
+                Sponsors
+              </h2>
+              <div className="space-y-2 md:flex md:items-center md:gap-2 md:space-y-0">
+                <FilterChips
+                  label="Filter by stage"
+                  className="md:flex-1"
+                  chips={SPONSORSHIP_FILTER_KEYS.map((key) => ({
+                    href: hrefFor(key, mine),
+                    label: SPONSORSHIP_FILTERS[key].label,
+                    active: filter === key,
+                  }))}
                 />
-              </Card>
-            ) : (
-              // Keyed by the filter: the list keeps its order while stages change here, and re-sorts on a new filter.
-              <SponsorshipList key={`${filter}:${mine ? 1 : 0}`} items={items} today={today} highlight={highlight} />
-            )}
-          </section>
-        )}
+                <div className="flex items-center gap-2">
+                  <ToggleChip href={hrefFor(filter, !mine)} label="Mine" active={mine} />
+                  <BulkSelectToggle className="ml-auto md:ml-0" />
+                </div>
+              </div>
+
+              {list.truncated && <Alert>Showing the first {items.length} sponsors. Pick a filter to see the rest.</Alert>}
+
+              {items.length === 0 ? (
+                <Card>
+                  <EmptyState
+                    icon={SearchX}
+                    title="Nothing here"
+                    description={emptyText(filter, mine)}
+                    action={
+                      <ButtonLink href={hrefFor("all", false)} variant="secondary">
+                        Show all sponsors
+                      </ButtonLink>
+                    }
+                  />
+                </Card>
+              ) : (
+                // Keyed by the filter: the list keeps its order while stages change here, and re-sorts on a new filter.
+                <SponsorshipList key={`${filter}:${mine ? 1 : 0}`} items={items} today={today} highlight={highlight} />
+              )}
+            </section>
+          )}
+        </SponsorBulkRemove>
       </div>
     </>
   );

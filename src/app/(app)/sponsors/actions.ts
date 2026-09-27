@@ -4,14 +4,16 @@ import { refresh, revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { SPONSORSHIP_STAGE_LABELS } from "@/lib/constants";
-import { formatShortDate } from "@/lib/sponsorships";
+import { bulkRemoveMessage, formatShortDate } from "@/lib/sponsorships";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
+import { ConflictError } from "@/server/errors";
 import { readFormFile } from "@/server/files/upload";
 import { deleteSponsorshipFile, uploadSponsorshipFile } from "@/server/services/sponsorship-files";
 import {
   createSponsorship,
   deleteSponsorship,
+  deleteSponsorships,
   importSponsorships,
   setSponsorshipStage,
   updateSponsorship,
@@ -57,6 +59,21 @@ export async function deleteSponsorshipAction(_prev: ActionState, formData: Form
   );
 }
 
+/**
+ * "Remove selected" on the list (fields: sponsorshipIds[]). The list stays open and says what happened
+ * ("Removed 12 sponsors."); when nothing could be removed, that's shown as a failure.
+ */
+export async function deleteSponsorshipsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await getServiceContext();
+    const result = await deleteSponsorships(ctx, formDataToObject(formData));
+    revalidatePath("/", "layout");
+    const message = bulkRemoveMessage(result);
+    if (result.removed.length === 0) throw new ConflictError(message);
+    return message;
+  });
+}
+
 /** The stage menu on the list. Says when it filled in a date ("Saved. Submitted Sep 26."). */
 export async function setSponsorshipStageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(
@@ -76,10 +93,11 @@ export async function updateSponsorshipInfoAction(_prev: ActionState, formData: 
   return runAction(
     async () => {
       const ctx = await getServiceContext();
-      await updateSponsorshipInfo(ctx, formDataToObject(formData));
+      const saved = await updateSponsorshipInfo(ctx, formDataToObject(formData));
       revalidatePath("/", "layout");
+      return saved.mentionsPassword ? "Saved. It looks like there's a password in it — please take it out." : "Saved.";
     },
-    { success: "Saved.", formData },
+    { formData },
   );
 }
 

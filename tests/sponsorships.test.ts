@@ -15,7 +15,18 @@ import {
   SPONSORSHIP_IMPORT_MAX_ROWS,
   SPONSORSHIP_IMPORT_TEXT_MAX,
 } from "@/lib/sponsorship-import";
-import { matchOwner, parseSponsorshipFilter, sponsorNameKey, withHttps } from "@/lib/sponsorships";
+import {
+  bulkRemoveMessage,
+  bulkRemoveQuestion,
+  listSponsorNames,
+  matchOwner,
+  mentionsPassword,
+  parseSponsorshipFilter,
+  SPONSORSHIP_BULK_REMOVE_MAX,
+  selectUpTo,
+  sponsorNameKey,
+  withHttps,
+} from "@/lib/sponsorships";
 import { parseHttpUrl } from "@/lib/urls";
 import { parseHttpUrl as parseHttpUrlFromResources } from "@/server/services/resources";
 import type { Actor } from "@/server/actor";
@@ -27,10 +38,12 @@ import {
   getSponsorshipInfo,
   getSponsorshipOwnerOptions,
   listSponsorships,
+  sponsorshipExists,
 } from "@/server/queries/sponsorships";
 import {
   createSponsorship,
   deleteSponsorship,
+  deleteSponsorships,
   importSponsorships,
   SPONSORSHIP_CHANGED,
   SPONSORSHIP_IMPORTS_PER_HOUR,
@@ -400,6 +413,227 @@ describe("removing a sponsor", () => {
   });
 });
 
+// ── Removing several at once ──────────────────────────────────────────────────
+
+describe("removing several sponsors at once", () => {
+  beforeEach(async () => {
+    await t.db.rateLimit.deleteMany();
+  });
+
+  let bulkSeq = 0;
+  /** Sponsors named "<prefix> 1", "<prefix> 2"… added by `by` (null = someone who left). */
+  async function sponsors(n: number, by: Actor | null, prefix = `Bulk ${++bulkSeq}`) {
+    const made = [];
+    for (let i = 1; i <= n; i++) made.push(await makeSponsorship({ name: `${prefix} ${i}`, createdById: by?.id ?? null }));
+    return made;
+  }
+  const exists = async (ids: string[]) => t.db.sponsorship.count({ where: { id: { in: ids } } });
+  const bulk = (actor: Actor, sponsorshipIds: unknown) => deleteSponsorships(ctx(actor), { sponsorshipIds });
+
+  it("the Business leader, captain, mentors, teachers, and owners remove every one they pick, in the order picked", async () => {
+    for (const a of [amara, jordan, elena, david, olivia]) {
+      const [x, y] = await sponsors(2, daniel, `${a.name}'s pick`);
+      const [orphan] = await sponsors(1, null, `${a.name}'s orphan`);
+      const result = await bulk(a, [y.id, orphan.id, x.id]);
+      expect(result, a.name).toEqual({ removed: [y.name, orphan.name, x.name], notAllowed: [], missing: 0 });
+      expect(await exists([x.id, y.id, orphan.id]), a.name).toBe(0);
+    }
+  });
+
+  it("anyone else removes only the ones they added; the rest are named back and kept", async () => {
+    for (const a of [ava, priya, marcus]) {
+      const mine = await sponsors(2, a);
+      const [theirs] = await sponsors(1, daniel);
+      const [orphan] = await sponsors(1, null);
+      const result = await bulk(a, [theirs.id, mine[0].id, orphan.id, mine[1].id]);
+      expect(result, a.name).toEqual({ removed: [mine[0].name, mine[1].name], notAllowed: [theirs.name, orphan.name], missing: 0 });
+      expect(await exists(mine.map((s) => s.id)), a.name).toBe(0);
+      expect(await exists([theirs.id, orphan.id]), a.name).toBe(2);
+    }
+  });
+
+  it("nothing is removed when none of the picks are theirs", async () => {
+    const theirs = await sponsors(2, daniel);
+    expect(await bulk(ava, theirs.map((s) => s.id))).toEqual({ removed: [], notAllowed: theirs.map((s) => s.name), missing: 0 });
+    expect(await exists(theirs.map((s) => s.id))).toBe(2);
+  });
+
+  it("other subteams' members and accounts that aren't active are turned away before anything is looked up", async () => {
+    const picks = await sponsors(2, null);
+    for (const a of [maya, ethan, pendingBiz, disabledBiz, pendingLeader]) {
+      for (const input of [picks.map((s) => s.id), [], "x".repeat(500)]) {
+        const err = await bulk(a, input).catch((e) => e);
+        expect(err, a.name).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).userMessage).toBe("Sponsorships are for the Business team and leaders.");
+      }
+    }
+    // Not even their own (added back when they could still use Sponsorships).
+    const [own] = await sponsors(1, disabledBiz);
+    await expect(bulk(disabledBiz, [own.id])).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await exists([...picks.map((s) => s.id), own.id])).toBe(3);
+    expect(await t.db.rateLimit.count()).toBe(0);
+  });
+
+  it("ids that don't exist are only counted, never named", async () => {
+    const [s] = await sponsors(1, ava);
+    expect(await bulk(ava, ["missing-1", s.id, "missing-2"])).toEqual({ removed: [s.name], notAllowed: [], missing: 2 });
+    expect(await bulk(amara, [s.id])).toEqual({ removed: [], notAllowed: [], missing: 1 });
+  });
+
+  it("takes 1 to 200 ids; repeats count once", async () => {
+    for (const input of [[], "", undefined]) {
+      const err = await bulk(amara, input).catch((e) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as ValidationError).userMessage).toBe("Pick at least one sponsor to remove.");
+    }
+    const tooMany = Array.from({ length: SPONSORSHIP_BULK_REMOVE_MAX + 1 }, (_, i) => `id-${i}`);
+    const err = await bulk(amara, tooMany).catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).userMessage).toBe("You can remove up to 200 sponsors at once.");
+    await expect(bulk(amara, ["x".repeat(65)])).rejects.toBeInstanceOf(ValidationError);
+    expect(await t.db.rateLimit.count()).toBe(0);
+
+    // 200 is fine (here, none of them exist).
+    expect(await bulk(amara, tooMany.slice(0, SPONSORSHIP_BULK_REMOVE_MAX))).toEqual({ removed: [], notAllowed: [], missing: 200 });
+
+    // Repeats (e.g. the same sponsor in the phone and desktop lists) count once, also toward the 200.
+    const [a, b] = await sponsors(2, ava);
+    const repeated = [a.id, a.id, b.id, ...Array.from({ length: SPONSORSHIP_BULK_REMOVE_MAX }, () => a.id)];
+    expect(await bulk(ava, repeated)).toEqual({ removed: [a.name, b.name], notAllowed: [], missing: 0 });
+
+    // One id on its own (a form with one box ticked) works too.
+    const [c] = await sponsors(1, ava);
+    expect(await bulk(ava, c.id)).toEqual({ removed: [c.name], notAllowed: [], missing: 0 });
+  });
+
+  it("removes their attached files too, and only theirs", async () => {
+    const [picked, kept] = await sponsors(2, ava);
+    const addFile = (sponsorshipId: string, filename: string) =>
+      t.db.sponsorshipFile.create({
+        data: { sponsorshipId, filename, contentType: "application/pdf", size: 5, data: Buffer.from("%PDF-"), uploadedById: daniel.id },
+      });
+    await addFile(picked.id, "form.pdf");
+    await addFile(picked.id, "signed.pdf");
+    await addFile(kept.id, "keep.pdf");
+    expect(await bulk(ava, [picked.id])).toMatchObject({ removed: [picked.name] });
+    expect(await t.db.sponsorshipFile.count({ where: { sponsorshipId: picked.id } })).toBe(0);
+    expect(await t.db.sponsorshipFile.count({ where: { sponsorshipId: kept.id } })).toBe(1);
+  });
+
+  it("counts once toward the hourly allowance, however many it removes", async () => {
+    const busy = await makeUser(t.db, { name: "Bulk Busy", role: "MEMBER", subteam: "BUSINESS" });
+    const counter = async () => (await t.db.rateLimit.findUnique({ where: { key: `sponsorship:${busy.id}` } }))?.count;
+
+    const first = await sponsors(5, busy);
+    await bulk(busy, first.map((s) => s.id));
+    expect(await counter()).toBe(1);
+
+    await t.db.rateLimit.update({ where: { key: `sponsorship:${busy.id}` }, data: { count: SPONSORSHIP_WRITES_PER_HOUR - 1 } });
+    const last = await sponsors(3, busy);
+    expect((await bulk(busy, last.map((s) => s.id))).removed).toHaveLength(3);
+    expect(await counter()).toBe(SPONSORSHIP_WRITES_PER_HOUR);
+
+    const over = await sponsors(2, busy);
+    await expect(bulk(busy, over.map((s) => s.id))).rejects.toBeInstanceOf(RateLimitError);
+    expect(await exists(over.map((s) => s.id))).toBe(2);
+  });
+
+  it("the list says which sponsors the viewer can remove, and whether to offer Select", async () => {
+    const newbie = await makeUser(t.db, { name: "Nell Newbie", role: "MEMBER", subteam: "BUSINESS" });
+    await sponsors(1, daniel);
+    const list = async (actor: Actor) => (await listSponsorships(actor, { filter: "all", today: TEST_TODAY }, t.db))!;
+
+    expect((await list(newbie)).canBulkRemove).toBe(false);
+    expect((await list(newbie)).items.every((i) => !i.canDelete)).toBe(true);
+    const all = await list(amara);
+    expect(all.canBulkRemove).toBe(true);
+    expect(all.items.every((i) => i.canDelete)).toBe(true);
+
+    const [own] = await sponsors(1, newbie);
+    const after = await list(newbie);
+    expect(after.canBulkRemove).toBe(true);
+    expect(after.items.filter((i) => i.canDelete).map((i) => i.id)).toEqual([own.id]);
+  });
+
+  it("the list's “Sponsor added.” note isn't shown again for one that's been removed since", async () => {
+    // (The page shows it for ?added=<id> only while sponsorshipExists; a removed one used to be announced as added.)
+    const [kept, gone] = await sponsors(2, ava);
+    await bulk(ava, [gone.id]);
+    expect(await sponsorshipExists(ava, kept.id, t.db)).toBe(true);
+    expect(await sponsorshipExists(ava, gone.id, t.db)).toBe(false);
+    expect(await sponsorshipExists(ava, "", t.db)).toBe(false);
+    expect(await sponsorshipExists(ava, "x".repeat(65), t.db)).toBe(false);
+    // Nothing for people who can't use Sponsorships.
+    for (const a of [maya, pendingBiz, disabledBiz]) expect(await sponsorshipExists(a, kept.id, t.db), a.name).toBe(false);
+  });
+});
+
+describe("“Select all” in the list's Select mode", () => {
+  const ids = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `s${i + from}`);
+
+  it("ticks every removable sponsor shown when there are 200 or fewer", () => {
+    expect([...selectUpTo(ids(12), new Set())]).toEqual(ids(12));
+    expect([...selectUpTo(ids(200), new Set())]).toHaveLength(200);
+    expect([...selectUpTo([], new Set())]).toEqual([]);
+  });
+
+  it("stops at 200, so the Remove it leads to is never refused", () => {
+    const shown = ids(217);
+    const picked = selectUpTo(shown, new Set());
+    expect(picked.size).toBe(SPONSORSHIP_BULK_REMOVE_MAX);
+    expect([...picked]).toEqual(shown.slice(0, 200));
+    // Pressing it again doesn't add more.
+    expect(selectUpTo(shown, picked).size).toBe(200);
+  });
+
+  it("keeps what's already ticked and fills up the rest in the list's order", () => {
+    const shown = ids(217);
+    const picked = selectUpTo(shown, new Set(["s217", "s216"]));
+    expect(picked.size).toBe(200);
+    expect(picked.has("s217") && picked.has("s216")).toBe(true);
+    expect(picked.has("s198")).toBe(true);
+    expect(picked.has("s199")).toBe(false);
+    // Picks that aren't shown any more don't count toward the 200 (the list only sends what's shown).
+    expect(selectUpTo(ids(3), new Set(["gone"]))).toEqual(new Set(["gone", "s1", "s2", "s3"]));
+    expect([...selectUpTo(ids(3), new Set(["s2"]), 2)]).toEqual(["s2", "s1"]);
+  });
+});
+
+describe("what removing several says", () => {
+  it("lists up to 5 names, then how many more", () => {
+    expect(listSponsorNames([])).toBe("");
+    expect(listSponsorNames(["A"])).toBe("“A”");
+    expect(listSponsorNames(["A", "B"])).toBe("“A” and “B”");
+    expect(listSponsorNames(["A", "B", "C"])).toBe("“A”, “B” and “C”");
+    expect(listSponsorNames(["A", "B", "C", "D", "E"])).toBe("“A”, “B”, “C”, “D” and “E”");
+    expect(listSponsorNames(["A", "B", "C", "D", "E", "F", "G"])).toBe("“A”, “B”, “C”, “D”, “E” and 2 more");
+  });
+
+  it("asks before removing, mentioning attached files and that it can't be undone", () => {
+    expect(bulkRemoveQuestion(["Acme"], 0)).toBe("Remove “Acme” from Sponsorships? Any attached files are removed too. This can't be undone.");
+    expect(bulkRemoveQuestion(["Acme"], 1)).toBe("Remove “Acme” from Sponsorships? 1 attached file is removed too. This can't be undone.");
+    const names = Array.from({ length: 12 }, (_, i) => `S${i + 1}`);
+    expect(bulkRemoveQuestion(names, 3)).toBe(
+      "Remove 12 sponsors? “S1”, “S2”, “S3”, “S4”, “S5” and 7 more. 3 attached files are removed too. This can't be undone.",
+    );
+  });
+
+  it("says how many were removed, who to ask about the rest, and how many were already gone", () => {
+    const names = (n: number) => Array.from({ length: n }, (_, i) => `S${i + 1}`);
+    expect(bulkRemoveMessage({ removed: names(12), notAllowed: [], missing: 0 })).toBe("Removed 12 sponsors.");
+    expect(bulkRemoveMessage({ removed: names(1), notAllowed: [], missing: 0 })).toBe("Removed 1 sponsor.");
+    expect(bulkRemoveMessage({ removed: names(3), notAllowed: ["Acme", "Beta"], missing: 0 })).toBe(
+      "Removed 3 sponsors. You can't remove “Acme” and “Beta” — ask the Business leader.",
+    );
+    expect(bulkRemoveMessage({ removed: names(2), notAllowed: [], missing: 1 })).toBe("Removed 2 sponsors. 1 was already removed.");
+    expect(bulkRemoveMessage({ removed: [], notAllowed: ["Acme"], missing: 2 })).toBe(
+      "You can't remove “Acme” — ask the Business leader. 2 were already removed.",
+    );
+    expect(bulkRemoveMessage({ removed: [], notAllowed: [], missing: 1 })).toBe("That sponsor was already removed.");
+    expect(bulkRemoveMessage({ removed: [], notAllowed: [], missing: 3 })).toBe("Those sponsors were already removed.");
+  });
+});
+
 // ── The list ──────────────────────────────────────────────────────────────────
 
 describe("listSponsorships", () => {
@@ -524,6 +758,67 @@ describe("sponsorship info note", () => {
     const err = await updateSponsorshipInfo(ctx(ava), { body: "x".repeat(LIMITS.teamNoteMax + 1) }).catch((e) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as ValidationError).fieldErrors.body).toBe(`Info must be at most ${LIMITS.teamNoteMax} characters.`);
+  });
+
+  it("saves text with a password in it anyway, and says it looks like one", async () => {
+    await t.db.rateLimit.deleteMany();
+    expect(await updateSponsorshipInfo(ctx(ava), { body: "Grant portal\nLogin: team@example.com\nPassword: hunter2" })).toEqual({
+      mentionsPassword: true,
+    });
+    expect((await getSponsorshipInfo(ava, t.db))?.body).toBe("Grant portal\nLogin: team@example.com\nPassword: hunter2");
+    expect(await updateSponsorshipInfo(ctx(ava), { body: "Passport photo for the grant: ask Amara" })).toEqual({ mentionsPassword: false });
+    expect(await updateSponsorshipInfo(ctx(ava), { body: "" })).toEqual({ mentionsPassword: false });
+  });
+});
+
+describe("mentionsPassword", () => {
+  it.each([
+    "Password: hunter2",
+    "grant portal PASSWORD is in here",
+    "wifi password hunter2",
+    "Passwords: see below",
+    "Door passcode 4821",
+    "passwd=hunter2",
+    "pwd: hunter2",
+    "Portal PWD hunter2",
+    "login/pwd hunter2",
+    "pw: hunter2",
+    "PW : hunter2",
+    "Grant portal pw=hunter2",
+    "team@example.com / pw: hunter2",
+    "wifiPassword hunter2",
+    "Pass: hunter2",
+    "Grant portal user / pass: hunter2",
+    "pass=hunter2",
+    "P/W: hunter2",
+    "pswd: hunter2",
+    "Passwordless login, but the old password is hunter2",
+  ])("flags %j", (text) => {
+    expect(mentionsPassword(text)).toBe(true);
+  });
+
+  it.each([
+    "",
+    "Passport photo for the grant",
+    "passports for the trip",
+    "Bypass the front desk, go to room 12",
+    "Pass the form to Amara",
+    "Compass Robotics",
+    "Powder coating sponsor",
+    "PW bags from the store",
+    "https://docs.example.com/pwdx-list",
+    "Team address: 123 Example Ave, Anaheim, CA\nTeam email: team@example.com\nGrant links: https://docs.example.com/grants",
+    "upw: not a label",
+    "spwd",
+    "Passwordless login via the email link",
+    "Bypass: use the side door",
+    "Compass: north entrance",
+    "Boarding pass for the trip",
+    "Login pass the form to Amara",
+    "éPwd",
+    "Ünpw: x",
+  ])("doesn't flag %j", (text) => {
+    expect(mentionsPassword(text)).toBe(false);
   });
 });
 

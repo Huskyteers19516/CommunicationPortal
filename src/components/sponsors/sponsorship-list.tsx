@@ -9,6 +9,7 @@ import { type DateOnly, daysBetween } from "@/lib/dates";
 import { formatDollars } from "@/lib/money";
 import { formatShortDate, isOpenStage, websiteHost } from "@/lib/sponsorships";
 import type { SponsorshipItem } from "@/server/queries/sponsorships";
+import { SelectAllRow, SelectBox, useSponsorSelection } from "./bulk-remove";
 import { StageChangeFocus, StageSelect } from "./stage-select";
 
 function sponsorHref(id: string) {
@@ -141,7 +142,10 @@ function useStableOrder(items: SponsorshipItem[]): SponsorshipItem[] {
   }, [items, order]);
 }
 
-/** Sponsors: stacked cards on phones, a table from md up. Each has a stage menu that saves on change. */
+/**
+ * Sponsors: stacked cards on phones, a table from md up. Each has a stage menu that saves on change.
+ * Inside <SponsorBulkRemove>, "Select" mode adds a checkbox to each sponsor and "Select all" on top.
+ */
 export function SponsorshipList({
   items,
   today,
@@ -154,6 +158,8 @@ export function SponsorshipList({
   const shown = useStableOrder(items);
   const rootRef = useRef<HTMLDivElement>(null);
   const highlightId = highlight?.id;
+  const selection = useSponsorSelection();
+  const selecting = !!selection?.selecting;
 
   // Just added or saved: bring that sponsor into view and put focus on its name.
   useEffect(() => {
@@ -166,54 +172,66 @@ export function SponsorshipList({
   }, [highlightId]);
 
   const marked = (id: string) => highlight?.id === id;
-  const rowTone = (id: string) =>
-    marked(id) ? (highlight?.tone === "warning" ? "bg-amber-50/80" : "bg-brand-50/70") : undefined;
+  const ticked = (item: SponsorshipItem) => selecting && item.canDelete && !!selection?.isSelected(item.id);
+  const rowTone = (item: SponsorshipItem) =>
+    ticked(item)
+      ? "bg-red-50/60"
+      : marked(item.id)
+        ? highlight?.tone === "warning"
+          ? "bg-amber-50/80"
+          : "bg-brand-50/70"
+        : undefined;
 
   return (
     <StageChangeFocus>
       <div ref={rootRef}>
         <Card className="overflow-hidden">
+          <SelectAllRow />
           {/* Phones */}
           <ul className="divide-y divide-ink-100 md:hidden">
             {shown.map((item) => (
-              <li key={item.id} className={cn("space-y-2 px-4 py-3", rowTone(item.id))}>
-                {highlight && marked(item.id) && <HighlightNote highlight={highlight} id={`sponsor-note-phone-${item.id}`} name={item.name} />}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="-my-1 flex min-w-0 items-center gap-1.5">
-                    <Link
-                      href={sponsorHref(item.id)}
-                      data-sponsor-link={item.id}
-                      aria-describedby={marked(item.id) ? `sponsor-note-phone-${item.id}` : undefined}
-                      className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
-                    >
-                      {item.name}
-                    </Link>
-                    <FileCount count={item.fileCount} />
+              <li key={item.id} className={cn("flex gap-1 px-4 py-3", selecting && "pl-2", rowTone(item))}>
+                {/* -mt-1: level with the sponsor's name (its link is 40px tall, pulled up by 4px). */}
+                <SelectBox id={item.id} name={item.name} canDelete={item.canDelete} className="-mt-1" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  {highlight && marked(item.id) && <HighlightNote highlight={highlight} id={`sponsor-note-phone-${item.id}`} name={item.name} />}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="-my-1 flex min-w-0 items-center gap-1.5">
+                      <Link
+                        href={sponsorHref(item.id)}
+                        data-sponsor-link={item.id}
+                        aria-describedby={marked(item.id) ? `sponsor-note-phone-${item.id}` : undefined}
+                        className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
+                      >
+                        {item.name}
+                      </Link>
+                      <FileCount count={item.fileCount} />
+                    </div>
+                    {item.amountReceived !== null && (
+                      <span className="shrink-0 pt-1.5 text-sm">
+                        <Amount value={item.amountReceived} />
+                      </span>
+                    )}
                   </div>
-                  {item.amountReceived !== null && (
-                    <span className="shrink-0 pt-1.5 text-sm">
-                      <Amount value={item.amountReceived} />
-                    </span>
+                  <ContactLinks item={item} className="-mt-1" />
+                  <StageSelect id={item.id} name={item.name} stage={item.stage} className="max-w-60" />
+                  {item.asking && (
+                    <p className="text-sm text-ink-700 wrap-anywhere">
+                      <span className="text-ink-500">Asking for </span>
+                      {item.asking}
+                    </p>
                   )}
-                </div>
-                <ContactLinks item={item} className="-mt-1" />
-                <StageSelect id={item.id} name={item.name} stage={item.stage} className="max-w-60" />
-                {item.asking && (
-                  <p className="text-sm text-ink-700 wrap-anywhere">
-                    <span className="text-ink-500">Asking for </span>
-                    {item.asking}
+                  <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
+                    <span className="min-w-0 wrap-anywhere">{item.owner ? item.owner.name : "No one on it yet"}</span>
+                    {item.submittedOn && <span>Submitted {formatShortDate(item.submittedOn, today)}</span>}
+                    {item.acceptedOn && <span>Accepted {formatShortDate(item.acceptedOn, today)}</span>}
+                    {item.closesOn && (
+                      <span>
+                        Closes <ClosesLabel item={item} today={today} />
+                      </span>
+                    )}
                   </p>
-                )}
-                <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
-                  <span className="min-w-0 wrap-anywhere">{item.owner ? item.owner.name : "No one on it yet"}</span>
-                  {item.submittedOn && <span>Submitted {formatShortDate(item.submittedOn, today)}</span>}
-                  {item.acceptedOn && <span>Accepted {formatShortDate(item.acceptedOn, today)}</span>}
-                  {item.closesOn && (
-                    <span>
-                      Closes <ClosesLabel item={item} today={today} />
-                    </span>
-                  )}
-                </p>
+                </div>
               </li>
             ))}
           </ul>
@@ -222,6 +240,11 @@ export function SponsorshipList({
           <table className="hidden w-full table-fixed text-left text-sm md:table">
             <thead className="border-b border-ink-100 bg-ink-50/60 text-xs font-medium uppercase tracking-wide text-ink-500">
               <tr>
+                {selecting && (
+                  <th scope="col" className="w-12 py-2.5 pl-2">
+                    <span className="sr-only">Select</span>
+                  </th>
+                )}
                 <th scope="col" className="px-3 py-2.5 font-medium lg:px-4">
                   Sponsor
                 </th>
@@ -253,7 +276,12 @@ export function SponsorshipList({
                   item.submittedOn && `Submitted ${formatShortDate(item.submittedOn, today)}`,
                 ].filter(Boolean);
                 return (
-                  <tr key={item.id} className={cn("align-top", rowTone(item.id))}>
+                  <tr key={item.id} className={cn("align-top", rowTone(item))}>
+                    {selecting && (
+                      <td className="py-2 pl-2">
+                        <SelectBox id={item.id} name={item.name} canDelete={item.canDelete} />
+                      </td>
+                    )}
                     <td className="min-w-0 px-3 py-2 lg:px-4">
                       <div className="flex min-w-0 items-center gap-1.5">
                         <Link

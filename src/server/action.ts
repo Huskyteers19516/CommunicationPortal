@@ -65,15 +65,20 @@ export function parseInput<S extends z.ZodType>(schema: S, input: FormData | Rec
   throw new ValidationError(Object.keys(fieldErrors).length === 1 && first ? first : "Please fix the highlighted fields.", fieldErrors);
 }
 
-/** FormData -> object. Repeated keys (e.g. checkboxes named "userIds") become arrays. */
+/**
+ * FormData -> object. Repeated keys (e.g. checkboxes named "userIds") become arrays, appended in place:
+ * linear time, so a big request of repeated keys can't tie up the server (actions run before any sign-in check).
+ */
 export function formDataToObject(fd: FormData): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of fd.entries()) {
     if (key.startsWith("$ACTION")) continue;
     const v = typeof value === "string" ? value : value.name;
-    if (key in out) {
+    // Own keys only: a field named "constructor" is a plain field, not Object's. (One named "__proto__" is dropped.)
+    if (Object.hasOwn(out, key)) {
       const prev = out[key];
-      out[key] = Array.isArray(prev) ? [...prev, v] : [prev, v];
+      if (Array.isArray(prev)) prev.push(v);
+      else out[key] = [prev, v];
     } else {
       out[key] = v;
     }

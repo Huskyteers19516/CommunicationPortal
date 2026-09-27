@@ -40,6 +40,19 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+/* While a sticky action bar is up at the bottom (the Sponsors list's Select mode), whatever gets keyboard focus
+   or is scrolled to stays above it and the phone tab bar, and below the phone's sticky header. */
+html:has([data-sticky-action-bar]) {
+  scroll-padding-top: 4.5rem;
+  scroll-padding-bottom: calc(10rem + env(safe-area-inset-bottom));
+}
+@media (width >= 64rem) {
+  html:has([data-sticky-action-bar]) {
+    scroll-padding-top: 1rem;
+    scroll-padding-bottom: 7rem;
+  }
+}
+
 body {
   background: var(--color-canvas);
   color: var(--color-ink-900);

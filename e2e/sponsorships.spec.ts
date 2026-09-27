@@ -119,6 +119,82 @@ test.describe("sponsorships", () => {
     await expect(page.locator(":focus")).toContainText(`Removed “${name}”.`);
   });
 
+  test("a business leader selects several sponsors and removes them at once", async ({ page }, info) => {
+    const id = uniq(info.project.name);
+    const names = ["A", "B", "C"].map((letter) => `E2E Bulk ${letter} ${id}`);
+    const ids: string[] = [];
+    for (const name of names) {
+      const [row] = await sql<{ id: string }>(
+        `INSERT INTO "Sponsorship" (id, name, stage, "createdById", "createdAt", "updatedAt")
+         VALUES ('e2e_' || md5(random()::text), $1, 'NOT_STARTED', (SELECT id FROM "User" WHERE email = $2), now(), now()) RETURNING id`,
+        [name, PEOPLE.businessLeader],
+      );
+      ids.push(row.id);
+    }
+    await signIn(page, PEOPLE.businessLeader);
+    // As if the first one was just added (highlighted): once it's removed, the page mustn't announce it as added.
+    await page.goto(`/sponsors?added=${ids[0]}`);
+    await expect(page.getByText("Added just now.").filter({ visible: true })).toBeVisible();
+
+    // "Select" adds a checkbox to each sponsor and puts focus on "Select all"; Escape leaves, back on "Select".
+    const select = page.getByRole("button", { name: "Select", exact: true });
+    const selectAll = page.getByRole("checkbox", { name: /^Select all/ });
+    const bar = page.getByRole("form", { name: "Remove selected sponsors" });
+    if (info.project.name === "mobile") {
+      // "Select" near the bottom of the screen: "Select all" is scrolled up above the bar and the tab bar, not left under them.
+      const box = await select.boundingBox();
+      await page.evaluate((dy) => window.scrollBy(0, dy), (box?.y ?? 0) - 690);
+    }
+    await select.click();
+    await expect(selectAll).toBeFocused();
+    const [allBox, openBarBox] = await Promise.all([selectAll.boundingBox(), bar.boundingBox()]);
+    expect((allBox?.y ?? 0) + (allBox?.height ?? 0)).toBeLessThanOrEqual(openBarBox?.y ?? 0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await expect(select).toBeFocused();
+
+    await select.click();
+    for (const name of names) await page.getByRole("checkbox", { name: `Select ${name}`, exact: true }).check();
+    await expect(bar.getByText("3 selected", { exact: true })).toBeVisible();
+
+    // Keyboard: "Skip to Remove" (right after "Select all") jumps over the list to the bar.
+    await selectAll.focus();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Skip to Remove" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(bar.getByRole("button", { name: "Remove 3 sponsors" })).toBeFocused();
+
+    if (info.project.name === "mobile") {
+      // On a 375px phone the bar fits on one line, above the bottom tab bar.
+      await page.setViewportSize({ width: 375, height: 812 });
+      await expectNoHorizontalScroll(page);
+      const [barBox, tabsBox] = await Promise.all([bar.boundingBox(), page.getByRole("navigation", { name: "Quick" }).boundingBox()]);
+      expect(barBox?.height ?? 0).toBeLessThan(70);
+      expect((barBox?.y ?? 0) + (barBox?.height ?? 0)).toBeLessThanOrEqual(tabsBox?.y ?? 0);
+    }
+
+    let question = "";
+    page.once("dialog", (dialog) => {
+      question = dialog.message();
+      void dialog.accept();
+    });
+    await bar.getByRole("button", { name: "Remove 3 sponsors" }).click();
+
+    // The list says so (with focus on it), selection mode is over, and they're gone.
+    const status = page.getByRole("status").filter({ hasText: "Removed 3 sponsors." });
+    await expect(status).toBeVisible();
+    await expect(status).toBeFocused();
+    expect(question).toBe(`Remove 3 sponsors? “${names[0]}”, “${names[1]}” and “${names[2]}”. Any attached files are removed too. This can't be undone.`);
+    await expect(bar).toHaveCount(0);
+    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    for (const name of names) await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
+    await expect(page.getByText("Sponsor added.")).toHaveCount(0);
+    await expect(page.getByText("Added just now.")).toHaveCount(0);
+    await expect(status).toBeFocused();
+    expect(await sql(`SELECT id FROM "Sponsorship" WHERE name = ANY($1)`, [names])).toEqual([]);
+    await expectNoHorizontalScroll(page);
+  });
+
   test("moving a sponsor out of a filtered list keeps keyboard focus in the list", async ({ page }, info) => {
     const name = `E2E Focus ${uniq(info.project.name)}`;
     await sql(

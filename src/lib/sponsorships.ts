@@ -87,6 +87,92 @@ export function formatShortDate(value: DateOnly, today?: DateOnly): string {
   }).format(dateOnlyToDb(value));
 }
 
+// ── Removing several at once ──────────────────────────────────────────────────
+
+/** Most sponsors one "Remove selected" takes at once (like the import's 200). The list's Select mode stays under it. */
+export const SPONSORSHIP_BULK_REMOVE_MAX = 200;
+
+/**
+ * "Select all" in the list's Select mode: ticks the sponsors shown that the viewer can remove, but no more
+ * than `max` in all (what's already ticked stays; the rest fill up in the list's order).
+ */
+export function selectUpTo(removableIds: readonly string[], picked: ReadonlySet<string>, max = SPONSORSHIP_BULK_REMOVE_MAX): Set<string> {
+  const next = new Set(picked);
+  let count = removableIds.filter((id) => next.has(id)).length;
+  for (const id of removableIds) {
+    if (count >= max) break;
+    if (next.has(id)) continue;
+    next.add(id);
+    count++;
+  }
+  return next;
+}
+
+/** What "Remove selected" did (deleteSponsorships). Names are in the order they were picked. */
+export interface BulkRemoveResult {
+  removed: string[];
+  /** Picked, but the person can't remove them (someone else added them). They're kept. */
+  notAllowed: string[];
+  /** Picked ids that don't exist any more (only counted, never named). */
+  missing: number;
+}
+
+/** How many names a message or question lists before "and N more". */
+const NAMES_SHOWN = 5;
+
+/** “A” · “A” and “B” · “A”, “B” and “C” · “A”, “B”, “C”, “D”, “E” and 3 more */
+export function listSponsorNames(names: readonly string[], max = NAMES_SHOWN): string {
+  const quoted = names.slice(0, max).map((n) => `“${n}”`);
+  const more = names.length - quoted.length;
+  if (more > 0) return `${quoted.join(", ")} and ${more} more`;
+  if (quoted.length <= 1) return quoted.join("");
+  return `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
+}
+
+/** The question before removing the selected sponsors (`fileCount`: files attached to them, as the list knows it). */
+export function bulkRemoveQuestion(names: readonly string[], fileCount: number): string {
+  const what =
+    names.length === 1 ? `Remove ${listSponsorNames(names)} from Sponsorships?` : `Remove ${names.length} sponsors? ${listSponsorNames(names)}.`;
+  const files =
+    fileCount > 0 ? `${fileCount === 1 ? "1 attached file is" : `${fileCount} attached files are`} removed too.` : "Any attached files are removed too.";
+  return `${what} ${files} This can't be undone.`;
+}
+
+/** "Removed 12 sponsors." plus who to ask about the ones the person can't remove, and any already gone. */
+export function bulkRemoveMessage({ removed, notAllowed, missing }: BulkRemoveResult): string {
+  const parts: string[] = [];
+  if (removed.length > 0) parts.push(`Removed ${removed.length} ${removed.length === 1 ? "sponsor" : "sponsors"}.`);
+  if (notAllowed.length > 0) parts.push(`You can't remove ${listSponsorNames(notAllowed)} — ask the Business leader.`);
+  if (missing > 0) {
+    parts.push(
+      removed.length + notAllowed.length > 0
+        ? `${missing} ${missing === 1 ? "was" : "were"} already removed.`
+        : missing === 1
+          ? "That sponsor was already removed."
+          : "Those sponsors were already removed.",
+    );
+  }
+  return parts.join(" ");
+}
+
+// ── Info for applications ─────────────────────────────────────────────────────
+
+export const PASSWORD_WARNING =
+  "This note looks like it has a password in it. Everyone who can open Sponsorships can read it — remove it and change that password.";
+
+/**
+ * password / passcode / passwd anywhere (any case; not "passwordless"), or, as their own word, "pwd" / "pswd",
+ * or "pw:" / "p/w:" / "pass:" (a label with ":" or "=") — but not "passport", "bypass:", or "pass" in a
+ * sentence. Letters in any alphabet count as part of a word ("éPwd" isn't a word of its own). Without
+ * lookbehind, which older iPhones (Safari before 16.4) can't parse.
+ */
+const PASSWORD_HINT = /pass(?:word(?!less)|code|wd)|(?:^|[^\p{L}\p{N}])(?:ps?wd(?!\p{L})|(?:pw|p\/w|pass)\s*[:=])/iu;
+
+/** Whether a shared note looks like it has a password in it (the card warns; saving isn't blocked). */
+export function mentionsPassword(text: string): boolean {
+  return PASSWORD_HINT.test(text);
+}
+
 // ── People ────────────────────────────────────────────────────────────────────
 
 export interface OwnerOption {

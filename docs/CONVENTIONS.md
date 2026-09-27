@@ -77,7 +77,7 @@ The Business team's sponsor tracker (replaces their spreadsheet). Only the Busin
 (`canUseSponsorships`; pages show everyone else a short explanation, never data); deleting is for whoever added it, the Business leader, and all-scope
 staff (`canDeleteSponsorship`; the Business leader and all-scope staff are `canManageSponsorships`). Stages: Haven't started → Do soon → Needs work → Submitted → Accepted / Declined → Finished.
 Moving into Submitted/Accepted fills that date with today (team timezone) only if it's empty. `amountReceived` is whole
-dollars (`src/lib/money.ts`). "Info for applications" is a `TeamNote` (key `sponsorship-info`) — never store passwords in it.
+dollars (`src/lib/money.ts`). "Info for applications" is a `TeamNote` (key `sponsorship-info`) — never store passwords in it (the card warns, without blocking the save, when `mentionsPassword` in `src/lib/sponsorships.ts` matches).
 The edit form sends `version` (the `updatedAt` it loaded): a stale save is a `ConflictError`, so it can't undo a stage change
 made from the list meanwhile (the list's stage menu itself is last-write-wins and only writes the stage and an empty date).
 Field validation lives in `src/lib/sponsorship-fields.ts` (client-safe). `/sponsors/import` parses rows pasted from a sheet
@@ -93,7 +93,9 @@ and downloads them (served only by `src/app/(app)/sponsors/files/[id]/route.ts` 
 everyone else); removing one is for its uploader and whoever can delete the sponsor (`canDeleteSponsorshipFile`).
 Deleting a sponsor deletes its files (its Remove question says how many). The card uploads as soon as a file is picked
 (nothing is left behind when the edit form is saved), and its actions `refresh()` the page when they fail, so a stale
-page catches up.
+page catches up. The list's **Select** mode removes several at once
+(`deleteSponsorships`: 1–200 ids in one transaction, only the ones the person `canDeleteSponsorship` — the rest are named back,
+ids that don't exist only counted — and one count toward the hourly write limit; "Select all" stops at `SPONSORSHIP_BULK_REMOVE_MAX`).
 
 ## Parts queue (`src/server/services/parts.ts`, `/parts`)
 
@@ -239,7 +241,7 @@ export async function createThingAction(_prev: ActionState, formData: FormData):
 - Use the UI kit: `Button/ButtonLink/buttonClasses` (size `icon` = 40px square icon button; `cn` only joins classes, so an override only wins if the kit leaves that property out — padding is left out when you pass your own `p-*`/`px-*`), `SubmitButton` (supports `confirm="Are you sure?"`), `Field/Input/Textarea/Select/CheckboxField`, `Card/CardHeader/CardBody`, `Badge/CountBubble`, `Alert`, `FormMessage`, `EmptyState`, `PageHeader`, `Avatar`, `ProgressBar`, `StatCard`, `LinkTabs`, `Pagination/parsePage`, `RichText` (user text; never `dangerouslySetInnerHTML`).
   Domain badges: `RoleBadge`, `SubteamBadge` (null = "Whole team"), `AccountStatusBadge`, `AssignmentStatusBadge`, `QuestionStatusBadge`, `PriorityBadge`, `DueBadge`; `UserChip`, `describeRole`.
 - Icons: `lucide-react` (v1 names, e.g. `MessageCircleQuestionMark`, `CircleCheck`, `LoaderCircle`).
-- **Mobile first**: most members use phones. Tap targets ≥ 40px, no horizontal page scroll at 375px wide (tables → stacked cards on small screens or `overflow-x-auto` wrappers), bottom tab bar occupies ~64px.
+- **Mobile first**: most members use phones. Tap targets ≥ 40px, no horizontal page scroll at 375px wide (tables → stacked cards on small screens or `overflow-x-auto` wrappers), bottom tab bar occupies ~64px. A sticky bar at the bottom of the page (like Select mode's Remove bar) carries `data-sticky-action-bar`: `globals.css` then adds scroll padding so keyboard focus isn't hidden under it.
 - Look & feel: brand green `brand-*`, neutral `ink-*`, white cards on `bg-canvas`, `font-display` (Oswald) for page titles only. Keep copy short, friendly, and specific.
 - Empty states for every list. Loading: add `loading.tsx` only if a page is slow; forms already show pending.
 

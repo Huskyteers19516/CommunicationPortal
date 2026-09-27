@@ -19,8 +19,8 @@ import {
   SPONSORSHIP_IMPORT_TEXT_MAX,
   sheetValue,
 } from "@/lib/sponsorship-import";
-import { type OwnerOption } from "@/lib/sponsorships";
-import { checkbox, idSchema, optionalText } from "@/lib/validation";
+import { type BulkRemoveResult, mentionsPassword, type OwnerOption, SPONSORSHIP_BULK_REMOVE_MAX } from "@/lib/sponsorships";
+import { checkbox, idSchema, optionalText, stringArray } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import type { Db } from "../db";
@@ -244,15 +244,60 @@ export async function deleteSponsorship(ctx: ServiceContext, raw: unknown): Prom
   return { name: existing.name };
 }
 
+const bulkRemoveInput = z.object({
+  sponsorshipIds: stringArray
+    .transform((ids) => [...new Set(ids)])
+    .pipe(
+      z
+        .array(z.string())
+        .min(1, "Pick at least one sponsor to remove.")
+        .max(SPONSORSHIP_BULK_REMOVE_MAX, `You can remove up to ${SPONSORSHIP_BULK_REMOVE_MAX} sponsors at once.`),
+    ),
+});
+
+/**
+ * "Remove selected" on the list: removes every picked sponsor the actor may remove (see deleteSponsorship)
+ * in one transaction (their files go with them) and keeps the rest. Picks that don't exist any more are only
+ * counted. Repeated ids count once; one call counts once toward the hourly allowance.
+ */
+export async function deleteSponsorships(ctx: ServiceContext, raw: unknown): Promise<BulkRemoveResult> {
+  assertCanUseSponsorships(ctx);
+  const { sponsorshipIds } = parseInput(bulkRemoveInput, asRecord(raw));
+  await limitSponsorshipWrites(ctx);
+  return ctx.db.$transaction(async (tx) => {
+    // Locked (in id order, so two of these can't deadlock): each one is removed here or reported as gone, never both.
+    const rows = await tx.$queryRaw<{ id: string; name: string; createdById: string | null }[]>`
+      SELECT id, name, "createdById" FROM "Sponsorship" WHERE id = ANY(${sponsorshipIds}::text[]) ORDER BY id FOR UPDATE`;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const result: BulkRemoveResult = { removed: [], notAllowed: [], missing: 0 };
+    const ids: string[] = [];
+    // In the order they were picked (the list's order), for the message.
+    for (const id of sponsorshipIds) {
+      const row = byId.get(id);
+      if (!row) result.missing++;
+      else if (canDeleteSponsorship(ctx.actor, row)) {
+        ids.push(id);
+        result.removed.push(row.name);
+      } else result.notAllowed.push(row.name);
+    }
+    if (ids.length > 0) await tx.sponsorship.deleteMany({ where: { id: { in: ids } } });
+    return result;
+  });
+}
+
 const infoInput = z.object({ body: optionalText("Info", LIMITS.teamNoteMax) });
 
-/** The "Info for applications" note (team address, contact person, links). Empty clears it. */
-export async function updateSponsorshipInfo(ctx: ServiceContext, raw: unknown): Promise<void> {
+/**
+ * The "Info for applications" note (team address, contact person, links). Empty clears it. Text that looks
+ * like it has a password in it is still saved (`mentionsPassword` says so, and the card shows a warning).
+ */
+export async function updateSponsorshipInfo(ctx: ServiceContext, raw: unknown): Promise<{ mentionsPassword: boolean }> {
   assertCanUseSponsorships(ctx);
   const { body } = parseInput(infoInput, asRecord(raw));
   await limitSponsorshipWrites(ctx);
   const data = { body: body ?? "", updatedById: ctx.actor.id };
   await ctx.db.teamNote.upsert({ where: { key: SPONSORSHIP_INFO_KEY }, create: { key: SPONSORSHIP_INFO_KEY, ...data }, update: data });
+  return { mentionsPassword: mentionsPassword(data.body) };
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -45,6 +45,8 @@ export interface SponsorshipItem {
   closesOn: DateOnly | null;
   /** Files attached to it (forms, filled-out copies…). */
   fileCount: number;
+  /** The viewer can remove it (whoever added it, the Business leader, all-scope staff). */
+  canDelete: boolean;
 }
 
 export interface SponsorshipSummary {
@@ -65,6 +67,8 @@ export interface SponsorshipList {
   items: SponsorshipItem[];
   summary: SponsorshipSummary;
   truncated: boolean;
+  /** The viewer can remove at least one of the items shown ("Select" on the list). */
+  canBulkRemove: boolean;
 }
 
 const itemSelect = {
@@ -79,13 +83,14 @@ const itemSelect = {
   submittedOn: true,
   acceptedOn: true,
   closesOn: true,
+  createdById: true,
   owner: { select: { id: true, name: true } },
   _count: { select: { files: true } },
 } as const satisfies Prisma.SponsorshipSelect;
 
 type ItemRow = Prisma.SponsorshipGetPayload<{ select: typeof itemSelect }>;
 
-function toItem(r: ItemRow): SponsorshipItem {
+function toItem(r: ItemRow, actor: Actor): SponsorshipItem {
   return {
     id: r.id,
     name: r.name,
@@ -101,6 +106,7 @@ function toItem(r: ItemRow): SponsorshipItem {
     acceptedOn: dateOrNull(r.acceptedOn),
     closesOn: dateOrNull(r.closesOn),
     fileCount: r._count.files,
+    canDelete: canDeleteSponsorship(actor, r),
   };
 }
 
@@ -177,13 +183,15 @@ export async function listSponsorships(
   }
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
+  const items = rows
+    .slice(0, LIST_LIMIT)
+    .map((r) => toItem(r, actor))
+    .sort(filter.closing ? compareByDeadline : compareSponsorships);
   return {
-    items: rows
-      .slice(0, LIST_LIMIT)
-      .map(toItem)
-      .sort(filter.closing ? compareByDeadline : compareSponsorships),
+    items,
     summary: { total, totalReceived, paying, counts, closingSoon, waiting: counts.SUBMITTED },
     truncated: rows.length > LIST_LIMIT,
+    canBulkRemove: items.some((i) => i.canDelete),
   };
 }
 
@@ -207,7 +215,6 @@ export interface SponsorshipDetail extends SponsorshipItem {
   createdByName: string | null;
   createdAt: Date;
   updatedAt: Date;
-  canDelete: boolean;
   /** Oldest first (the order they were added). */
   files: SponsorshipFileItem[];
 }
@@ -225,7 +232,6 @@ export async function getSponsorship(actor: Actor, id: string, db: Db = prisma):
     select: {
       ...itemSelect,
       notes: true,
-      createdById: true,
       createdAt: true,
       updatedAt: true,
       createdBy: { select: { name: true } },
@@ -238,12 +244,11 @@ export async function getSponsorship(actor: Actor, id: string, db: Db = prisma):
   });
   if (!r) return null;
   return {
-    ...toItem(r),
+    ...toItem(r, actor),
     notes: r.notes,
     createdByName: r.createdBy?.name ?? null,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
-    canDelete: canDeleteSponsorship(actor, r),
     files: r.files.map((f) => ({
       id: f.id,
       filename: f.filename,
@@ -265,6 +270,15 @@ export async function getSponsorship(actor: Actor, id: string, db: Db = prisma):
 export async function getSponsorshipFile(actor: Actor, id: string, db: Db = prisma) {
   if (!allowed(actor) || !id || id.length > 64) return null;
   return db.sponsorshipFile.findUnique({ where: { id }, select: { filename: true, contentType: true, data: true } });
+}
+
+/**
+ * Whether a sponsor is still there (the list's "Sponsor added." note for one it doesn't show: not after it's
+ * been removed). False for people who can't use Sponsorships.
+ */
+export async function sponsorshipExists(actor: Actor, id: string, db: Db = prisma): Promise<boolean> {
+  if (!allowed(actor) || !id || id.length > 64) return false;
+  return (await db.sponsorship.count({ where: { id } })) > 0;
 }
 
 export interface SponsorshipInfo {

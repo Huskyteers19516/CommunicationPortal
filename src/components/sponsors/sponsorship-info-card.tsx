@@ -3,6 +3,7 @@
 import { ChevronDown, NotebookText, Pencil } from "lucide-react";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { updateSponsorshipInfoAction } from "@/app/(app)/sponsors/actions";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Field, Textarea } from "@/components/ui/field";
@@ -12,17 +13,21 @@ import { SubmitButton } from "@/components/ui/submit-button";
 import { initialActionState } from "@/lib/action-state";
 import { cn } from "@/lib/cn";
 import { LIMITS } from "@/lib/constants";
+import { mentionsPassword, PASSWORD_WARNING } from "@/lib/sponsorships";
 
 /**
  * "Info for applications": the team address, contact person, and links people copy into sponsor forms
  * (the side box in the Business team's sheet). Anyone who can open Sponsorships can edit it.
- * Collapsed on phones until opened; always open from md up.
+ * Collapsed on phones until opened; always open from md up. Text that looks like it has a password in it gets
+ * a warning on top (shown even while collapsed), and in the editor as it's typed; saving isn't blocked.
  */
 export function SponsorshipInfoCard({ body, updatedLabel }: { body: string; updatedLabel: string | null }) {
   const [state, formAction] = useActionState(updateSponsorshipInfoAction, initialActionState);
   const [editing, setEditing] = useState(false);
   const [open, setOpen] = useState(false);
   const [closedFor, setClosedFor] = useState<number | undefined>(undefined);
+  /** What's in the editor, for the password warning while typing. */
+  const [draft, setDraft] = useState(body);
   const editRef = useRef<HTMLButtonElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const focusNext = useRef<"edit" | "textarea" | null>(null);
@@ -47,6 +52,7 @@ export function SponsorshipInfoCard({ body, updatedLabel }: { body: string; upda
 
   function startEditing() {
     focusNext.current = "textarea";
+    setDraft(body);
     setOpen(true);
     setEditing(true);
   }
@@ -56,6 +62,9 @@ export function SponsorshipInfoCard({ body, updatedLabel }: { body: string; upda
   }
 
   const error = state && !state.ok ? state.fieldErrors?.body : undefined;
+  const savedHasPassword = !editing && mentionsPassword(body);
+  const draftHasPassword = editing && mentionsPassword(draft);
+  const describedBy = [error && "sponsorship-info-body-error", draftHasPassword && "sponsorship-info-password"].filter(Boolean).join(" ");
   const title = (
     <>
       <NotebookText className="size-4 shrink-0 text-brand-700" aria-hidden />
@@ -91,6 +100,11 @@ export function SponsorshipInfoCard({ body, updatedLabel }: { body: string; upda
           </Button>
         )}
       </div>
+      {savedHasPassword && (
+        <div className={cn("px-4 pt-4 sm:px-5", !open && "pb-4 md:pb-0")}>
+          <Alert tone="warning">{PASSWORD_WARNING}</Alert>
+        </div>
+      )}
       <div id={bodyId} className={cn("px-4 py-4 sm:px-5", open || editing ? "block" : "hidden", "md:block")}>
         {editing ? (
           <form action={formAction} className="space-y-4">
@@ -109,11 +123,21 @@ export function SponsorshipInfoCard({ body, updatedLabel }: { body: string; upda
                 rows={8}
                 maxLength={LIMITS.teamNoteMax}
                 invalid={!!error}
-                aria-describedby={error ? "sponsorship-info-body-error" : undefined}
+                aria-describedby={describedBy || undefined}
+                onChange={(e) => setDraft(e.currentTarget.value)}
                 defaultValue={state?.values?.body ?? body}
                 placeholder={"Team address: …\nPerson of contact: …\nTeam email: …\nGrant links: https://…"}
               />
             </Field>
+            {/* Always here while editing (filled in as it's typed), so screen readers announce the warning. empty:mb-0 undoes
+                the form's spacing while it's empty. */}
+            <div role="status" className="empty:mb-0">
+              {draftHasPassword && (
+                <Alert tone="warning" role={null}>
+                  <span id="sponsorship-info-password">{PASSWORD_WARNING}</span>
+                </Alert>
+              )}
+            </div>
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button variant="secondary" onClick={cancel}>
                 Cancel
