@@ -19,10 +19,26 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
         { href: "/today", label: "Today", icon: "today" },
         { href: "/my-tasks", label: "My tasks", icon: "myTasks" },
         { href: "/tasks", label: "Task dashboard", icon: "dashboard" },
-        { href: "/parts", label: "Parts queue", icon: "parts" },
+        { href: "/attendance", label: "Attendance", icon: "attendance" },
+        { href: "/calendar", label: "Team calendar", icon: "calendar" },
         { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
+      ],
+    },
+    {
+      title: "Team",
+      items: [
+        { href: "/updates", label: "Meeting updates", icon: "updates" },
+        { href: "/notebook", label: "Team notebook", icon: "notebook" },
+        { href: "/strategy", label: "Strategy", icon: "strategy" },
+        { href: "/parts", label: "Parts queue", icon: "parts" },
+        { href: "/orders", label: "Order list", icon: "orders" },
         { href: "/resources", label: "Resources", icon: "resources", count: counts.pendingResources },
         { href: "/posters", label: "Posters", icon: "posters" },
+      ],
+    },
+    {
+      title: "Business",
+      items: [
         { href: "/fundraising", label: "Fundraising", icon: "fundraising" },
         ...(canUseSponsorships(actor) ? [{ href: "/sponsors", label: "Sponsorships", icon: "sponsors" } satisfies NavItem] : []),
       ],

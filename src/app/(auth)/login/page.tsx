@@ -14,7 +14,14 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
 
   return (
     <>
-      <AuthHeader title="Sign in" description="Welcome back! Sign in to see today's checklist." />
+      <AuthHeader
+        title="Sign in"
+        description={
+          next?.startsWith("/attendance/scan/")
+            ? "Sign in to check in. You'll come right back."
+            : "Welcome back! Sign in to see today's checklist."
+        }
+      />
       <LoginForm next={next} />
       <AuthSwitch prompt="New to the team?" href={next ? `/register?next=${encodeURIComponent(next)}` : "/register"}>
         Create an account

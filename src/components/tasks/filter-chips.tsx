@@ -18,11 +18,15 @@ function chipClasses(active: boolean) {
   );
 }
 
-/** URL-driven single-choice filter (e.g. subteam). Scrolls sideways on small screens. */
+/**
+ * URL-driven single-choice filter (e.g. subteam). Scrolls sideways on small screens. The scroller keeps 4 px
+ * of padding on every side (cancelled by negative margins, so it lays out as tall as a chip) so keyboard focus
+ * rings aren't clipped.
+ */
 export function FilterChips({ label, chips, className }: { label: string; chips: FilterChip[]; className?: string }) {
   return (
-    <nav aria-label={label} className={cn("-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0", className)}>
-      <div className="flex gap-2 pb-1">
+    <nav aria-label={label} className={cn("-mx-4 -my-1 overflow-x-auto px-4 py-1 sm:-mx-1 sm:px-1", className)}>
+      <div className="flex gap-2">
         {chips.map((c) => (
           <Link key={c.href} href={c.href} aria-current={c.active ? "true" : undefined} className={chipClasses(c.active)}>
             {c.label}

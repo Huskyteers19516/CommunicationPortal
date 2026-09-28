@@ -6,7 +6,7 @@ import type { FileStorageUsage } from "@/server/files/storage";
 
 /**
  * How much of the team's file storage is used, and by what: uploads stop when it's full, so this says where
- * the space is going and who can free it (Resources files, files attached to sponsors, posters).
+ * the space is going and who can free it (Resources, sponsor files, posters, notebook pictures, strategy files).
  */
 export function FileStorageCard({ usage }: { usage: FileStorageUsage }) {
   const pct = (n: number) => (usage.max > 0 ? Math.min(100, (n / usage.max) * 100) : 0);
@@ -48,6 +48,20 @@ export function FileStorageCard({ usage }: { usage: FileStorageUsage }) {
           .
         </>
       ),
+    },
+    {
+      key: "notebook",
+      label: "Notebook pictures",
+      bytes: usage.notebook,
+      swatch: "bg-violet-500",
+      note: "Pictures on Team notebook entries. Whoever wrote the entry, and the notebook's leaders, can remove them.",
+    },
+    {
+      key: "strategy",
+      label: "Strategy files",
+      bytes: usage.strategy,
+      swatch: "bg-rose-500",
+      note: "Path files, diagrams, and PDFs on the Strategy page. Whoever added them, and everyone with admin access, can remove them.",
     },
   ];
 

@@ -44,6 +44,7 @@ test("member", async ({ page }, info) => {
   await shoot(page, p, "16-member-settings", "/settings");
   await shoot(page, p, "16b-member-resources", "/resources");
   await shoot(page, p, "16e-member-dashboard", "/tasks");
+  await shoot(page, p, "16u-member-attendance", "/attendance");
   await shoot(page, p, "16g-member-parts", "/parts");
   await shoot(page, p, "16h-member-add-part", "/parts/new");
   await shoot(page, p, "16i-member-fundraising", "/fundraising");
@@ -56,6 +57,36 @@ test("member", async ({ page }, info) => {
     `SELECT p.id FROM "Poster" p JOIN "PosterFile" f ON f."posterId" = p.id WHERE p."eventDate" IS NOT NULL ORDER BY p."eventDate" DESC LIMIT 1`,
   );
   if (poster) await shoot(page, p, "16n-member-poster", `/posters/${poster.id}`);
+  await shoot(page, p, "16r-member-orders", "/orders");
+  await shoot(page, p, "16s-member-add-order", "/orders/new");
+  const [orderItem] = await sql<{ id: string }>(`SELECT id FROM "PurchaseItem" WHERE status = 'APPROVED' ORDER BY "createdAt" LIMIT 1`);
+  if (orderItem) await shoot(page, p, "16t-member-order", `/orders/${orderItem.id}`);
+  await shoot(page, p, "16o-member-strategy", "/strategy");
+  await shoot(page, p, "16p-member-add-strategy", "/strategy/new");
+  const [strategy] = await sql<{ id: string }>(
+    `SELECT s.id FROM "Strategy" s JOIN "StrategyFile" f ON f."strategyId" = s.id WHERE s."teamId" IS NULL ORDER BY s."createdAt" LIMIT 1`,
+  );
+  if (strategy) {
+    await shoot(page, p, "16q-member-strategy-detail", `/strategy/${strategy.id}`);
+  }
+  await shoot(page, p, "16q2-member-other-teams", "/strategy/teams");
+  await shoot(page, p, "16q3-member-other-team", "/strategy/teams/9040");
+  await shoot(page, p, "16q4-member-add-strategy-about-team", "/strategy/new?team=9040");
+  await shoot(page, p, "16t1-member-calendar", "/calendar?month=2026-11");
+  await shoot(page, p, "16t2-member-calendar-list", "/calendar?view=list");
+  await shoot(page, p, "16t3-member-calendar-event", "/calendar/season2627scrimmage0");
+  await shoot(page, p, "16u1-member-meeting-updates", "/updates");
+  await shoot(page, p, "16u2-member-write-update", "/updates/new");
+  await shoot(page, p, "16v-member-notebook", "/notebook");
+  const [notebookPage] = await sql<{ id: string }>(
+    `SELECT p.id FROM "NotebookPage" p JOIN "NotebookEntry" e ON e."pageId" = p.id GROUP BY p.id ORDER BY count(*) DESC, p.id LIMIT 1`,
+  );
+  if (notebookPage) {
+    await shoot(page, p, "16w-member-notebook-page", `/notebook/p/${notebookPage.id}`);
+    await page.getByRole("button", { name: "New entry" }).click();
+    await page.screenshot({ path: `${dir(p)}/16x-member-notebook-new-entry.png`, fullPage: true });
+    await shoot(page, p, "16y-member-notebook-print", `/notebook/print/p/${notebookPage.id}`);
+  }
   const [signupTask] = await sql<{ id: string }>(`SELECT id FROM "Task" WHERE "signupOpen" = true ORDER BY "dueDate" LIMIT 1`);
   if (signupTask) await shoot(page, p, "16f-member-dashboard-task", `/tasks/${signupTask.id}`);
   await shoot(page, p, "16c-member-share-resource", "/resources/new");
@@ -104,6 +135,11 @@ test("build leader", async ({ page }, info) => {
   await shoot(page, p, "33-leader-add-resource", "/resources/new");
   await shoot(page, p, "36-leader-dashboard", "/tasks");
   await shoot(page, p, "37-leader-categories", "/manage/categories");
+  await shoot(page, p, "37b-leader-attendance-plan", "/attendance/plan");
+  await shoot(page, p, "37c-leader-attendance-reports", "/attendance/reports");
+  const report = await page.locator('a[href^="/attendance/reports/"]').first().getAttribute("href");
+  if (report) await shoot(page, p, "37d-leader-attendance-report", report);
+  await shoot(page, p, "37e-leader-notebook", "/notebook");
   await shoot(page, p, "38-leader-parts", "/parts");
   await shoot(page, p, "38b-leader-parts-done", "/parts?view=done");
   const [part] = await sql<{ id: string }>(`SELECT id FROM "Part" WHERE status = 'NEEDED' ORDER BY position LIMIT 1`);
@@ -128,6 +164,11 @@ test("business member (sponsorships)", async ({ page }, info) => {
   await page.screenshot({ path: `${dir(p)}/39e-business-import-preview.png`, fullPage: true });
   await shoot(page, p, "39f-business-fundraising", "/fundraising");
   await shoot(page, p, "39g-business-add-fundraiser", "/fundraising/new");
+  await shoot(page, p, "39j-business-orders", "/orders");
+  await shoot(page, p, "39k-business-orders-all", "/orders?filter=all");
+  await shoot(page, p, "39l-business-add-order", "/orders/new");
+  const [orderItem] = await sql<{ id: string }>(`SELECT id FROM "PurchaseItem" WHERE status = 'REQUESTED' ORDER BY "createdAt" LIMIT 1`);
+  if (orderItem) await shoot(page, p, "39m-business-edit-order", `/orders/${orderItem.id}`);
   const [fundraiser] = await sql<{ id: string }>(`SELECT id FROM "Fundraiser" WHERE status = 'UPCOMING' ORDER BY "startsOn" LIMIT 1`);
   if (fundraiser) {
     await shoot(page, p, "39h-business-fundraiser", `/fundraising/${fundraiser.id}`);
@@ -145,4 +186,15 @@ test("admin", async ({ page }, info) => {
   await shoot(page, p, "43-admin-emails", "/admin/emails");
   await shoot(page, p, "44-captain-overview", "/manage");
   await shoot(page, p, "45-captain-progress", "/manage/progress?range=month");
+  await shoot(page, p, "45a-captain-add-other-team", "/strategy/teams/new");
+  await shoot(page, p, "45b-captain-notebook", "/notebook");
+  await shoot(page, p, "45c-captain-meeting-updates", "/updates");
+  await shoot(page, p, "45d-captain-add-event", "/calendar/new");
+  await shoot(page, p, "45c-captain-new-notebook", "/notebook/new");
+  const [notebook] = await sql<{ id: string }>(`SELECT id FROM "Notebook" ORDER BY position LIMIT 1`);
+  if (notebook) await shoot(page, p, "45d-captain-edit-notebook", `/notebook/n/${notebook.id}/edit`);
+  await shoot(page, p, "46-captain-attendance", "/attendance");
+  await shoot(page, p, "47-captain-attendance-schedule", "/attendance/settings");
+  const [session] = await sql<{ id: string }>(`SELECT id FROM "AttendanceSession" ORDER BY date DESC, kind LIMIT 1`);
+  if (session) await shoot(page, p, "48-captain-attendance-session", `/attendance/sessions/${session.id}`);
 });

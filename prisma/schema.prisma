@@ -110,27 +110,47 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  sessions            Session[]
-  passwordResetTokens PasswordResetToken[]
-  tasksCreated        Task[]                @relation("TaskCreator")
-  assignments         TaskAssignment[]      @relation("AssignmentAssignee")
-  reviews             TaskAssignment[]      @relation("AssignmentReviewer")
-  questionsAsked      Question[]            @relation("QuestionAsker")
-  questionsReceived   Question[]            @relation("QuestionRecipient")
-  questionReplies     QuestionReply[]
-  resourcesCreated    Resource[]            @relation("ResourceCreator")
-  resourcesReviewed   Resource[]            @relation("ResourceReviewer")
-  categoriesCreated   TaskCategory[]        @relation("CategoryCreator")
-  sponsorshipsOwned   Sponsorship[]         @relation("SponsorshipOwner")
-  sponsorshipsCreated Sponsorship[]         @relation("SponsorshipCreator")
-  sponsorshipFiles    SponsorshipFile[]     @relation("SponsorshipFileUploader")
-  postersCreated      Poster[]              @relation("PosterCreator")
-  fundraisersLed      Fundraiser[]          @relation("FundraiserLead")
-  fundraisersCreated  Fundraiser[]          @relation("FundraiserCreator")
-  fundraiserHelping   FundraiserVolunteer[] @relation("FundraiserVolunteer")
-  teamNotesEdited     TeamNote[]            @relation("TeamNoteEditor")
-  partsRequested      Part[]                @relation("PartRequester")
-  partsClaimed        Part[]                @relation("PartClaimer")
+  sessions              Session[]
+  passwordResetTokens   PasswordResetToken[]
+  tasksCreated          Task[]                @relation("TaskCreator")
+  assignments           TaskAssignment[]      @relation("AssignmentAssignee")
+  reviews               TaskAssignment[]      @relation("AssignmentReviewer")
+  questionsAsked        Question[]            @relation("QuestionAsker")
+  questionsReceived     Question[]            @relation("QuestionRecipient")
+  questionReplies       QuestionReply[]
+  resourcesCreated      Resource[]            @relation("ResourceCreator")
+  resourcesReviewed     Resource[]            @relation("ResourceReviewer")
+  categoriesCreated     TaskCategory[]        @relation("CategoryCreator")
+  sponsorshipsOwned     Sponsorship[]         @relation("SponsorshipOwner")
+  sponsorshipsCreated   Sponsorship[]         @relation("SponsorshipCreator")
+  sponsorshipFiles      SponsorshipFile[]     @relation("SponsorshipFileUploader")
+  postersCreated        Poster[]              @relation("PosterCreator")
+  fundraisersLed        Fundraiser[]          @relation("FundraiserLead")
+  fundraisersCreated    Fundraiser[]          @relation("FundraiserCreator")
+  fundraiserHelping     FundraiserVolunteer[] @relation("FundraiserVolunteer")
+  attendanceOpened      AttendanceSession[]   @relation("AttendanceOpener")
+  attendanceRecords     AttendanceRecord[]    @relation("AttendanceAttendee")
+  attendanceMarked      AttendanceRecord[]    @relation("AttendanceMarker")
+  attendanceRsvps       AttendanceRsvp[]      @relation("AttendanceRsvpUser")
+  attendancePlans       AttendancePlan[]      @relation("AttendancePlanEditor")
+  notebooksCreated      Notebook[]            @relation("NotebookCreator")
+  notebookPagesMade     NotebookPage[]        @relation("NotebookPageCreator")
+  notebookEntries       NotebookEntry[]       @relation("NotebookEntryAuthor")
+  notebookEntryEdits    NotebookEntry[]       @relation("NotebookEntryEditor")
+  notebookEditLog       NotebookEntryEdit[]   @relation("NotebookEditLogEditor")
+  strategiesCreated     Strategy[]            @relation("StrategyCreator")
+  purchasesOrdering     PurchaseItem[]        @relation("PurchaseOrderer")
+  purchasesCreated      PurchaseItem[]        @relation("PurchaseCreator")
+  purchasesUpdated      PurchaseItem[]        @relation("PurchaseStatusChanger")
+  teamNotesEdited       TeamNote[]            @relation("TeamNoteEditor")
+  partsRequested        Part[]                @relation("PartRequester")
+  partsClaimed          Part[]                @relation("PartClaimer")
+  calendarEventsMade    CalendarEvent[]       @relation("CalendarEventCreator")
+  calendarEventsEdited  CalendarEvent[]       @relation("CalendarEventEditor")
+  leagueTeamsAdded      LeagueTeam[]          @relation("LeagueTeamCreator")
+  leagueTeamSummaries   LeagueTeam[]          @relation("LeagueTeamSummaryEditor")
+  meetingUpdatesWritten MeetingUpdate[]       @relation("MeetingUpdateAuthor")
+  meetingUpdatesEdited  MeetingUpdate[]       @relation("MeetingUpdateEditor")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -563,4 +583,361 @@ model FundraiserVolunteer {
 
   @@unique([fundraiserId, userId])
   @@index([userId])
+}
+
+/// Regular after-school practice, or the school's Flex period (Tuesdays and Thursdays by default).
+enum AttendanceKind {
+  REGULAR
+  FLEX
+}
+
+/// A member's answer to "Coming?" for a day. FLEX answers are only YES or NO.
+enum RsvpAnswer {
+  YES
+  HALF
+  NO
+}
+
+enum CheckInMethod {
+  QR // scanned the rotating QR code
+  CODE // typed the 6-digit code shown with it
+  MANUAL // added by the person running attendance
+}
+
+/// One time attendance was taken (at most one REGULAR and one FLEX per day). Opened by a teacher,
+/// the Business leader, the captain, a mentor, or an owner, who shows a rotating QR code everyone scans.
+model AttendanceSession {
+  id         String         @id @default(cuid())
+  /// Calendar day (team timezone).
+  date       DateTime       @db.Date
+  kind       AttendanceKind
+  /// Random secret the rotating QR / 6-digit codes are derived from (HMAC). Never sent to the browser.
+  secret     String
+  openedById String?
+  openedBy   User?          @relation("AttendanceOpener", fields: [openedById], references: [id], onDelete: SetNull)
+  openedAt   DateTime       @default(now())
+  /// Check-ins stop when this is set (also after the day ends).
+  closedAt   DateTime?
+  /// "What we did" — goes into the two-week report.
+  note       String         @default("")
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  records AttendanceRecord[]
+
+  @@unique([date, kind])
+}
+
+/// Someone was there (checked in by QR/code, or added by hand).
+model AttendanceRecord {
+  id          String            @id @default(cuid())
+  sessionId   String
+  session     AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User              @relation("AttendanceAttendee", fields: [userId], references: [id], onDelete: Cascade)
+  method      CheckInMethod
+  checkedInAt DateTime          @default(now())
+  /// Who added them by hand (MANUAL).
+  markedById  String?
+  markedBy    User?             @relation("AttendanceMarker", fields: [markedById], references: [id], onDelete: SetNull)
+
+  @@unique([sessionId, userId])
+  @@index([userId])
+}
+
+/// A member's plan for a day: coming to regular practice (Yes/Half/No) and, on Flex days, to Flex (Yes/No).
+model AttendanceRsvp {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation("AttendanceRsvpUser", fields: [userId], references: [id], onDelete: Cascade)
+  date      DateTime    @db.Date
+  regular   RsvpAnswer?
+  flex      RsvpAnswer?
+  /// Optional, e.g. "leaving at 5".
+  note      String      @default("")
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([userId, date])
+  @@index([date])
+}
+
+/// The plan for a day ("drive practice, intake CAD"), written ahead by the captain/leaders; members see it when they answer.
+model AttendancePlan {
+  date        DateTime @id @db.Date
+  plan        String   @default("")
+  updatedById String?
+  updatedBy   User?    @relation("AttendancePlanEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+  updatedAt   DateTime @updatedAt
+}
+
+/// A team notebook, e.g. "Hardware Notebook" (the engineering notebook, split the way the team likes).
+/// The captain (and other all-scope staff) add, rename, reorder, and delete notebooks.
+model Notebook {
+  id          String   @id @default(cuid())
+  title       String
+  /// Shown before the title, e.g. "🔧". Empty = a plain notebook icon.
+  emoji       String   @default("")
+  description String   @default("")
+  /// Whose notebook it is (its leaders manage its pages). Null = whole team.
+  subteam     Subteam?
+  /// Display order (ascending).
+  position    Int      @default(0)
+  createdById String?
+  createdBy   User?    @relation("NotebookCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  pages NotebookPage[]
+
+  @@index([position])
+}
+
+/// A page (section) inside a notebook, e.g. Hardware Notebook → "Intake".
+model NotebookPage {
+  id          String   @id @default(cuid())
+  notebookId  String
+  notebook    Notebook @relation(fields: [notebookId], references: [id], onDelete: Cascade)
+  title       String
+  position    Int      @default(0)
+  createdById String?
+  createdBy   User?    @relation("NotebookPageCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entries NotebookEntry[]
+
+  @@index([notebookId, position])
+}
+
+/// One dated entry on a page. The date/time and author are stamped automatically when it's written;
+/// every later change is logged in NotebookEntryEdit (who, when, what it said before).
+model NotebookEntry {
+  id             String       @id @default(cuid())
+  pageId         String
+  page           NotebookPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  /// Optional heading, e.g. "Tested the new roller compliance".
+  title          String       @default("")
+  body           String
+  authorId       String?
+  author         User?        @relation("NotebookEntryAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  /// When it was written (stamped by the server).
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  lastEditedById String?
+  lastEditedBy   User?        @relation("NotebookEntryEditor", fields: [lastEditedById], references: [id], onDelete: SetNull)
+  lastEditedAt   DateTime?
+
+  images NotebookImage[]
+  edits  NotebookEntryEdit[]
+
+  @@index([pageId, createdAt])
+}
+
+/// History of changes to an entry: who changed it, when, and what it said before.
+model NotebookEntryEdit {
+  id            String        @id @default(cuid())
+  entryId       String
+  entry         NotebookEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  editorId      String?
+  editor        User?         @relation("NotebookEditLogEditor", fields: [editorId], references: [id], onDelete: SetNull)
+  editedAt      DateTime      @default(now())
+  previousTitle String
+  previousBody  String
+
+  @@index([entryId, editedAt])
+}
+
+/// A picture on a notebook entry (CAD screenshot, test photo…). Stored in Postgres like other uploads (same storage cap).
+model NotebookImage {
+  id          String        @id @default(cuid())
+  entryId     String
+  entry       NotebookEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  filename    String
+  contentType String
+  size        Int
+  data        Bytes
+  width       Int?
+  height      Int?
+  position    Int           @default(0)
+  createdAt   DateTime      @default(now())
+
+  @@index([entryId, position])
+}
+
+/// What part of the game a strategy is about.
+enum StrategyKind {
+  AUTO
+  TELEOP
+  ENDGAME
+  MATCH // whole-match plan / alliance play
+  SCOUTING
+  OTHER
+}
+
+/// A strategy anyone on the team wrote up on the Strategy page (next to the Pedro Pathing visualizer):
+/// a description, an optional link (video, doc), and files such as .pp path files, images, or PDFs.
+model Strategy {
+  id          String       @id @default(cuid())
+  title       String
+  kind        StrategyKind @default(AUTO)
+  description String       @default("")
+  /// Video, doc, or anything else (http(s) only). Empty = none.
+  link        String       @default("")
+  /// Pinned ones are shown first (people with admin access pin).
+  pinned      Boolean      @default(false)
+  /// Set when it's about another team in the league ("Other teams" on the Strategy page). Null = one of ours.
+  teamId      String?
+  team        LeagueTeam?  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdById String?
+  createdBy   User?        @relation("StrategyCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  files StrategyFile[]
+
+  @@index([pinned, updatedAt])
+  @@index([teamId, updatedAt])
+}
+
+/// Another team in our league (Strategy → Other teams): what we know about how they play, plus
+/// strategies written about them (e.g. their auto traced in the Pedro Pathing visualizer as a .pp file).
+model LeagueTeam {
+  id                 String    @id @default(cuid())
+  /// FTC team number, e.g. 9040.
+  number             Int       @unique
+  name               String
+  city               String    @default("")
+  /// "Their strategy at a glance", written by anyone on the team.
+  summary            String    @default("")
+  summaryUpdatedAt   DateTime?
+  summaryUpdatedById String?
+  summaryUpdatedBy   User?     @relation("LeagueTeamSummaryEditor", fields: [summaryUpdatedById], references: [id], onDelete: SetNull)
+  createdById        String?
+  createdBy          User?     @relation("LeagueTeamCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  strategies Strategy[]
+}
+
+/// A file on a strategy: a Pedro Pathing .pp path, a field diagram, a PDF… Stored in Postgres (same storage cap).
+model StrategyFile {
+  id          String   @id @default(cuid())
+  strategyId  String
+  strategy    Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  filename    String
+  contentType String
+  size        Int
+  data        Bytes
+  createdAt   DateTime @default(now())
+
+  @@index([strategyId, createdAt])
+}
+
+/// Where an item on the Order list stands.
+enum PurchaseStatus {
+  REQUESTED // someone needs it
+  APPROVED // OK'd to buy
+  ORDERED
+  DONE // arrived / handled
+  NOT_NEEDED // "N/A": cancelled or no longer needed
+}
+
+/// One thing the team needs to buy (the Order list, replacing the "Purchase List" sheet).
+model PurchaseItem {
+  id                String         @id @default(cuid())
+  /// What to buy, e.g. "Flywheels for the outtake".
+  description       String
+  /// SKU, where to find it, anything else, e.g. "SKU am-5437 (2)".
+  notes             String         @default("")
+  /// Product page (http(s) only). Empty = none.
+  link              String         @default("")
+  vendor            String         @default("")
+  quantity          Int?
+  /// Price for the whole line, in cents. Null = unknown.
+  costCents         Int?
+  /// Which subteam it's for. Null = whole team.
+  subteam           Subteam?
+  status            PurchaseStatus @default(REQUESTED)
+  /// The person ordering it ("Orderer").
+  ordererId         String?
+  orderer           User?          @relation("PurchaseOrderer", fields: [ordererId], references: [id], onDelete: SetNull)
+  createdById       String?
+  createdBy         User?          @relation("PurchaseCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  statusChangedAt   DateTime?
+  statusChangedById String?
+  statusChangedBy   User?          @relation("PurchaseStatusChanger", fields: [statusChangedById], references: [id], onDelete: SetNull)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([status, createdAt])
+  @@index([ordererId])
+}
+
+enum CalendarEventKind {
+  MEET
+  ILT
+  SCRIMMAGE
+  COMPETITION
+  OUTREACH
+  TEAM
+  DEADLINE
+  OTHER
+}
+
+/// One thing on the Team calendar: a league meet, the ILT, a scrimmage, outreach, a deadline…
+model CalendarEvent {
+  id          String            @id @default(cuid())
+  title       String
+  kind        CalendarEventKind @default(MEET)
+  /// First day (team timezone). Multi-day events also have `endsOn`.
+  startsOn    DateTime          @db.Date
+  /// Last day, inclusive. Null = one day.
+  endsOn      DateTime?         @db.Date
+  /// "HH:MM" (24 h, team timezone). Null = all day / time not known yet.
+  startTime   String?
+  endTime     String?
+  /// Venue name and/or address.
+  location    String            @default("")
+  /// FTC Events page, sign-up form… (http(s) only). Empty = none.
+  link        String            @default("")
+  notes       String            @default("")
+  /// Set on events loaded from a built-in season schedule so loading it again never duplicates them.
+  sourceKey   String?           @unique
+  createdById String?
+  createdBy   User?             @relation("CalendarEventCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById String?
+  updatedBy   User?             @relation("CalendarEventEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([startsOn])
+  @@index([kind, startsOn])
+}
+
+/// One subteam's write-up of a meeting (Meeting updates): what they did, what's next, what's stuck.
+/// Software, Build, and Business each write their own; several people may post for the same subteam and day.
+model MeetingUpdate {
+  id             String    @id @default(cuid())
+  /// The meeting day (team timezone).
+  meetingDate    DateTime  @db.Date
+  subteam        Subteam
+  /// What we did (required).
+  body           String
+  /// What's next time (optional).
+  nextSteps      String    @default("")
+  /// Problems / help needed (optional).
+  blockers       String    @default("")
+  authorId       String?
+  author         User?     @relation("MeetingUpdateAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  lastEditedAt   DateTime?
+  lastEditedById String?
+  lastEditedBy   User?     @relation("MeetingUpdateEditor", fields: [lastEditedById], references: [id], onDelete: SetNull)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([meetingDate, subteam])
+  @@index([subteam, meetingDate])
+  @@index([authorId])
 }

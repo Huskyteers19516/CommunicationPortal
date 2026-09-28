@@ -2,11 +2,14 @@
 import {
   AccountStatus,
   AssignmentStatus,
+  CalendarEventKind,
   PartProcess,
   PartStatus,
   FundraiserKind,
   FundraiserStatus,
   Priority,
+  PurchaseStatus,
+  StrategyKind,
   QuestionStatus,
   ResourceStatus,
   ResourceType,
@@ -16,6 +19,7 @@ import {
 } from "@/generated/prisma/enums";
 
 export {
+  CalendarEventKind,
   AccountStatus,
   AssignmentStatus,
   PartProcess,
@@ -23,6 +27,8 @@ export {
   FundraiserKind,
   FundraiserStatus,
   Priority,
+  PurchaseStatus,
+  StrategyKind,
   QuestionStatus,
   ResourceStatus,
   ResourceType,
@@ -153,6 +159,51 @@ export const FUNDRAISER_STATUS_LABELS: Record<FundraiserStatus, string> = {
   CANCELLED: "Cancelled",
 };
 
+/** In the order an item moves through them. */
+export const PURCHASE_STATUSES: PurchaseStatus[] = ["REQUESTED", "APPROVED", "ORDERED", "DONE", "NOT_NEEDED"];
+
+export const PURCHASE_STATUS_LABELS: Record<PurchaseStatus, string> = {
+  REQUESTED: "Requested",
+  APPROVED: "Approved",
+  ORDERED: "Ordered",
+  DONE: "Done",
+  NOT_NEEDED: "N/A",
+};
+
+export const STRATEGY_KINDS: StrategyKind[] = ["AUTO", "TELEOP", "ENDGAME", "MATCH", "SCOUTING", "OTHER"];
+
+export const STRATEGY_KIND_LABELS: Record<StrategyKind, string> = {
+  AUTO: "Autonomous",
+  TELEOP: "TeleOp",
+  ENDGAME: "Endgame",
+  MATCH: "Match plan",
+  SCOUTING: "Scouting",
+  OTHER: "Other",
+};
+
+/** In the order they're offered on the form. */
+export const CALENDAR_EVENT_KINDS: CalendarEventKind[] = ["MEET", "ILT", "SCRIMMAGE", "COMPETITION", "OUTREACH", "TEAM", "DEADLINE", "OTHER"];
+
+export const CALENDAR_EVENT_KIND_LABELS: Record<CalendarEventKind, string> = {
+  MEET: "League meet",
+  ILT: "League tournament (ILT)",
+  SCRIMMAGE: "League scrimmage",
+  COMPETITION: "Competition",
+  OUTREACH: "Outreach",
+  TEAM: "Team event",
+  DEADLINE: "Deadline",
+  OTHER: "Other",
+};
+
+/** Kinds that count as "the next meet" (Today's countdown and the calendar's banner). */
+export const CALENDAR_MEET_KINDS: CalendarEventKind[] = ["MEET", "ILT", "SCRIMMAGE", "COMPETITION"];
+
+/** Our FTC team number (left out of Strategy → Other teams). */
+export const OUR_TEAM_NUMBER = 19516;
+
+/** The team's Pedro Pathing visualizer (BIOBUZZ edition), shown on the Strategy page. */
+export const PEDRO_VISUALIZER_URL = "https://martinmax0711.github.io/PedroPathingBiobuzz/";
+
 export const ROLES = Object.values(Role) as Role[];
 export const SUBTEAMS = Object.values(Subteam) as Subteam[];
 
@@ -254,5 +305,36 @@ export const LIMITS = {
   fundraiserLocationMax: 160,
   fundraiserDescriptionMax: 5000,
   fundraiserVolunteersMax: 200,
+  /** "What we did" on an attendance session. */
+  attendanceNoteMax: 2000,
+  /** The plan for a day, written ahead by the captain/leaders. */
+  attendancePlanMax: 2000,
+  /** Optional note with a Coming? answer, e.g. "leaving at 5". */
+  rsvpNoteMax: 200,
+  /** How far ahead members can answer Coming? (days). */
+  rsvpDaysAhead: 28,
+  notebookTitleMax: 80,
+  notebookPageTitleMax: 80,
+  notebookEntryTitleMax: 160,
+  notebookEntryBodyMax: 20000,
+  notebookImagesPerEntry: 10,
+  strategyTitleMax: 120,
+  strategyDescriptionMax: 10000,
+  strategyFilesMax: 10,
+  purchaseDescriptionMax: 200,
+  purchaseNotesMax: 1000,
+  purchaseVendorMax: 80,
+  purchaseQuantityMax: 10000,
   partQuantityMax: 500,
+  calendarTitleMax: 120,
+  calendarLocationMax: 200,
+  calendarNotesMax: 5000,
+  leagueTeamNameMax: 80,
+  leagueTeamCityMax: 80,
+  /** "Their strategy at a glance" on another league team. */
+  leagueTeamSummaryMax: 5000,
+  /** Meeting updates: "What we did" / "Next time" / "Problems or help needed". */
+  meetingUpdateBodyMax: 10000,
+  meetingUpdateNextMax: 5000,
+  meetingUpdateBlockersMax: 5000,
 } as const;

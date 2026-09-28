@@ -312,6 +312,11 @@ export const NO_ACTIVITY = {
   partsClaimed: { none: {} },
   sponsorshipsCreated: { none: {} },
   sponsorshipFiles: { none: {} },
+  // Attendance: check-ins and "Coming?" answers would cascade out of past two-week reports.
+  attendanceRecords: { none: {} },
+  attendanceRsvps: { none: {} },
+  attendanceOpened: { none: {} },
+  attendanceMarked: { none: {} },
 } satisfies Prisma.UserWhereInput;
 
 export const HAS_ACTIVITY_MESSAGE = "This person has activity in the portal — disable the account instead.";
@@ -339,6 +344,10 @@ export async function deleteUser(ctx: ServiceContext, raw: unknown): Promise<voi
           partsClaimed: true,
           sponsorshipsCreated: true,
           sponsorshipFiles: true,
+          attendanceRecords: true,
+          attendanceRsvps: true,
+          attendanceOpened: true,
+          attendanceMarked: true,
         },
       },
     },

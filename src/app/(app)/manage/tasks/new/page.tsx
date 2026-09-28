@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import type { Subteam } from "@/generated/prisma/enums";
 import { SUBTEAMS } from "@/lib/constants";
 import { addDays, todayInTimezone } from "@/lib/dates";
+import { parsePeopleParam, prefillAssigneeIds, prefillBackHref, prefillDueDate } from "@/lib/task-prefill";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { getTaskFormCategories } from "@/server/queries/categories";
@@ -37,10 +38,19 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
   const subteam = wanted !== undefined && options.subteams.some((o) => o.value === wanted) ? wanted : options.defaultSubteam;
   const categoryParam = first(sp.category);
   const categoryId = categoryParam && categories[subteam]?.some((c) => c.id === categoryParam) ? categoryParam : "";
+  // ?people=<id>,<id> (Attendance → "Assign a task to the people coming"): only people the actor can assign.
+  const people = copy ? [] : prefillAssigneeIds(parsePeopleParam(sp.people), groups);
+  // ?due=<day> and ?back=/attendance/plan?day=<day> (same link): the planned day, and back to "Who's coming".
+  const minDate = addDays(today, -DUE_DATE_MAX_PAST_DAYS);
+  const maxDate = addDays(today, DUE_DATE_MAX_FUTURE_DAYS);
+  const dueDate = (!copy && prefillDueDate(sp.due, minDate, maxDate)) || today;
+  const back = copy ? null : prefillBackHref(sp.back);
 
   return (
     <>
-      <BackLink href={copy ? `/manage/tasks/${copy.sourceId}` : "/manage/tasks"}>{copy ? "Back to task" : "Tasks"}</BackLink>
+      <BackLink href={copy ? `/manage/tasks/${copy.sourceId}` : (back ?? "/manage/tasks")}>
+        {copy ? "Back to task" : back ? "Who's coming" : "Tasks"}
+      </BackLink>
       <PageHeader
         title={copy ? "Duplicate task" : "New task"}
         description={
@@ -48,6 +58,8 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
             <span className="wrap-anywhere">
               Copy of “{copy.sourceTitle}”, due today. Check the date and people, then create it.
             </span>
+          ) : people.length > 0 ? (
+            `${people.length} ${people.length === 1 ? "person is" : "people are"} picked below. Check them, then create it.`
           ) : (
             "Assign it to people, or let them sign up on the Task dashboard."
           )
@@ -55,7 +67,7 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
       />
       <TaskForm
         // Remount when switching between a blank form and a copy (the form keeps its own state).
-        key={copy?.sourceId ?? "blank"}
+        key={copy?.sourceId ?? (people.length > 0 ? `people-${dueDate}-${people.join(",")}` : `blank-${dueDate}`)}
         action={createTaskAction}
         mode="create"
         initial={
@@ -75,9 +87,9 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
                 title: "",
                 description: "",
                 subteam,
-                dueDate: today,
+                dueDate,
                 priority: "NORMAL",
-                assigneeIds: [],
+                assigneeIds: people,
                 categoryId,
                 assignMode: "assign",
                 signupLimit: null,
@@ -86,9 +98,9 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
         subteamOptions={options.subteams}
         categories={categories}
         groups={groups}
-        minDate={addDays(today, -DUE_DATE_MAX_PAST_DAYS)}
-        maxDate={addDays(today, DUE_DATE_MAX_FUTURE_DAYS)}
-        cancelHref={copy ? `/manage/tasks/${copy.sourceId}` : "/manage/tasks"}
+        minDate={minDate}
+        maxDate={maxDate}
+        cancelHref={copy ? `/manage/tasks/${copy.sourceId}` : (back ?? "/manage/tasks")}
       />
     </>
   );

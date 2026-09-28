@@ -66,10 +66,20 @@ export const getCurrentUser = cache(async (): Promise<Actor | null> => {
   return session.user;
 });
 
-/** For pages: an ACTIVE user, else redirect to /login or /pending. */
+/** Set by src/proxy.ts on signed-in requests: the path (and query) being opened. */
+const PATH_HEADER = "x-hk-path";
+
+/** /login, with ?next= back to this page when the proxy said where we are (a stale cookie got past it). */
+async function loginRedirectPath(): Promise<string> {
+  const path = (await headers()).get(PATH_HEADER);
+  if (!path || path === "/" || !path.startsWith("/") || path.startsWith("//") || path.length > 1000) return "/login";
+  return `/login?next=${encodeURIComponent(path)}`;
+}
+
+/** For pages: an ACTIVE user, else redirect to /login (and back here afterwards) or /pending. */
 export async function requireActiveUser(): Promise<Actor> {
   const user = await getCurrentUser();
-  if (!user) redirect("/login");
+  if (!user) redirect(await loginRedirectPath());
   if (user.status !== "ACTIVE") redirect("/pending");
   return user;
 }

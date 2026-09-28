@@ -17,7 +17,8 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          // Camera: our own pages only (the in-app QR scanner on Attendance). Never embedded sites.
+          { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=()" },
         ],
       },
     ];

@@ -299,3 +299,154 @@ export function canEditPoster(actor: ActorLike, poster: { createdById: string | 
 export function canManageFundraisers(actor: ActorLike): boolean {
   return canUseSponsorships(actor);
 }
+
+// ── Attendance ────────────────────────────────────────────────────────────────
+
+/**
+ * Start attendance (show the rotating QR code), add/remove people by hand, write "What we did", change
+ * the schedule: teachers, the Business leader, the captain, mentors, and owners.
+ */
+export function canRunAttendance(actor: ActorLike): boolean {
+  return (
+    isOwner(actor) ||
+    actor.role === "TEACHER" ||
+    actor.role === "BUSINESS_LEADER" ||
+    actor.role === "CAPTAIN" ||
+    actor.role === "MENTOR"
+  );
+}
+
+/** See who's coming each day, write the day's plan, and read two-week reports: staff (leaders, captain, mentors, teachers, owners). */
+export function canPlanAttendance(actor: ActorLike): boolean {
+  return isStaff(actor);
+}
+
+/** Fix attendance from more than a week ago (ATTENDANCE_EDIT_DAYS): the adults (teachers, mentors) and owners. */
+export function canFixOldAttendance(actor: ActorLike): boolean {
+  return isOwner(actor) || actor.role === "TEACHER" || actor.role === "MENTOR";
+}
+
+// ── Team notebook ─────────────────────────────────────────────────────────────
+
+/** Add, rename, reorder, and delete notebooks: the captain and other all-scope staff (mentors, teachers, owners). */
+export function canManageNotebooks(actor: ActorLike): boolean {
+  return hasAllScope(actor);
+}
+
+/** Add, rename, reorder, and delete a notebook's pages: all-scope staff, plus the leaders of the notebook's subteam. */
+export function canManageNotebookPages(actor: ActorLike, notebook: { subteam: Subteam | null }): boolean {
+  if (hasAllScope(actor)) return true;
+  const led = ledSubteam(actor);
+  return led !== null && notebook.subteam === led;
+}
+
+/**
+ * Change or remove a notebook entry (and its pictures and old versions): whoever wrote it, plus people who manage
+ * that notebook's pages — except that subteam leaders don't change entries written by the captain, mentors,
+ * teachers, or owners. (Anyone ACTIVE can write entries.)
+ */
+export function canEditNotebookEntry(
+  actor: ActorLike,
+  entry: { authorId: string | null; author: { role: Role; isAdmin: boolean } | null },
+  notebook: { subteam: Subteam | null },
+): boolean {
+  if (entry.authorId !== null && entry.authorId === actor.id) return true;
+  if (hasAllScope(actor)) return true;
+  const byAllScope = entry.author !== null && (entry.author.isAdmin || ALL_SCOPE_ROLES.includes(entry.author.role));
+  return canManageNotebookPages(actor, notebook) && !byAllScope;
+}
+
+// ── Strategy ──────────────────────────────────────────────────────────────────
+
+/** Change or remove a strategy (and its files): whoever added it, plus everyone with admin access. Anyone ACTIVE can add one. */
+export function canEditStrategy(actor: ActorLike, strategy: { createdById: string | null }): boolean {
+  return canAdminister(actor) || (strategy.createdById !== null && strategy.createdById === actor.id);
+}
+
+// ── Team calendar ─────────────────────────────────────────────────────────────
+
+/** Add, edit, and remove events on the Team calendar: every leader, the captain, mentors, teachers, and owners. Everyone ACTIVE sees it. */
+export function canManageCalendar(actor: ActorLike): boolean {
+  return isStaff(actor);
+}
+
+/** Add, rename, and remove the other teams in the league (Strategy → Other teams). Writing about them is for everyone ACTIVE. */
+export function canManageLeagueTeams(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
+// ── Meeting updates ───────────────────────────────────────────────────────────
+
+/** Subteams someone can write a meeting update for: their own; the captain, mentors, teachers, and owners any. */
+export function meetingUpdateSubteams(actor: ActorLike): Subteam[] {
+  if (hasAllScope(actor)) return ["SOFTWARE", "BUILD", "BUSINESS"];
+  return actor.subteam ? [actor.subteam] : [];
+}
+
+export function canWriteMeetingUpdate(actor: ActorLike, subteam: Subteam): boolean {
+  return meetingUpdateSubteams(actor).includes(subteam);
+}
+
+/** Edit or remove a meeting update: whoever wrote it, that subteam's leader, and all-scope staff. */
+export function canEditMeetingUpdate(actor: ActorLike, update: { authorId: string | null; subteam: Subteam }): boolean {
+  if (update.authorId !== null && update.authorId === actor.id) return true;
+  return canManageSubteam(actor, update.subteam);
+}
+
+// ── Order list ────────────────────────────────────────────────────────────────
+
+/**
+ * Approve items, mark them N/A, change and remove anyone's, and pick who orders them: everyone with admin access
+ * (leaders, captain, mentors, teachers, owners — accounts someone approved). Picking the Business subteam at
+ * sign-up isn't enough to approve spending: the Business subteam buys approved items (purchaseStatusTargets).
+ */
+export function canManageOrders(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
+/** Add an item that's already Approved, Ordered, Done, or N/A: all-scope staff (for anyone else, that would be approving their own request). */
+export function canAddPurchaseWithStatus(actor: ActorLike): boolean {
+  return hasAllScope(actor);
+}
+
+type PurchaseStatusLike = "REQUESTED" | "APPROVED" | "ORDERED" | "DONE" | "NOT_NEEDED";
+type PurchaseLike = { status: PurchaseStatusLike; ordererId: string | null; createdById: string | null };
+
+const PURCHASE_STATUS_ORDER: readonly PurchaseStatusLike[] = ["REQUESTED", "APPROVED", "ORDERED", "DONE", "NOT_NEEDED"];
+
+/** The person ordering an item (and the Business subteam) move it one step either way along Approved → Ordered → Done. */
+const ORDERER_STEPS: Partial<Record<PurchaseStatusLike, readonly PurchaseStatusLike[]>> = {
+  APPROVED: ["ORDERED"],
+  ORDERED: ["APPROVED", "DONE"],
+  DONE: ["ORDERED"],
+};
+
+/** OK'd to buy (or bought). */
+const APPROVED_PURCHASE_STATUSES: readonly PurchaseStatusLike[] = ["APPROVED", "ORDERED", "DONE"];
+
+/** Change or remove an item: managers any; whoever added it or is ordering it, while it's still Requested. */
+export function canEditPurchase(actor: ActorLike, item: PurchaseLike): boolean {
+  if (canManageOrders(actor)) return true;
+  if (item.status !== "REQUESTED") return false;
+  return (item.createdById !== null && item.createdById === actor.id) || (item.ordererId !== null && item.ordererId === actor.id);
+}
+
+/**
+ * The statuses this person may move an item to (never the one it has). Managers: any — except that nobody
+ * approves their own request unless all-scope (from Requested or N/A, an item they added only goes to N/A or
+ * Requested). The person ordering it and the Business subteam: one step along Approved → Ordered → Done — they
+ * can't approve it or mark it N/A.
+ */
+export function purchaseStatusTargets(actor: ActorLike, item: PurchaseLike): PurchaseStatusLike[] {
+  if (canManageOrders(actor)) {
+    const ownRequest =
+      !hasAllScope(actor) && item.createdById !== null && item.createdById === actor.id && !APPROVED_PURCHASE_STATUSES.includes(item.status);
+    return PURCHASE_STATUS_ORDER.filter((s) => s !== item.status && !(ownRequest && APPROVED_PURCHASE_STATUSES.includes(s)));
+  }
+  const buyer = actor.subteam === "BUSINESS" || (item.ordererId !== null && item.ordererId === actor.id);
+  return buyer ? [...(ORDERER_STEPS[item.status] ?? [])] : [];
+}
+
+export function canSetPurchaseStatus(actor: ActorLike, item: PurchaseLike, to: PurchaseStatusLike): boolean {
+  return purchaseStatusTargets(actor, item).includes(to);
+}

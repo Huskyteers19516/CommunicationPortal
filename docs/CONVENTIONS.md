@@ -146,6 +146,280 @@ people signed up. The edit form sends the amount raised it loaded (`loadedRaised
 the quick box is kept; changed while someone else changed it, the save is refused on that field and the page refreshes so
 saving again replaces it. Totals leave out cancelled fundraisers. No emails.
 
+## Strategy (`src/server/services/strategy.ts`, `/strategy`)
+
+The top of the page is the **Path planner**: the owner's Pedro Pathing visualizer (BIOBUZZ edition, a Svelte app on
+GitHub Pages, `PEDRO_VISUALIZER_URL`; don't change that repo from here) in an iframe (`components/strategy/path-planner.tsx`):
+`sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals"`
+(its own storage for saved paths, Save As/export downloads, `alert`/`confirm`, help links in new tabs — never
+`allow-top-navigation`), `allow="fullscreen; clipboard-write"`, `loading="lazy"`. The planner needs about twice its height
+in width, so from 85rem (1360px) wide it shows right away, breaks out of the page column (`min(100vw - 18rem, 90rem)`,
+centered) at 2:1 (≤ 75vh tall); below that it's folded away with a "Works best on a computer" (phones) / "in full screen
+or a new tab" note and **Show it here** (the frame is only created once it's wanted, then kept, so hiding it or resizing
+doesn't lose a path being drawn). **Full screen** (secondary button) only where `document.fullscreenEnabled` and from
+768px (not iPhones); it unfolds the frame first. **Open in a new tab** is a plain link and always works, even when the
+frame can't load (the hint ends with the same link). On `/strategy` a **Skip the planner** link (visible on focus) jumps
+to the list. `next.config.ts` only sends `X-Frame-Options` for *our* pages being framed — never add a
+`frame-src`/`default-src` CSP that would block github.io. The planner keeps paths in its own (partitioned) browser
+storage — its **Save** only stores there — so sharing one means its Save menu (disk icon) → **Save As** → Confirm (that
+downloads a `.pp` file) → a strategy.
+
+**Our strategies** below it: title, kind (`STRATEGY_KINDS`: Autonomous, TeleOp, Endgame, Match plan, Scouting, Other),
+description (shown with `RichText`), an optional http(s) link, and up to `LIMITS.strategyFilesMax` files
+(`StrategyFile`). Everyone ACTIVE adds them; whoever added one and everyone with admin access edit/remove it
+(`canEditStrategy`); pinning is `canAdminister` (`setStrategyPinned`, raw SQL so `updatedAt` — "updated 3 h ago", the
+list order — doesn't move). List (`queries/strategy.ts`): pinned first, then most recently updated, `?kind=` chips +
+`?who=mine`, 50 per page, metadata only. Files are checked like Resources uploads (≤ 4 MB, `BLOCKED_EXTENSIONS`, cleaned
+name) plus: a `.pp` must be UTF-8 JSON the planner can open (`pedroPathProblem` in `src/lib/strategy.ts` — the planner's
+own `isValidProject`: a start point and at least one path with an end point; the form runs the same check before
+sending) and is stored as `application/json`; a picture (png/jpg/gif/webp by name) must really be one and phone-sized in
+pixels (the poster checks). Storage: the shared lock and cap (`assertFileStorageRoom`), and each person's strategy files
+(on strategies they added) stay under `STRATEGY_FILE_BYTES_PER_PERSON` (50 MB) unless they have admin access. Creates
+and edits that add files: `STRATEGY_RATE_LIMIT` (30/hour). The form keeps picked files in client state; one save carries
+at most 4 MB of new files (`STRATEGY_SAVE_MAX_BYTES`, the request limit — add more by editing), edits remove files with
+`removeFileIds` (undo before saving), and the edit locks the strategy row before counting files. Served only by
+`src/app/(app)/strategy/files/[id]/route.ts` (any ACTIVE user, Resources headers via `strategyFileHeaders`: a `.pp` is
+**always** an attachment; pictures/PDFs inline). The page shows pictures inline, PDFs to open, and `.pp` files as
+**Download path** with "the planner → Load (the ↑ arrow at the top) → pick this file" (for a strategy about another
+team, "the planner" links to that team's page). Descriptions (and team summaries) turn CRLF line breaks into `\n`
+before the length check, so text typed up to the textarea's `maxLength` fits. Deleting a strategy deletes its files. No
+emails. Both tabs show both counts (`getStrategyTabCounts`: our strategies, other teams).
+
+**Other teams** (`/strategy/teams`, tab next to **Our strategies**; `services/league-teams.ts`, `queries/league-teams.ts`):
+the other teams in our league (`LeagueTeam`, 17 seeded by the migration, ids `leagueteam<number>`), sorted by number,
+searched server-side (`?q=`: a number or its start, or part of the name/city). Adding, renaming, and removing teams is
+`canManageLeagueTeams` (= admin access): numbers are unique (friendly error, the unique index backs it up) and never
+`OUR_TEAM_NUMBER` (19516; searching it says so). Removing a team cascades to the strategies about it and their files
+(the confirm says how many: `leagueTeamRemoveQuestion`; the list then says what went: `leagueTeamRemovedNotice`). A team's page (`/strategy/teams/[number]`) has **Their strategy at a glance** — a
+summary anyone ACTIVE writes (`saveLeagueTeamSummary`; the form sends `version` = the `summaryUpdatedAt` it saw, "" for
+never, and the save is a conditional `updateMany`, so a save based on an older version is a `ConflictError`; the action
+refreshes the page either way, so the editor then shows their version next to the kept text, and saving again replaces
+it; Cancel keeps theirs: reopening starts from the current summary, without the old warning) — the strategies about them (`Strategy.teamId`; the same form, cards, files, and permissions as ours, added from
+`/strategy/new?team=<number>`; the team is set when it's added and never changes; `listStrategies` only ever lists ours
+(`teamId` null) or one team's), and the planner (**Trace their path**) folded away behind **Open the planner**
+(`PathPlanner open="asked"`), with the hint to Save As the traced `.pp` and attach it to a strategy about them (that link
+opens a new tab, so an undownloaded trace isn't lost). A team strategy's page links back to the
+team, and removing it goes back there. Their files count toward the same storage cap and per-person allowance.
+
+## Order list (`src/server/services/orders.ts`, `/orders`)
+
+What the team needs to buy (replaces the Business team's "Purchase List" sheet). `PurchaseItem`: description, notes (SKU,
+where to find it), an http(s) product link (`https://` added to a bare `andymark.com/…`), vendor, optional quantity
+(1–`LIMITS.purchaseQuantityMax`), cost for the whole line in **cents** (`costCents`; typed in dollars and read by
+`parseCents` in `src/lib/orders.ts` — the `parseDollars` formats, but keeping the cents, up to $100,000), "For"
+(`subteam`, null = whole team), status, orderer. Everyone ACTIVE sees every item and adds items (orderer = themselves).
+Managers (`canManageOrders`: everyone with **admin access** — accounts someone approved; the self-chosen Business
+subteam is not enough to approve spending) set any status (including **Approve**), edit/remove anything, and pick the
+orderer (an ACTIVE person, or no one yet; an edit may keep one who left). **Nobody approves their own request** unless
+all-scope: from Requested or N/A, an item a leader added only goes to N/A/Requested for them (`purchaseStatusTargets`),
+and only all-scope staff add an item with another status (`canAddPurchaseWithStatus`). Everyone else edits/removes items
+they added or order while **Requested** (`canEditPurchase`; conditional writes, so an approval that lands first wins); the
+orderer **and the Business subteam** (who buy for the team) move an item one step along Approved → Ordered → Done and
+back — never approve, mark N/A, or send it back to Requested. Removing is permanent (the confirm points past-Requested
+items to N/A instead). **Out-of-date pages:** the status menu sends `from` (the status it showed) and `seen` (the item's
+`updatedAt`); every status write is conditional on the status it was checked on, a stale `from` is refused with
+"X just changed it to Y." (never "undo someone's Ordered"), and leaving Requested needs `updatedAt = seen` (nobody
+approves an edit they haven't seen). The edit form sends `seen` too: a save over someone else's change is refused once
+(`ORDER_EDIT_CONFLICT`, the page refreshes, saving again keeps this version); non-managers' edits never write the orderer.
+Every status change writes `statusChangedAt/By` (the item's page shows "Status changed by X · time"). Writes are
+rate-limited per person (`ORDER_WRITES_PER_HOUR` 120, adds also `ORDER_ADDS_PER_HOUR` 30). No emails: Today shows
+"N approved items for you to order" to orderers and "N items to approve on the order list" to the Business leader and
+the captain (`countOrdersToApprove`, not their own requests unless all-scope).
+The list (`queries/orders.ts`): Open (Requested/Approved/Ordered, oldest first) / Done / N/A (latest change first) / All
+tabs with counts, "For" chips (`?for=SOFTWARE|BUILD|BUSINESS|team`; the chosen chip is scrolled into view on phones),
+`?mine=1` (added or ordering), and a summary line for the tab (`orderSummaryText`: open items, waiting for approval, to
+order, estimated total of the priced open items + how many have no price, or "No prices yet"; Done: count + total; N/A:
+count) that follows the For/Mine filters. Desktop: a table (Notes/Qty/For/Added columns from `xl`, folded into
+Description below); phones: cards whose title opens the item's page ("Product page ↗" is its own link, notes clamped
+to 3 lines, "Orderer: X"). The status is an inline colored menu (`components/orders/status-select.tsx`, the sponsor stage
+menu's 600 ms debounce + flush on leave, the list keeps its order, focus moves on when a row leaves the filter — after a
+refused change too, saying why — and to the badge when a refused change turns the menu into one) showing only the
+statuses the viewer may pick — a badge when none. **Export to spreadsheet** (`/orders/export`, a route handler, any
+ACTIVE user, the page's filters, named after them: `order-list-software-open-2026-09-24.csv`) sends a UTF-8 CSV with the
+sheet's first columns (Orderer, Status, Description, Notes, …); `csvCell` puts a `'` before text starting with `=`, `+`,
+`-`, `@` (or tab/CR) so a spreadsheet never runs it. After a removal the list shows `?removed=1` ("Item removed.", on the
+tab the item was on) — never text from the link.
+
+## Attendance (`src/server/services/attendance.ts`, `/attendance`)
+
+Taking attendance with a rotating QR code, "Coming?" answers, day plans, and two-week reports.
+
+- **Who**: `canRunAttendance` (teachers, the Business leader, the captain, mentors, owners) start/close attendance, add or
+  remove people by hand (`MANUAL`, `markedBy`; works on closed/past sessions too, to fix the list), write "What we did",
+  delete a session started by mistake, and change the schedule (`/attendance/settings`). Sessions more than
+  `ATTENDANCE_EDIT_DAYS` (7) days old can only be changed by teachers, mentors, and owners (`canFixOldAttendance`,
+  `canEditSessionOn`); the live screen shows them read-only to other runners. `canPlanAttendance` (all staff) see
+  **Who's coming** (`/attendance/plan`), write a day's plan, and read reports (`/attendance/reports`). Everyone ACTIVE checks
+  in and answers "Coming?" for themselves. Members get 404 on session and report pages (and the CSV) and are sent back from
+  plan/settings/the reports list.
+- **Fixing mistakes**: `deleteSession` removes today's session, or an earlier one nobody checked in to themselves (only
+  `MANUAL` records), with a conditional `deleteMany` (records cascade), so a mis-tap doesn't count as "held". Start asks
+  first on a day without regular practice. "What we did" and day plans send back the saved text the form started from
+  (`base`): if it changed meanwhile the save is a `ConflictError` and the form shows their text ("Use theirs"); forms that
+  must keep typing (these, the schedule) submit with `onSubmit` + `startTransition` so React's form reset can't undo edits.
+  Accounts with attendance history can't be deleted (`NO_ACTIVITY` in `services/admin.ts`); disable them instead.
+- **Sessions**: `AttendanceSession` is unique per `(date, kind)` — one REGULAR and one FLEX per team-timezone day.
+  `openSession` creates today's, reopens a closed one with a **fresh random secret** (old codes stop working), or returns the
+  open one unchanged. Check-ins only go into **open sessions of today**; `AttendanceRecord` is unique per person, so a
+  second scan returns `already: true` ("You're already checked in ✓").
+- **Codes** (`src/server/attendance/codes.ts`, pure): 30-second slots. QR token = `<sessionId>.<slot base36>.<HMAC-SHA256(secret,
+  "qr:<id>:<slot>") first 16 bytes, base64url>`, accepted up to 10 slots old (~5 min, so a sign-in redirect still lands) and
+  one slot ahead (clock skew). A forged signature is "invalid", never "expired". The 6-digit code is HMAC-derived per slot
+  and accepted for the current slot and 3 before (~1.5–2 min); it's matched against today's open sessions only, attempts
+  are rate-limited per person (`CODE_ATTEMPT_LIMIT`, 10 per 10 min; format errors don't count), and all comparisons are
+  constant-time. **The secret never leaves the server**: the projector page fetches `{ svg, code, expiresAt, expiresInMs }`
+  from `getLiveCodeAction` (runners only, open sessions of today; SVG made with `qrcode`, shown as a `data:` image) again
+  right after it runs out (`expiresInMs`, so the browser's clock doesn't matter). Anyone with a fresh link or code checks in:
+  the live screen reminds runners to compare "Checked in" with the headcount, and full screen lists the latest names.
+- **Scan page** `/attendance/scan/[token]` only **reads** on GET (`getScanLanding`: signature, age, session, already in?);
+  `<ScanCheckIn>` sends `checkInWithTokenAction` **once** after mount, so prefetching or reloading never writes. It's the same
+  element whether or not I'm already in (`alreadyCheckedIn`, read once on mount), so the refresh after its own check-in
+  keeps it mounted and it shows "You're checked in for Regular ✓" (focused). Signed-out people go through the proxy's
+  `/login?next=…` and come back; with a stale cookie, `requireActiveUser` builds `next` from the proxy's `x-hk-path`
+  request header. The page sets `referrer: no-referrer`.
+- **In-app scanner** (`components/attendance/qr-scanner.tsx`): `getUserMedia({ video: { facingMode: "environment" } })`,
+  `playsInline muted` video, decoded with `jsqr` (dynamic import) on a canvas ~5×/s, follows only our own
+  `/attendance/scan/<token>` links (`attendanceScanPath`: the configured app origin or this page's own, no query/userinfo),
+  stops the camera on success, "Stop camera", and unmount. Blocked / missing / busy camera and insecure pages get a clear
+  message and **Type the code instead**. `next.config.ts` allows `camera=(self)`.
+- **Live screen** `/attendance/sessions/[id]`: big QR + code, live count and roster (`router.refresh()` every 10 s while
+  visible), "Said they'd come, not here yet" with quick Add, search to add anyone ACTIVE, Remove, "What we did", Close /
+  Reopen (both inline: focus moves to the other button, a status line says what happened), Delete. **Full screen** is a
+  dialog portaled to `<body>` with everything else `inert` (and asks the browser for full screen); Esc exits. Past sessions
+  open here too: runners get the last 5 on Attendance, and the report's dates link to them.
+- **Coming?** (`AttendanceRsvp`, one row per person per day): `setRsvp` changes only the fields sent (`regular`
+  YES/HALF/NO on regular days, `flex` YES/NO on Flex days — no Half —, `note` ≤ `LIMITS.rsvpNoteMax`; `""` clears one, and
+  clearing works on any day). Days from today to `today + LIMITS.rsvpDaysAhead`; **past days are read-only**. An answer
+  with nothing left is deleted. The UI saves each tap right away (optimistic, buttons stay enabled, `aria-pressed`,
+  a `role="status"` line); tapping the chosen answer again clears it. The list shows the next 14 team days
+  (`upcomingTeamDays`): 5, then "Show 9 more days". The Today page shows a compact card for today ("Scan to check in"
+  while a session is open, plus "Show code" for runners, and for staff "The … report is ready" in the first
+  `REPORT_READY_DAYS` days of a new period).
+- **Schedule** (`TeamNote` `attendance-settings`, JSON, read with `getAttendanceSettings`, defaults in `src/lib/attendance.ts`):
+  regular weekdays, Flex weekdays, and `reportStart` (must be a Monday). Two-week report periods run 14 days from it
+  (`reportPeriodFor` / `reportPeriodByIndex`); periods before it (attendance taken before "Reports start" moved) get
+  **negative indices** (`firstReportIndex`, `parseReportIndex`), so no report is ever hidden. `/attendance/reports/[index]`
+  shows sessions (run by, came vs said yes — ACTIVE accounts or people who came —, "What we did"), a per-person table
+  (attended/held for Regular and Flex **since the day they joined** — `since`, account creation in the team timezone; people
+  who joined after the period aren't listed —, said yes but didn't come, came without answering — `buildReport` in
+  `src/server/attendance/report.ts`), and what got done (meeting updates, checklist items approved, parts marked done,
+  notebook entries written — instants filtered by team-timezone day bounds, `startOfDayInTimezone`). Phones get stacked rows
+  instead of the tables. Print CSS and a CSV route (`csvCell` quotes `, ; " CR LF` and prefixes `'` to cells starting with
+  `= + - @`, tab, or CR; the CSV also lists what got done). Mentors and teachers aren't listed as "No answer" (only when they
+  answer or come). "Your attendance" also counts from the day you joined.
+- **Assign a task to the people coming** links to `/manage/tasks/new?people=<id>,<id>&due=<day>&back=/attendance/plan?day=<day>`;
+  the page keeps only people the actor can assign (`prefillAssigneeIds`), uses the day as the due date when it's in range
+  (`prefillDueDate`), and goes back to Who's coming (`prefillBackHref`, only that page) — `src/lib/task-prefill.ts`.
+
+## Team notebook (`src/server/services/notebook.ts`, `/notebook`)
+
+The team's engineering notebooks, laid out like the team's Google Doc outline: **notebooks** (title, emoji, description,
+`subteam` = whose it is, null = whole team) → **pages** → dated **entries**. Everyone ACTIVE reads, writes entries, and
+exports. The captain and other all-scope staff add, edit, reorder, and delete notebooks (`canManageNotebooks`) and, while
+there are none, make the usual ones in one click (`createStandardNotebooks`, `STANDARD_NOTEBOOKS` in `src/lib/notebook.ts`:
+Hardware 👷 Build → Intake, Outtake; Software 🧑‍💻 → Competition, Prototyping, Transfer; Business 🧑‍💼 → Outreach,
+Sponsorships, Engineering Journal; a ConflictError once any notebook exists). A notebook's pages are added, renamed,
+reordered, and deleted by all-scope staff plus the leaders of its subteam (`canManageNotebookPages`). Reordering (notebooks,
+and each notebook's pages) takes an advisory lock and renumbers 0..n-1; deleting cascades (the confirm names how many pages
+and entries go). Limits: `NOTEBOOKS_MAX`, `NOTEBOOK_PAGES_MAX`, the `LIMITS.notebook*` lengths.
+
+- **Stamps come from the server**: `createNotebookEntry` sets `authorId` and `createdAt = ctx.now`, never from the form.
+  Whoever wrote an entry and its notebook's page managers change or delete it (`canEditNotebookEntry`; subteam leaders
+  not entries by the captain, mentors, teachers, or owners). Every change to
+  the title/text (`updateNotebookEntry`, row locked `FOR UPDATE`) writes a `NotebookEntryEdit` (editor, `editedAt`, the
+  previous title and text) and sets `lastEditedById/At`; saving it unchanged writes nothing (`changed: false`, and it
+  doesn't count toward the rate limit). Last save
+  wins — nothing is lost, it's in the history. The page shows "Written by Ethan Chen · Sun, Sep 27, 2026, 3:42 PM"
+  (`formatStamp`, team timezone), "Edited by …", and **History (N)**: the 20 newest changes, loaded when it's opened
+  (`getNotebookEntryHistory` via `/notebook/entries/[id]/history`, JSON), each labelled by what it did
+  (`notebookChangeLabel`: title / text / pictures) with what it said before (long ones folded). Whoever can change the
+  entry can take an old version's text out (`clearNotebookEntryVersion`: blanks it, `isClearedNotebookVersion`; who and
+  when stay).
+- Entry text is plain text: `NotebookText` renders it with `RichText` (links, line breaks) and turns runs of "- " lines
+  into a bulleted list (`notebookBlocks`, shared with the print view and the Word export). Entries are rate-limited
+  (`NOTEBOOK_WRITE_RATE_LIMIT`, creates + edits).
+- **Pictures** (`NotebookImage`, `addNotebookImage` / `removeNotebookImage`, whoever can change the entry): PNG, JPG, GIF,
+  or WebP only, checked by their bytes with the posters' sniffing and pixel-size checks (`checkNotebookPicture`; stored
+  with the real type, matching extension, and width/height), ≤ 4 MB, ≤ `LIMITS.notebookImagesPerEntry` per entry, under the
+  shared storage lock and cap, and each person's pictures (on entries they wrote) under `NOTEBOOK_IMAGE_BYTES_PER_PERSON`
+  unless they manage that notebook's pages; `NOTEBOOK_IMAGE_RATE_LIMIT` per hour. Adding or taking one off marks the entry
+  "Edited by" and writes a history row with the text unchanged ("changed the pictures"; one row per person per
+  `NOTEBOOK_PICTURE_EDIT_MERGE_MS`) — except by its author within `NOTEBOOK_WRITING_WINDOW_MS` of posting it, before
+  anyone edited it (the editor uploads pictures right after the text). Served by `src/app/(app)/notebook/images/[id]/route.ts` (any ACTIVE user,
+  Resources headers, `immutable` like posters).
+- **Editor** (`components/notebook/entry-editor.tsx`): shows "You · <live time>" the moment it opens; title optional; the
+  text and title are controlled, so they survive errors (focus goes to the first invalid field). Picked pictures are made
+  JPGs of at most 1280 px (`prepare-picture.ts`; small PNG screenshots and GIFs are kept, WebP always converted), previewed,
+  and can be taken off; on save the text goes first (`createNotebookEntryAction` returns `entryId`), then removals, then
+  one upload per picture (each request stays under the 4.5 MB limit). A failed picture leaves the entry saved and the
+  editor open with that picture to retry or take off. Escape (not while an input method is composing) and Cancel ask
+  before throwing away unsaved changes, leaving the page warns (`beforeunload`), and a new entry's text is kept per page in
+  this browser until it's saved or discarded (`entry-draft.ts`, localStorage). `EntryRegion` announces results
+  (role="status") and moves focus to the saved entry (or "New entry" when it's on another screen), or on after a delete.
+- **Export** (each notebook and each page): **Word (.docx)** — route handlers `/notebook/n/[id]/export` and
+  `/notebook/p/[id]/export`, built by `src/server/notebook/docx.ts` with `docx` (title page with the team, notebook, and
+  export date; each page a Heading 1 on a new page; each entry a Heading 2 with the stamp line, text, pictures scaled to
+  the page, and "Edited by … on …"; file name like `Hardware Notebook 2026-09-27.docx`). Only
+  `NOTEBOOK_EXPORT_IMAGE_BUDGET` of picture bytes go in one file, and the finished file stays under
+  `NOTEBOOK_EXPORT_MAX_BYTES` (a response must stay under Vercel's 4.5 MB): with lots of text it's rebuilt with fewer
+  pictures (`buildNotebookDocxWithin`), and text alone too big is a 413 saying to export a page or print. Pictures left
+  out, and WebP, get a line instead and the title page says how many. Links in the text are clickable. The file name is
+  cut by whole characters (never half an emoji). **Print / Save as PDF** — `/notebook/print/n/[id]`
+  and `/notebook/print/p/[id]` in the `(notebook-print)` route group (no app menus; print CSS, page breaks, every picture).
+- Pages: `/notebook` (the outline: each notebook folds up — remembered per browser — with its pages, manager tools,
+  export, and the latest entries), `/notebook/p/[pageId]` (desktop: the outline on the left; phones: "All notebooks" /
+  "Jump to a page"; newest first or `?order=oldest`, 30 per screen), `/notebook/new`, `/notebook/n/[id]/edit`. No emails.
+
+## Team calendar (`src/server/services/calendar.ts`, `/calendar`)
+
+The season schedule: league meets, the ILT, scrimmages, competitions, outreach, team events, deadlines (`CalendarEvent`).
+Everyone ACTIVE sees it; staff (`canManageCalendar` = `isStaff`) add, edit, and remove events. No emails.
+An event has `startsOn` / optional `endsOn` (`@db.Date`, last day inclusive, at most 30 days after the first; 5 years back /
+2 years ahead like fundraising — an edit may keep a date it already has) and optional `startTime` / `endTime` ("HH:MM", team
+timezone; no start time = all day; an end time needs a start time and, on a one-day event, must be later; on a multi-day
+event the times are the first day's start and the last day's end). Field rules live in `src/lib/calendar.ts`
+(`checkCalendarEventFields`, client-safe); links get `https://` added. The edit form sends `version` (the `updatedAt` it
+loaded): a stale save is a `ConflictError`, checked before the fields (a stale form with a field error still gets it);
+the action revalidates anyway, so saving again replaces the other change.
+Creates are rate-limited (60/hour/person). `sourceKey` marks events loaded from a season schedule by a data migration
+(`20260927225500_season_schedule_2026_27`: the four Biobuzz league scrimmages, kind "League scrimmage") so loading again
+never duplicates them; edits keep it, and `db:seed -- --reset` keeps them (it removes only events people added).
+`getNextMeet(today, time)` = the first `CALENDAR_MEET_KINDS` event that isn't over — its last day is today or later (so a
+tournament in progress counts), minus today's whose end time has passed (`time` = team timezone "HH:MM",
+`timeInTimezone`; `eventIsOver`) — by first day then start time (all day first), plus the two after it — the calendar's
+hero and Today's `NextMeetCard` (top of Today: "Next meet in N days"). While this season's ILT isn't on the calendar
+(`isIltOnCalendar`: no ILT coming up or ended in the last 120 days) the hero says "Qualifying Tournament (ILT): date TBD".
+A multi-day event with times shows "Starts …" / "Ends …" with their days (`multiDayTimedEnds`), never daily-looking hours.
+`/calendar` has Month (`?month=YYYY-MM`; two-line 40px bars per day from `lg` up, where the per-day "+" is a mouse-only
+shortcut; a dotted grid plus that month's list on phones and tablets), List (`?view=list`, upcoming) and Past
+(`?view=past`, 100 most recent) views, filtered by `?kind=` (chips scroll sideways on phones, wrap from `sm`). "Add to my calendar" serves RFC 5545 files from `/calendar/export.ics` (events from a year ago on) and
+`/calendar/[id]/event.ics` (`buildIcs`: CRLF, 75-octet folding, TEXT escaping, all-day as DATE with exclusive DTEND, timed
+events converted to UTC with `zonedTimeToUtc`, UID `<id>@huskyteers-portal`) — signed-in ACTIVE users only, `text/calendar`,
+`attachment`, `private, no-store`, `nosniff`.
+
+## Meeting updates (`src/server/services/meeting-updates.ts`, `/updates`)
+
+After every meeting each subteam writes what it did ("What we did", required), "Next time", and "Problems or help needed"
+(`MeetingUpdate`: `meetingDate` `@db.Date` + `subteam`, no unique constraint — several people may write for the same
+subteam and day, and each update shows its own author). You write for your own subteam; the captain, mentors, teachers, and
+owners write for any (`meetingUpdateSubteams` / `canWriteMeetingUpdate`). Whoever wrote it, that subteam's leader, and
+all-scope staff edit or remove it (`canEditMeetingUpdate`); moving it to another subteam also needs `canWriteMeetingUpdate`
+for the new one (keeping its subteam is always fine). Everyone ACTIVE reads everything. The meeting date can't be in the
+future (team timezone) or more than a year back (`src/lib/meeting-updates.ts`; an edit may keep its saved date). A save that
+changes something sets `lastEditedAt/lastEditedById` ("Edited by … · 2 h ago"); one that changes nothing writes nothing.
+The edit form sends `version` (the `updatedAt` it loaded): a stale save is a `ConflictError`, and the action refreshes the
+page even when the save fails, so saving again replaces the other edit. Every save sets `updatedAt` explicitly (`ctx.now`, but
+always at least 1 ms past the previous one), so the version moves even within one millisecond. A removal only deletes the
+row as it was when permission was checked (same author, subteam, and `updatedAt`), else `ConflictError`. Creates are rate-limited
+(`MEETING_UPDATE_RATE_LIMIT`, 30/hour), edits and removals 120/hour. The feed (`queries/meeting-updates.ts`) pages by
+meeting day (`MEETING_DAYS_PER_PAGE` = 10, newest first), each day's updates grouped by subteam (three columns once the feed itself is `@4xl` wide — a container query, so
+the sidebar counts; stacked below that, where the subteams nobody wrote for share one "No … update yet" line), with
+`?subteam=` and `?who=mine` filters. Today shows `TodayUpdateNudge` on team days (attendance
+schedule) or once someone wrote one for today; the attendance two-week report lists the period's updates
+(`getMeetingUpdatesBetween`) and the meeting days (days attendance was taken) missing a subteam's update
+(`missingMeetingUpdates`). `?focus=<id>` (`meetingUpdateFocusHref`: Today's links, the edit page's Back/Cancel) opens the feed
+at an update. No emails.
+
 ## Dates
 
 Due dates are calendar days in the team timezone (`TEAM_TIMEZONE`, default America/Los_Angeles), stored as `@db.Date`.

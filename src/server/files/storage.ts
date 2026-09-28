@@ -1,5 +1,6 @@
-// The team's file storage: every uploaded file (Resources files, files attached to sponsors, and posters) lives
-// in Postgres, so together they must stay under LIMITS.resourceStorageMaxBytes.
+// The team's file storage: every uploaded file (Resources files, files attached to sponsors, posters, team
+// notebook pictures, and strategy files) lives in Postgres, so together they must stay under
+// LIMITS.resourceStorageMaxBytes.
 import type { Prisma } from "@/generated/prisma/client";
 import { LIMITS } from "@/lib/constants";
 import { formatFileSize } from "@/lib/files";
@@ -15,6 +16,10 @@ export interface FileStorageUsage {
   sponsors: number;
   /** Bytes of poster images and PDFs (the Posters page). */
   posters: number;
+  /** Bytes of pictures on Team notebook entries. */
+  notebook: number;
+  /** Bytes of files on the Strategy page (.pp paths, diagrams, PDFs). */
+  strategy: number;
   /** All of them together. */
   used: number;
   /** The cap (LIMITS.resourceStorageMaxBytes). */
@@ -38,13 +43,25 @@ export async function fileStorageUsage(db: Tx): Promise<FileStorageUsage> {
   const resources = await db.resourceFile.aggregate({ _sum: { size: true } });
   const sponsors = await db.sponsorshipFile.aggregate({ _sum: { size: true } });
   const posters = await db.posterFile.aggregate({ _sum: { size: true } });
+  const notebook = await db.notebookImage.aggregate({ _sum: { size: true } });
+  const strategy = await db.strategyFile.aggregate({ _sum: { size: true } });
   const r = resources._sum.size ?? 0;
   const s = sponsors._sum.size ?? 0;
   const p = posters._sum.size ?? 0;
-  return { resources: r, sponsors: s, posters: p, used: r + s + p, max: LIMITS.resourceStorageMaxBytes };
+  const n = notebook._sum.size ?? 0;
+  const g = strategy._sum.size ?? 0;
+  return {
+    resources: r,
+    sponsors: s,
+    posters: p,
+    notebook: n,
+    strategy: g,
+    used: r + s + p + n + g,
+    max: LIMITS.resourceStorageMaxBytes,
+  };
 }
 
-/** Bytes used by every uploaded file together (Resources files, sponsor files, and posters). */
+/** Bytes used by every uploaded file together (all the kinds in FileStorageUsage). */
 export async function usedFileStorageBytes(tx: Tx): Promise<number> {
   return (await fileStorageUsage(tx)).used;
 }
@@ -55,12 +72,13 @@ export async function usedFileStorageBytes(tx: Tx): Promise<number> {
  * named when there are some ("…: 200 MB of Resources files, 62 MB of sponsor files, and 38 MB of posters.").
  */
 export function storageFullSentence(usage: FileStorageUsage): string {
-  const resources = `${formatFileSize(usage.resources)} of Resources files`;
-  const sponsors = `${formatFileSize(usage.sponsors)} of sponsor files`;
-  if (usage.posters > 0) {
-    return `The team's file storage is full: ${resources}, ${sponsors}, and ${formatFileSize(usage.posters)} of posters.`;
-  }
-  return `The team's file storage is full: ${resources} and ${sponsors}.`;
+  // Resources and sponsor files are always named; the newer kinds only when there are some.
+  const parts = [`${formatFileSize(usage.resources)} of Resources files`, `${formatFileSize(usage.sponsors)} of sponsor files`];
+  if (usage.posters > 0) parts.push(`${formatFileSize(usage.posters)} of posters`);
+  if (usage.notebook > 0) parts.push(`${formatFileSize(usage.notebook)} of notebook pictures`);
+  if (usage.strategy > 0) parts.push(`${formatFileSize(usage.strategy)} of strategy files`);
+  const list = parts.length === 2 ? `${parts[0]} and ${parts[1]}` : `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+  return `The team's file storage is full: ${list}.`;
 }
 
 /**

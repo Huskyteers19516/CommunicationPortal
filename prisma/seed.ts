@@ -7,11 +7,14 @@
 // Importing this file has no side effects — tests call `seed(db, options)` directly.
 //
 // Keep this file free of `server-only` and next/* imports: it runs under plain tsx.
+import { randomBytes } from "node:crypto";
 import { config as loadEnv } from "dotenv";
 import type { Prisma } from "../src/generated/prisma/client";
 import type { AccountStatus, AssignmentStatus, Priority, QuestionStatus, Role, Subteam } from "../src/generated/prisma/enums";
+import { ATTENDANCE_SETTINGS_KEY, DEFAULT_ATTENDANCE_SETTINGS, isFlexDay, isRegularDay, isTeamDay, weekdayOf } from "../src/lib/attendance";
 import { ROLE_LABELS, STATUS_LABELS, SUBTEAM_LABELS } from "../src/lib/constants";
 import { addDays, dateOnlyToDb, type DateOnly, formatDateOnly, todayInTimezone } from "../src/lib/dates";
+import { STANDARD_NOTEBOOKS } from "../src/lib/notebook";
 import { hashPassword } from "../src/server/auth/password";
 import { createPrismaClient, type Db } from "../src/server/db";
 
@@ -1068,15 +1071,531 @@ const FUNDRAISING_SEASON_GOAL = 5000;
 /** When the season started (TeamNote "fundraising-season-start"), days from today: every demo fundraiser counts. */
 const FUNDRAISING_SEASON_START_DAYS = -60;
 
+// ── Strategy ──────────────────────────────────────────────────────────────────
+
+/**
+ * A tiny path the Pedro Pathing planner (BIOBUZZ edition) opens with Load: start against the audience wall by the
+ * HIVE (the planner's default red start for a 16 in robot), drive out, wait to score, then curve over to park.
+ */
+const DEMO_PATH = {
+  startPoint: { x: 61.75, y: 8, heading: "linear", startDeg: 90, endDeg: 90, locked: false },
+  lines: [
+    {
+      id: "line-drive-out",
+      name: "Drive out",
+      endPoint: { x: 61.75, y: 30, heading: "linear", startDeg: 90, endDeg: 90 },
+      controlPoints: [],
+      color: "#ffc516",
+      locked: false,
+    },
+    {
+      id: "line-park",
+      name: "Park",
+      endPoint: { x: 36, y: 44, heading: "constant", degrees: 135 },
+      controlPoints: [{ x: 58, y: 44 }],
+      color: "#60a5fa",
+      locked: false,
+    },
+  ],
+  shapes: [],
+  sequence: [
+    { kind: "path", lineId: "line-drive-out" },
+    { kind: "wait", id: "wait-score", name: "Score preload", durationMs: 800 },
+    { kind: "path", lineId: "line-park" },
+  ],
+  version: "1.2.1",
+};
+
+interface StrategySpec {
+  title: string;
+  kind: "AUTO" | "TELEOP" | "ENDGAME" | "MATCH" | "SCOUTING" | "OTHER";
+  description: string;
+  link?: string;
+  pinned?: boolean;
+  /** A .pp path file (name + JSON). */
+  path?: { filename: string; data: unknown };
+  creator: PersonKey;
+  addedHoursAgo: number;
+}
+
+/** Demo strategies: a pinned auto with a real .pp path, a match plan with a link, and scouting notes. Placeholder links only. */
+const STRATEGIES: StrategySpec[] = [
+  {
+    title: "Red audience-side auto: score preload + park",
+    kind: "AUTO",
+    description:
+      "Start against the audience wall next to the HIVE (red side), facing the field.\n\n1. Drive out 22 in.\n2. Score the preload (0.8 s wait).\n3. Curve over and park.\n\nTo see it: the planner on the Strategy page → Load (the ↑ arrow at the top) → pick red-audience-auto.pp. Blue side: use the planner's alliance switch.",
+    pinned: true,
+    path: { filename: "red-audience-auto.pp", data: DEMO_PATH },
+    creator: "aiden",
+    addedHoursAgo: 30,
+  },
+  {
+    title: "Qualification match plan",
+    kind: "MATCH",
+    description:
+      "Auto: run the audience-side auto unless our partner has a better one on that side.\nTeleOp: cycle from the loading zone; the drive coach calls when to stop.\nEndgame: start parking at 0:20.\n\nTalk to our alliance partner before every match — who takes which side.",
+    link: "https://docs.example.com/huskyteers-match-plan",
+    creator: "jordan",
+    addedHoursAgo: 24 * 3,
+  },
+  {
+    title: "Scouting notes: what to watch for",
+    kind: "SCOUTING",
+    description:
+      "For every team we might pick or play against:\n- Do they score in auto? From which side?\n- How many cycles in TeleOp?\n- Do they park in endgame?\n- Any breakdowns or penalties?\n\nWrite it down right after the match, while it's fresh.",
+    creator: "grace",
+    addedHoursAgo: 24 * 5,
+  },
+];
+
+// ── Strategy → Other teams ────────────────────────────────────────────────────
+
+/** "Their strategy at a glance" for a league team (the teams themselves come from the league_teams migration). */
+const LEAGUE_TEAM_SUMMARIES: { number: number; summary: string; by: PersonKey; hoursAgo: number }[] = [
+  {
+    number: 9040,
+    summary:
+      "Auto: starts on the rear wall (blue side), scores the preload, parks by the HIVE — about 22 s.\nTeleOp: 5–6 cycles from the loading zone; fast driver.\nEndgame: parks early, around 0:25.\nGood alliance partner; they like the rear side, so we take the audience side.",
+    by: "grace",
+    hoursAgo: 20,
+  },
+];
+
+/** A strategy about another team: their auto, traced in the planner from a match video (a .pp path). */
+const LEAGUE_TEAM_STRATEGIES: { teamNumber: number; title: string; description: string; path: { filename: string; data: unknown }; creator: PersonKey; addedHoursAgo: number }[] = [
+  {
+    teamNumber: 9040,
+    title: "9040's rear-side auto (traced)",
+    description: "Traced from their qualification match video. They finish around 22 s, so the audience side is ours.",
+    path: {
+      filename: "9040-rear-auto.pp",
+      data: {
+        startPoint: { x: 79.75, y: 133.5, heading: "linear", startDeg: -90, endDeg: -90, locked: false },
+        lines: [
+          {
+            id: "line-9040-out",
+            name: "Drive out",
+            endPoint: { x: 79.75, y: 111.5, heading: "linear", startDeg: -90, endDeg: -90 },
+            controlPoints: [],
+            color: "#ffc516",
+            locked: false,
+          },
+        ],
+        shapes: [],
+        sequence: [{ kind: "path", lineId: "line-9040-out" }],
+        version: "1.2.1",
+      },
+    },
+    creator: "aiden",
+    addedHoursAgo: 18,
+  },
+];
+
+// ── Order list ────────────────────────────────────────────────────────────────
+
+interface PurchaseSpec {
+  description: string;
+  notes?: string;
+  link?: string;
+  vendor?: string;
+  quantity?: number;
+  /** Price for the whole line, in cents. */
+  cost?: number;
+  subteam: Subteam | null;
+  status: "REQUESTED" | "APPROVED" | "ORDERED" | "DONE" | "NOT_NEEDED";
+  orderer: PersonKey | null;
+  creator: PersonKey;
+  addedHoursAgo: number;
+  /** The last status change: who, and how many hours ago. */
+  changed?: { by: PersonKey; hoursAgo: number };
+}
+
+/** Demo order list, like the Business team's old "Purchase List" sheet: every status. Placeholder links only. */
+const PURCHASES: PurchaseSpec[] = [
+  {
+    description: "Flywheels for the outtake",
+    notes: "SKU am-5437 (2)",
+    vendor: "AndyMark",
+    link: "https://shop.example.com/andymark/am-5437",
+    quantity: 2,
+    cost: 5998,
+    subteam: "BUILD",
+    status: "DONE",
+    orderer: "ethan",
+    creator: "ethan",
+    addedHoursAgo: 24 * 9,
+    changed: { by: "ethan", hoursAgo: 24 * 2 },
+  },
+  {
+    description: "Dirty Soda Fundraiser Supplies",
+    notes: "Go to the fundraiser doc for all supplies",
+    cost: 8650,
+    subteam: "BUSINESS",
+    status: "ORDERED",
+    orderer: "ava",
+    creator: "ava",
+    addedHoursAgo: 24 * 6,
+    changed: { by: "ava", hoursAgo: 20 },
+  },
+  {
+    description: "USB-C cables for the Control Hub",
+    notes: "Short ones (1 ft). We keep losing them.",
+    link: "https://shop.example.com/usb-c-1ft",
+    quantity: 3,
+    cost: 1797,
+    subteam: "SOFTWARE",
+    status: "APPROVED",
+    orderer: "maya",
+    creator: "maya",
+    addedHoursAgo: 30,
+    changed: { by: "priya", hoursAgo: 5 },
+  },
+  {
+    description: "Yellow Jacket motors (312 RPM)",
+    notes: "SKU 5203-2402-0019 (4) for the new drivetrain",
+    vendor: "goBILDA",
+    link: "https://shop.example.com/gobilda/5203-2402-0019",
+    quantity: 4,
+    cost: 15996,
+    subteam: "BUILD",
+    status: "REQUESTED",
+    orderer: "isabella",
+    creator: "isabella",
+    addedHoursAgo: 6,
+  },
+  {
+    description: "Team T-shirts for the first qualifier",
+    notes: "Sizes are in the team sheet",
+    quantity: 30,
+    subteam: null,
+    status: "REQUESTED",
+    orderer: "daniel",
+    creator: "daniel",
+    addedHoursAgo: 26,
+  },
+  {
+    description: "Replacement mecanum rollers",
+    notes: "Found spares in the parts bin",
+    vendor: "goBILDA",
+    quantity: 8,
+    cost: 3200,
+    subteam: "BUILD",
+    status: "NOT_NEEDED",
+    orderer: "zara",
+    creator: "zara",
+    addedHoursAgo: 24 * 4,
+    changed: { by: "marcus", hoursAgo: 24 * 3 },
+  },
+];
+
+function purchaseRows(ago: (hours: number) => Date, uid: (key: PersonKey) => string): Prisma.PurchaseItemCreateManyInput[] {
+  return PURCHASES.map((item) => ({
+    description: item.description,
+    notes: item.notes ?? "",
+    link: item.link ?? "",
+    vendor: item.vendor ?? "",
+    quantity: item.quantity ?? null,
+    costCents: item.cost ?? null,
+    subteam: item.subteam,
+    status: item.status,
+    ordererId: item.orderer ? uid(item.orderer) : null,
+    createdById: uid(item.creator),
+    createdAt: ago(item.addedHoursAgo),
+    updatedAt: ago(item.changed?.hoursAgo ?? item.addedHoursAgo),
+    statusChangedAt: item.changed ? ago(item.changed.hoursAgo) : null,
+    statusChangedById: item.changed ? uid(item.changed.by) : null,
+  }));
+}
+
+// ── Team notebook ─────────────────────────────────────────────────────────────
+
+interface NotebookEntrySpec {
+  author: PersonKey;
+  hoursAgo: number;
+  title?: string;
+  body: string;
+  /** Changed later: who changed it, when, and what it said before (shown under History). */
+  edited?: { by: PersonKey; hoursAgo: number; previousTitle?: string; previousBody: string };
+  /** A tiny generated PNG (base64) on the entry. */
+  png?: { filename: string; data: string; width: number; height: number };
+}
+
+/**
+ * Demo entries for the standard notebooks (STANDARD_NOTEBOOKS in src/lib/notebook.ts), by "Notebook / Page".
+ * One was changed later by a Build leader (it has a history), one has a small picture; Transfer is still empty.
+ */
+const NOTEBOOK_ENTRIES: Record<string, NotebookEntrySpec[]> = {
+  "Hardware Notebook / Intake": [
+    {
+      author: "ethan",
+      hoursAgo: 24 * 3 + 2,
+      title: "Roller intake v1",
+      body: "Built the first roller intake: 2\" compliant wheels on a 5 mm hex shaft.\n- 312 rpm motor\n- Grabs samples from the wall and the floor\n- Jams when two come in at once\nNext: a funnel so only one fits.",
+      edited: {
+        by: "marcus",
+        hoursAgo: 24 * 2 + 5,
+        previousTitle: "Roller intake",
+        previousBody: "Built the first roller intake with compliant wheels.\n- Grabs samples from the wall\n- Jams sometimes",
+      },
+    },
+    {
+      author: "isabella",
+      hoursAgo: 20,
+      title: "Funnel test",
+      body: "Printed a funnel in PETG and bolted it in front of the rollers. 9 of 10 grabs worked; the miss was a sample standing on its edge.",
+      png: {
+        filename: "funnel-test.png",
+        data: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAAM0lEQVR42mO48+YeTRHDqAUj2AL9WiuS0KgFoxaMWjBqAS0sgCAbGCBJakRZMFqjvbkHAKEcf1ccFGZ+AAAAAElFTkSuQmCC",
+        width: 32,
+        height: 24,
+      },
+    },
+  ],
+  "Hardware Notebook / Outtake": [
+    {
+      author: "marcus",
+      hoursAgo: 24 * 2 + 1,
+      title: "Slide rigging",
+      body: "Re-strung both slides with continuous rigging. Full extension now takes 0.6 s instead of 1.1 s, and the string no longer goes slack on the way down.",
+    },
+  ],
+  "Software Notebook / Competition": [
+    {
+      author: "priya",
+      hoursAgo: 24 * 4,
+      title: "Qualifier checklist",
+      body: "Before every match:\n- Charge both batteries\n- Check the Control Hub firmware\n- Pick the auto that matches our alliance partner\nAfter the match, write down what the auto did.",
+    },
+  ],
+  "Software Notebook / Prototyping": [
+    {
+      author: "aiden",
+      hoursAgo: 30,
+      body: "Ran the 3-sample auto 10 times: 8 clean runs. Both misses were from the far-side start, so I'm retuning the heading PID next.",
+    },
+  ],
+  "Business Notebook / Outreach": [
+    {
+      author: "ava",
+      hoursAgo: 24 * 5,
+      title: "Library demo",
+      body: "Showed the robot to about 40 kids at the library and let them drive it. Handed out 30 flyers. Photos: https://photos.example.com/library-demo",
+    },
+  ],
+  "Business Notebook / Sponsorships": [
+    {
+      author: "amara",
+      hoursAgo: 24 * 3,
+      title: "Grant application sent",
+      body: "Sent the STEM grant application with our budget and outreach numbers. We should hear back in about four weeks.",
+    },
+  ],
+  "Business Notebook / Engineering Journal": [
+    {
+      author: "grace",
+      hoursAgo: 12,
+      title: "Week 4 recap",
+      body: "Intake works with the new funnel, the slides are faster, and auto scores 3 samples most of the time. Next week: driver practice.",
+    },
+  ],
+};
+
+// ── Attendance ────────────────────────────────────────────────────────────────
+
+/** Who's on the team for attendance (active students: members, leaders, the captain). */
+const ATTENDANCE_TEAM: PersonKey[] = [
+  "jordan", "priya", "marcus", "sofia", "kenji", "amara",
+  "aiden", "maya", "lucas", "chloe", "omar", "ethan", "isabella", "liam", "zara", "mateo", "hannah",
+  "ava", "daniel", "leila", "grace", "samuel",
+];
+/** People the e2e tests answer "Coming?" as: no demo answers for upcoming days. */
+const ATTENDANCE_E2E_PEOPLE: PersonKey[] = ["maya", "ethan", "ava"];
+
+const ATTENDANCE_NOTES = [
+  "Drive practice on the full field, then tuned the intake roller speed.",
+  "Build: new outtake side plates. Software: auto paths for the left start.",
+  "Sponsor calls (Business), wiring cleanup, and a practice match at the end.",
+  "Rebuilt the lift string spool. Everyone else worked on the notebook.",
+  "Scrimmage prep: checklist, spare parts box, and two practice matches.",
+  "",
+];
+
+/**
+ * Two weeks of attendance before today (Regular every team day but one, Flex on Flex days), with "What we did",
+ * check-ins (mostly scanned, some typed, a few added by hand), "Coming?" answers for those days and the next
+ * week, and a plan for the next team day. Today has no sessions, so attendance can be started fresh.
+ */
+async function seedAttendance(tx: Tx, today: DateOnly, uid: (key: PersonKey) => string) {
+  // Reports start on the Monday about three weeks back, so there's a past two weeks and a current one.
+  const back = addDays(today, -21);
+  const reportStart = addDays(back, -((weekdayOf(back) + 6) % 7));
+  const settings = { ...DEFAULT_ATTENDANCE_SETTINGS, reportStart };
+  // Key "attendance-settings" = ATTENDANCE_SETTINGS_KEY in src/lib/attendance.ts.
+  await tx.teamNote.create({ data: { key: ATTENDANCE_SETTINGS_KEY, body: JSON.stringify(settings), updatedById: uid("david") } });
+
+  const runners: PersonKey[] = ["david", "amara", "jordan"];
+  const rsvps = new Map<string, Prisma.AttendanceRsvpCreateManyInput>();
+  const rsvp = (who: PersonKey, day: DateOnly, data: Partial<Prisma.AttendanceRsvpCreateManyInput>) => {
+    const key = `${who}|${day}`;
+    rsvps.set(key, { userId: uid(who), date: dateOnlyToDb(day), ...rsvps.get(key), ...data });
+  };
+
+  let n = 0;
+  for (let offset = -14; offset <= -1; offset++) {
+    const day = addDays(today, offset);
+    if (!isTeamDay(settings, day)) continue;
+    const midnight = dateOnlyToDb(day).getTime(); // 00:00 UTC ≈ 5 pm the day before in California
+    const kinds: ("REGULAR" | "FLEX")[] = [];
+    if (isFlexDay(settings, day)) kinds.push("FLEX");
+    if (isRegularDay(settings, day) && offset !== -6) kinds.push("REGULAR"); // one day with no practice
+    for (const kind of kinds) {
+      n++;
+      const opener = runners[n % runners.length];
+      // Flex around 10 am, regular practice around 3:30 pm (Pacific).
+      const openedAt = new Date(midnight + (kind === "FLEX" ? 17 : 22.5) * HOUR);
+      const people = ATTENDANCE_TEAM.filter((_, i) => (i * 7 + n * 3) % (kind === "FLEX" ? 3 : 6) !== 0);
+      await tx.attendanceSession.create({
+        data: {
+          date: dateOnlyToDb(day),
+          kind,
+          secret: randomBytes(32).toString("base64url"),
+          openedById: uid(opener),
+          openedAt,
+          closedAt: new Date(openedAt.getTime() + (kind === "FLEX" ? 0.75 : 2.5) * HOUR),
+          note: kind === "REGULAR" ? ATTENDANCE_NOTES[n % ATTENDANCE_NOTES.length] : "Flex: notebook and CAD.",
+          records: {
+            create: people.map((who, i) => ({
+              userId: uid(who),
+              method: i % 9 === 4 ? "MANUAL" : i % 4 === 1 ? "CODE" : "QR",
+              markedById: i % 9 === 4 ? uid(opener) : null,
+              checkedInAt: new Date(openedAt.getTime() + (2 + ((i * 3) % 20)) * 60 * 1000),
+            })),
+          },
+        },
+        select: { id: true },
+      });
+      // Most people answered ahead; a couple said yes and didn't make it.
+      ATTENDANCE_TEAM.forEach((who, i) => {
+        if ((i + n) % 5 === 0) return; // didn't answer
+        const came = people.includes(who);
+        if (kind === "REGULAR") rsvp(who, day, { regular: came ? (i % 6 === 2 ? "HALF" : "YES") : i % 2 ? "NO" : "YES" });
+        else rsvp(who, day, { flex: came ? "YES" : "NO" });
+      });
+    }
+  }
+
+  // The next week's answers (not for the people the e2e tests use).
+  const upcoming: DateOnly[] = [];
+  for (let offset = 0; offset <= 7; offset++) {
+    const day = addDays(today, offset);
+    if (isTeamDay(settings, day)) upcoming.push(day);
+  }
+  upcoming.forEach((day, d) => {
+    ATTENDANCE_TEAM.forEach((who, i) => {
+      if (ATTENDANCE_E2E_PEOPLE.includes(who) || (i + d) % 4 === 0) return;
+      if (isRegularDay(settings, day)) rsvp(who, day, { regular: (i + d) % 7 === 1 ? "NO" : (i + d) % 5 === 2 ? "HALF" : "YES" });
+      if (isFlexDay(settings, day)) rsvp(who, day, { flex: (i + d) % 3 === 0 ? "NO" : "YES" });
+      if ((i + d) % 11 === 3) rsvp(who, day, { note: "Leaving at 5" });
+    });
+  });
+  await tx.attendanceRsvp.createMany({ data: [...rsvps.values()] });
+
+  // The plan for the next team day.
+  const next = upcoming.find((day) => day > today);
+  if (next) {
+    await tx.attendancePlan.create({
+      data: {
+        date: dateOnlyToDb(next),
+        plan: "Build: finish the intake rollers. Software: tune the left-side auto. Business: sponsor calls at 4.",
+        updatedById: uid("jordan"),
+      },
+    });
+  }
+}
+
+// ── Meeting updates ───────────────────────────────────────────────────────────
+
+type SeedUpdate = { who: PersonKey; subteam: Subteam; body: string; nextSteps?: string; blockers?: string; editedBy?: PersonKey };
+
+/** Newest meeting day first; the oldest one has no Business update ("No update yet"). Nothing for today (e2e writes today's). */
+const MEETING_UPDATES: SeedUpdate[][] = [
+  [
+    {
+      who: "maya",
+      subteam: "SOFTWARE",
+      body: "Tuned the left-start auto: the second sample pickup is 0.4 s faster.\nFixed the lift PID oscillating near the top.",
+      nextSteps: "Try the right-start path on the full field.",
+    },
+    {
+      who: "ethan",
+      subteam: "BUILD",
+      body: "Cut and mounted the new outtake side plates. Re-tensioned the lift string.",
+      blockers: "We're out of M4 nylock nuts. Added them to the Order list.",
+      editedBy: "marcus",
+    },
+    { who: "ava", subteam: "BUSINESS", body: "Called two sponsors back and finished the Dirty Soda flyer.", nextSteps: "Print flyers on Thursday." },
+  ],
+  [
+    { who: "priya", subteam: "SOFTWARE", body: "Set up the vision pipeline for sample color. Code review with Aiden and Chloe." },
+    { who: "marcus", subteam: "BUILD", body: "Drivetrain maintenance: new belts on the back wheels, checked every bolt.", nextSteps: "Prototype the wider intake." },
+    { who: "amara", subteam: "BUSINESS", body: "Outreach planning for the elementary school visit. Updated the sponsor tracker." },
+  ],
+  [
+    { who: "aiden", subteam: "SOFTWARE", body: "Driver practice: 6 matches. Logged cycle times in the notebook." },
+    { who: "isabella", subteam: "BUILD", body: "Printed spare intake rollers (3) and organized the parts box.", blockers: "The 3D printer's bed keeps losing level." },
+  ],
+];
+
+/** A few past meeting days of updates, one per subteam (one edited by the Build leader, one with a problem flagged). */
+async function seedMeetingUpdates(tx: Tx, today: DateOnly, uid: (key: PersonKey) => string) {
+  const days: DateOnly[] = [];
+  for (let offset = -1; days.length < MEETING_UPDATES.length && offset >= -21; offset--) {
+    const day = addDays(today, offset);
+    if (isRegularDay(DEFAULT_ATTENDANCE_SETTINGS, day)) days.push(day);
+  }
+  const rows: Prisma.MeetingUpdateCreateManyInput[] = [];
+  days.forEach((day, i) => {
+    // About 6 PM on the meeting day (Pacific), written a few minutes apart.
+    const base = dateOnlyToDb(day).getTime() + 25 * HOUR;
+    MEETING_UPDATES[i].forEach((u, j) => {
+      const createdAt = new Date(base + j * 7 * 60 * 1000);
+      rows.push({
+        meetingDate: dateOnlyToDb(day),
+        subteam: u.subteam,
+        body: u.body,
+        nextSteps: u.nextSteps ?? "",
+        blockers: u.blockers ?? "",
+        authorId: uid(u.who),
+        createdAt,
+        lastEditedAt: u.editedBy ? new Date(createdAt.getTime() + 2 * HOUR) : null,
+        lastEditedById: u.editedBy ? uid(u.editedBy) : null,
+      });
+    });
+  });
+  await tx.meetingUpdate.createMany({ data: rows });
+}
+
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 /** Delete every app row, children first. */
 async function wipeAppData(tx: Tx): Promise<void> {
+  await tx.meetingUpdate.deleteMany();
+  // The season schedule comes from a migration (it has a sourceKey) and stays; events people added go.
+  await tx.calendarEvent.deleteMany({ where: { sourceKey: null } });
+  await tx.attendanceSession.deleteMany(); // check-ins cascade
+  await tx.attendanceRsvp.deleteMany();
+  await tx.attendancePlan.deleteMany();
   await tx.fundraiser.deleteMany(); // helper lists cascade
   await tx.poster.deleteMany(); // poster files cascade
+  await tx.strategy.deleteMany(); // strategy files cascade
+  await tx.notebook.deleteMany(); // pages, entries, history, and pictures cascade
+  // The league's teams come from a migration and stay; only what people wrote about them goes.
+  await tx.leagueTeam.updateMany({ data: { summary: "", summaryUpdatedAt: null, summaryUpdatedById: null } });
   await tx.sponsorship.deleteMany();
   await tx.teamNote.deleteMany();
   await tx.part.deleteMany();
+  await tx.purchaseItem.deleteMany();
   await tx.resource.deleteMany();
   await tx.emailLog.deleteMany();
   await tx.rateLimit.deleteMany();
@@ -1362,6 +1881,56 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
         });
       }
 
+      // Strategy (whole team): a pinned auto with a .pp path, a match plan with a link, and scouting notes.
+      for (const s of STRATEGIES) {
+        const createdAt = ago(s.addedHoursAgo);
+        const bytes = s.path ? new TextEncoder().encode(JSON.stringify(s.path.data, null, 2)) : null;
+        await tx.strategy.create({
+          data: {
+            title: s.title,
+            kind: s.kind,
+            description: s.description,
+            link: s.link ?? "",
+            pinned: s.pinned ?? false,
+            createdById: uid(s.creator),
+            createdAt,
+            updatedAt: createdAt,
+            files:
+              s.path && bytes
+                ? { create: { filename: s.path.filename, contentType: "application/json", size: bytes.byteLength, data: bytes, createdAt } }
+                : undefined,
+          },
+          select: { id: true },
+        });
+      }
+
+      // Strategy → Other teams: a summary and a traced auto for one league team (skipped if it isn't on the list).
+      for (const t of LEAGUE_TEAM_SUMMARIES) {
+        await tx.leagueTeam.updateMany({
+          where: { number: t.number },
+          data: { summary: t.summary, summaryUpdatedAt: ago(t.hoursAgo), summaryUpdatedById: uid(t.by) },
+        });
+      }
+      for (const s of LEAGUE_TEAM_STRATEGIES) {
+        const team = await tx.leagueTeam.findUnique({ where: { number: s.teamNumber }, select: { id: true } });
+        if (!team) continue;
+        const createdAt = ago(s.addedHoursAgo);
+        const bytes = new TextEncoder().encode(JSON.stringify(s.path.data, null, 2));
+        await tx.strategy.create({
+          data: {
+            title: s.title,
+            kind: "AUTO",
+            description: s.description,
+            teamId: team.id,
+            createdById: uid(s.creator),
+            createdAt,
+            updatedAt: createdAt,
+            files: { create: { filename: s.path.filename, contentType: "application/json", size: bytes.byteLength, data: bytes, createdAt } },
+          },
+          select: { id: true },
+        });
+      }
+
       // Fundraising: every status, helpers signed up (one fundraiser full), and a season goal.
       for (const [i, f] of FUNDRAISERS.entries()) {
         const day = (n: number | undefined) => (n === undefined ? null : dateOnlyToDb(addDays(today, n)));
@@ -1396,6 +1965,77 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
       await tx.teamNote.create({
         data: { key: "fundraising-season-start", body: addDays(today, FUNDRAISING_SEASON_START_DAYS), updatedById: uid("amara") },
       });
+
+      // Team notebook: the standard notebooks with a few entries (one changed later, one with a picture).
+      for (const [position, nb] of STANDARD_NOTEBOOKS.entries()) {
+        const setUpAt = ago(24 * 30);
+        const notebook = await tx.notebook.create({
+          data: {
+            title: nb.title,
+            emoji: nb.emoji,
+            description: nb.description,
+            subteam: nb.subteam,
+            position,
+            createdById: uid("jordan"),
+            createdAt: setUpAt,
+            pages: { create: nb.pages.map((title, i) => ({ title, position: i, createdById: uid("jordan"), createdAt: setUpAt })) },
+          },
+          select: { pages: { select: { id: true, title: true } } },
+        });
+        for (const page of notebook.pages) {
+          for (const e of NOTEBOOK_ENTRIES[`${nb.title} / ${page.title}`] ?? []) {
+            const createdAt = ago(e.hoursAgo);
+            const editedAt = e.edited ? ago(e.edited.hoursAgo) : null;
+            const png = e.png ? Uint8Array.from(Buffer.from(e.png.data, "base64")) : null;
+            await tx.notebookEntry.create({
+              data: {
+                pageId: page.id,
+                title: e.title ?? "",
+                body: e.body,
+                authorId: uid(e.author),
+                createdAt,
+                updatedAt: editedAt ?? createdAt,
+                lastEditedById: e.edited ? uid(e.edited.by) : null,
+                lastEditedAt: editedAt,
+                edits: e.edited
+                  ? {
+                      create: {
+                        editorId: uid(e.edited.by),
+                        editedAt: editedAt!,
+                        previousTitle: e.edited.previousTitle ?? e.title ?? "",
+                        previousBody: e.edited.previousBody,
+                      },
+                    }
+                  : undefined,
+                images:
+                  png && e.png
+                    ? {
+                        create: {
+                          filename: e.png.filename,
+                          contentType: "image/png",
+                          size: png.byteLength,
+                          data: png,
+                          width: e.png.width,
+                          height: e.png.height,
+                          createdAt,
+                        },
+                      }
+                    : undefined,
+              },
+              select: { id: true },
+            });
+          }
+        }
+      }
+
+      // Order list (whole team): something in every status; the T-shirts have no price yet.
+      await tx.purchaseItem.createMany({ data: purchaseRows(ago, uid) });
+
+      // Attendance: two weeks of sessions and check-ins, "Coming?" answers, and the next team day's plan.
+      await seedAttendance(tx, today, uid);
+
+      // Meeting updates: a few past meeting days, each subteam writing its own.
+      await seedMeetingUpdates(tx, today, uid);
 
       return {
         users: keys.length,

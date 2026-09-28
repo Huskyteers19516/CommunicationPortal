@@ -733,6 +733,118 @@ describe("demo seed", () => {
     }
   });
 
+  it("has demo strategies: a pinned auto with a .pp path the planner can open, a match plan with a link, scouting notes", async () => {
+    const { isPedroPathProject } = await import("@/lib/strategy");
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const strategies = await db.strategy.findMany({ where: { teamId: null }, include: { files: true } });
+    expect(strategies.map((x) => x.kind).sort()).toEqual(["AUTO", "MATCH", "SCOUTING"]);
+    const auto = strategies.find((x) => x.kind === "AUTO")!;
+    expect(auto.pinned).toBe(true);
+    expect(auto.files).toHaveLength(1);
+    expect(auto.files[0]).toMatchObject({ filename: "red-audience-auto.pp", contentType: "application/json", size: auto.files[0].data.byteLength });
+    expect(isPedroPathProject(JSON.parse(Buffer.from(auto.files[0].data).toString("utf8")))).toBe(true);
+    expect(strategies.find((x) => x.kind === "MATCH")!.link).toMatch(/^https:\/\/docs\.example\.com\//);
+    for (const x of strategies) {
+      expect(users.get(x.createdById!)?.status, x.title).toBe("ACTIVE");
+      expect(x.createdAt.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+      expect(x.description.length, x.title).toBeGreaterThan(0);
+    }
+  });
+
+  it("has Other teams demo data: the league's teams, one summary, and a traced auto about that team", async () => {
+    const { isPedroPathProject } = await import("@/lib/strategy");
+    const db = s.db;
+    expect(await db.leagueTeam.count()).toBeGreaterThanOrEqual(17);
+    const team = await db.leagueTeam.findUniqueOrThrow({ where: { number: 9040 }, include: { summaryUpdatedBy: true } });
+    expect(team.summary.length).toBeGreaterThan(0);
+    expect(team.summaryUpdatedBy?.status).toBe("ACTIVE");
+    expect(team.summaryUpdatedAt!.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+    const about = await db.strategy.findMany({ where: { teamId: team.id }, include: { files: true } });
+    expect(about).toHaveLength(1);
+    expect(about[0].files[0]).toMatchObject({ contentType: "application/json", size: about[0].files[0].data.byteLength });
+    expect(about[0].files[0].filename).toMatch(/\.pp$/);
+    expect(isPedroPathProject(JSON.parse(Buffer.from(about[0].files[0].data).toString("utf8")))).toBe(true);
+  });
+
+  it("has a demo order list: every status, ordered and added by active people, status changes recorded", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const items = await db.purchaseItem.findMany();
+    expect(new Set(items.map((i) => i.status))).toEqual(new Set(["REQUESTED", "APPROVED", "ORDERED", "DONE", "NOT_NEEDED"]));
+    expect(items.find((i) => i.description === "Flywheels for the outtake")).toMatchObject({ notes: "SKU am-5437 (2)", status: "DONE" });
+    for (const i of items) {
+      expect(users.get(i.createdById!)?.status, i.description).toBe("ACTIVE");
+      expect(users.get(i.ordererId!)?.status, i.description).toBe("ACTIVE");
+      expect(i.createdAt.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+      if (i.link) expect(i.link).toMatch(/^https:\/\/shop\.example\.com\//);
+      // Anything past Requested says who moved it there, after it was added.
+      if (i.status === "REQUESTED") expect(i.statusChangedAt, i.description).toBeNull();
+      else {
+        expect(users.get(i.statusChangedById!)?.status, i.description).toBe("ACTIVE");
+        expect(i.statusChangedAt!.getTime()).toBeGreaterThanOrEqual(i.createdAt.getTime());
+        expect(i.statusChangedAt!.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+      }
+    }
+  });
+
+  it("has the standard notebooks with demo entries: stamped by active people, one with a history, one with a picture", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const notebooks = await db.notebook.findMany({ orderBy: { position: "asc" }, include: { pages: { orderBy: { position: "asc" } } } });
+    expect(notebooks.map((n) => [n.title, n.subteam, n.pages.map((p) => p.title)])).toEqual([
+      ["Hardware Notebook", "BUILD", ["Intake", "Outtake"]],
+      ["Software Notebook", "SOFTWARE", ["Competition", "Prototyping", "Transfer"]],
+      ["Business Notebook", "BUSINESS", ["Outreach", "Sponsorships", "Engineering Journal"]],
+    ]);
+    const entries = await db.notebookEntry.findMany({ include: { edits: true, images: true } });
+    expect(entries.length).toBeGreaterThan(5);
+    for (const e of entries) {
+      expect(users.get(e.authorId!)?.status, e.title).toBe("ACTIVE");
+      expect(e.createdAt.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+      for (const edit of e.edits) {
+        expect(users.get(edit.editorId!)?.status).toBe("ACTIVE");
+        expect(edit.editedAt.getTime()).toBeGreaterThan(e.createdAt.getTime());
+        expect(e.lastEditedAt).toEqual(edit.editedAt);
+      }
+      for (const img of e.images) {
+        expect(img).toMatchObject({ contentType: "image/png", size: img.data.byteLength });
+        expect(Array.from(img.data.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      }
+    }
+    expect(entries.filter((e) => e.edits.length > 0)).toHaveLength(1);
+    expect(entries.filter((e) => e.images.length > 0)).toHaveLength(1);
+  });
+
+  it("has demo attendance: two past weeks of closed sessions with check-ins, answers, and a plan; nothing today", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const sessions = await db.attendanceSession.findMany({ include: { records: true } });
+    expect(sessions.length).toBeGreaterThanOrEqual(8);
+    expect(new Set(sessions.map((x) => x.kind))).toEqual(new Set(["REGULAR", "FLEX"]));
+    const today = dateOnlyToDb(TEST_TODAY).getTime();
+    for (const x of sessions) {
+      expect(x.date.getTime()).toBeLessThan(today);
+      expect(x.date.getTime()).toBeGreaterThanOrEqual(today - 14 * 24 * 60 * 60 * 1000);
+      expect(x.closedAt).not.toBeNull();
+      expect(x.secret.length).toBeGreaterThanOrEqual(40);
+      expect(x.records.length).toBeGreaterThan(0);
+      expect(users.get(x.openedById!)?.status).toBe("ACTIVE");
+      for (const r of x.records) {
+        expect(users.get(r.userId)?.status).toBe("ACTIVE");
+        expect(r.method === "MANUAL").toBe(r.markedById !== null);
+      }
+    }
+    expect(new Set(sessions.flatMap((x) => x.records.map((r) => r.method)))).toEqual(new Set(["QR", "CODE", "MANUAL"]));
+    expect(sessions.some((x) => x.note !== "")).toBe(true);
+    const settings = await db.teamNote.findUniqueOrThrow({ where: { key: "attendance-settings" } });
+    expect(JSON.parse(settings.body)).toMatchObject({ regularDays: [1, 2, 3, 4, 5], flexDays: [2, 4] });
+    const upcoming = await db.attendanceRsvp.count({ where: { date: { gte: dateOnlyToDb(TEST_TODAY) } } });
+    expect(upcoming).toBeGreaterThan(10);
+    const plan = await db.attendancePlan.findFirstOrThrow();
+    expect(plan.date.getTime()).toBeGreaterThan(today);
+  });
+
   it("refuses to run on a database that already has users", async () => {
     const before = await s.db.task.count();
     await expect(seed(s.db, { now: TEST_NOW, timezone: TEST_TZ })).rejects.toBeInstanceOf(SeedRefusedError);
@@ -754,16 +866,32 @@ describe("demo seed", () => {
     const helpersBefore = await s.db.fundraiserVolunteer.count();
     const postersBefore = await s.db.poster.count();
     const posterFilesBefore = await s.db.posterFile.count();
+    const ordersBefore = await s.db.purchaseItem.count();
+    const sessionsBefore = await s.db.attendanceSession.count();
+    const checkInsBefore = await s.db.attendanceRecord.count();
+    const ourStrategiesBefore = await s.db.strategy.count({ where: { teamId: null } });
+    const notebookEntriesBefore = await s.db.notebookEntry.count();
+    // A calendar event someone added goes; the season schedule (loaded by a migration, with a sourceKey) stays.
+    await s.db.calendarEvent.create({ data: { title: "Leftover test meet", startsOn: TEST_NOW, createdById: someone.id } });
+    const seasonEventsBefore = await s.db.calendarEvent.count({ where: { sourceKey: { not: null } } });
 
     const result = await seed(s.db, { now: TEST_NOW, timezone: TEST_TZ, reset: true });
+    // Strategies (and their files, which cascade) are replaced, not duplicated.
+    expect(await s.db.strategy.count({ where: { teamId: null } })).toBe(ourStrategiesBefore);
+    expect(ourStrategiesBefore).toBe(3);
     expect(await s.db.part.count()).toBe(partsBefore);
     expect(partsBefore).toBeGreaterThan(0);
     expect(await s.db.sponsorship.count()).toBe(sponsorshipsBefore);
     expect(sponsorshipsBefore).toBeGreaterThan(0);
     expect(await s.db.fundraiser.count()).toBe(fundraisersBefore);
+    expect(await s.db.purchaseItem.count()).toBe(ordersBefore);
+    expect(ordersBefore).toBeGreaterThan(0);
     expect(await s.db.fundraiserVolunteer.count()).toBe(helpersBefore);
     expect(fundraisersBefore).toBeGreaterThan(0);
-    expect(await s.db.teamNote.count()).toBe(3); // sponsorship info + fundraising season goal and start
+    expect(await s.db.teamNote.count()).toBe(4); // sponsorship info + fundraising season goal and start + attendance schedule
+    expect(await s.db.attendanceSession.count()).toBe(sessionsBefore);
+    expect(await s.db.attendanceRecord.count()).toBe(checkInsBefore);
+    expect(await s.db.attendancePlan.count()).toBe(1);
     expect(await s.db.user.count()).toBe(27);
     expect(await s.db.task.count()).toBe(result.counts.tasks);
     expect(await s.db.taskAssignment.count()).toBe(result.counts.assignments);
@@ -773,6 +901,9 @@ describe("demo seed", () => {
     expect(await s.db.emailLog.count()).toBe(0);
     expect(await s.db.rateLimit.count()).toBe(0);
     expect(await s.db.user.findUnique({ where: { email: "extra@example.com" } })).toBeNull();
+    expect(await s.db.calendarEvent.count({ where: { sourceKey: null } })).toBe(0);
+    expect(await s.db.calendarEvent.count({ where: { sourceKey: { not: null } } })).toBe(seasonEventsBefore);
+    expect(seasonEventsBefore).toBe(4);
     // Resources (and their uploaded files, which cascade) are replaced, not duplicated.
     expect(await s.db.resource.count()).toBe(resourcesBefore);
     expect(await s.db.resourceFile.count()).toBe(filesBefore);
@@ -781,5 +912,9 @@ describe("demo seed", () => {
     expect(await s.db.poster.count()).toBe(postersBefore);
     expect(await s.db.posterFile.count()).toBe(posterFilesBefore);
     expect(posterFilesBefore).toBeGreaterThan(0);
+    // The notebooks (and their entries, history, and pictures) too.
+    expect(await s.db.notebook.count()).toBe(3);
+    expect(await s.db.notebookEntry.count()).toBe(notebookEntriesBefore);
+    expect(await s.db.notebookImage.count()).toBe(1);
   });
 });
