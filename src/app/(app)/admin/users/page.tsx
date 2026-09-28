@@ -40,7 +40,8 @@ export default async function PeoplePage({ searchParams }: PageProps<"/admin/use
       <div className="space-y-4">
         {sp.deleted === "1" && <Alert tone="success">Sign-up deleted.</Alert>}
 
-        <UserFilters filters={filters} />
+        {/* Keyed by the filters so "Clear filters" (a client navigation) resets the menus too. */}
+        <UserFilters key={JSON.stringify([filters.q, filters.status, filters.role, filters.subteam])} filters={filters} />
 
         <div className="flex items-center justify-between gap-3 text-sm text-ink-500">
           <p>

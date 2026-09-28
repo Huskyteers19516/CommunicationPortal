@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizeLineBreaks, optionalText, text } from "@/lib/validation";
 import { formDataToObject } from "@/server/action";
 
 describe("formDataToObject", () => {
@@ -34,5 +35,24 @@ describe("formDataToObject", () => {
     expect(performance.now() - started).toBeLessThan(1_000);
     expect(out.sponsorshipIds).toHaveLength(80_000);
     expect((out.sponsorshipIds as string[])[79_999]).toBe("id-79999");
+  });
+});
+
+describe("text / optionalText line breaks", () => {
+  // A textarea's maxLength counts a line break as one character, but browsers send each as CRLF.
+  const typed = ["Team address: 123 Example Ave", "Contact: Ms. Rivera", "Links: https://example.com"].join("\n");
+  const sent = typed.replace(/\n/g, "\r\n");
+
+  it("turns CRLF and lone CR into \\n before trimming and counting", () => {
+    expect(normalizeLineBreaks("a\r\nb\rc\nd")).toBe("a\nb\nc\nd");
+    expect(text("Info", typed.length).parse(`${sent}\r\n`)).toBe(typed);
+    expect(optionalText("Info", typed.length).parse(`\r\n${sent}`)).toBe(typed);
+    expect(text("Info", typed.length - 1).safeParse(sent).success).toBe(false);
+    expect(optionalText("Info", typed.length - 1).safeParse(sent).success).toBe(false);
+  });
+
+  it("still treats line breaks alone as empty", () => {
+    expect(text("Info", 10).safeParse("\r\n\r\n").success).toBe(false);
+    expect(optionalText("Info", 10).parse("\r\n \r")).toBeUndefined();
   });
 });

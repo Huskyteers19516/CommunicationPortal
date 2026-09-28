@@ -1,8 +1,17 @@
 // Two-week attendance report math and CSV (pure, so tests cover it without a database).
-import type { AttendanceKind, RsvpAnswer, Subteam } from "@/generated/prisma/enums";
-import { ATTENDANCE_KIND_LABELS } from "@/lib/attendance";
+import type { AttendanceCreditKind, AttendanceKind, RsvpAnswer, Subteam } from "@/generated/prisma/enums";
+import {
+  addCredit,
+  ATTENDANCE_KIND_LABELS,
+  CREDIT_SIXTHS,
+  DEFAULT_ATTENDANCE_SETTINGS,
+  emptyWeekCredit,
+  metWeeklyTarget,
+  sixthsToDecimal,
+  type WeekCredit,
+} from "@/lib/attendance";
 import { SUBTEAM_LABELS } from "@/lib/constants";
-import { type DateOnly, dateOnlyToDb } from "@/lib/dates";
+import { addDays, type DateOnly, dateOnlyToDb } from "@/lib/dates";
 
 // ---------- time ----------
 
@@ -55,10 +64,21 @@ export interface ReportPersonInput {
 
 export interface ReportInput {
   sessions: ReportSessionInput[];
-  records: { sessionId: string; userId: string }[];
+  /**
+   * Check-ins, with how much each counts (in sixths; missing = 1 regular). Credit 0 ("No credit": an admin put them
+   * on the sheet as not there) counts as not coming.
+   */
+  records: { sessionId: string; userId: string; credit?: number; creditKind?: AttendanceCreditKind }[];
   rsvps: { userId: string; date: DateOnly; regular: RsvpAnswer | null; flex: RsvpAnswer | null }[];
   /** Everyone the per-person table lists (the team, plus anyone else who came). */
   people: ReportPersonInput[];
+  /**
+   * The two weeks (a period starts on a Monday, so each is Mon–Sun): each person's credits per week. Missing = no
+   * weekly columns.
+   */
+  period?: { start: DateOnly; end: DateOnly };
+  /** Times a week each person should come (settings.weeklyTarget). */
+  weeklyTarget?: number;
 }
 
 export interface ReportSessionRow extends ReportSessionInput {
@@ -75,16 +95,34 @@ export interface Tally {
 export interface ReportPersonRow extends ReportPersonInput {
   regular: Tally;
   flex: Tally;
+  /** Credits in week 1 and week 2 of the period (empty without a period). */
+  weeks: WeekCredit[];
   /** Sessions they said they'd come to but didn't check in. */
   saidYesMissed: number;
   /** Sessions they came to without having answered "Coming?" for it. */
   cameUnanswered: number;
 }
 
+export interface ReportWeek {
+  start: DateOnly;
+  end: DateOnly;
+}
+
 export interface ReportData {
   sessions: ReportSessionRow[];
   people: ReportPersonRow[];
   held: { regular: number; flex: number };
+  /** Week 1 and week 2 of the period (empty without a period). */
+  weeks: ReportWeek[];
+  weeklyTarget: number;
+}
+
+/** A 14-day period's two Monday–Sunday weeks. */
+export function periodWeeks(period: { start: DateOnly; end: DateOnly }): ReportWeek[] {
+  return [
+    { start: period.start, end: addDays(period.start, 6) },
+    { start: addDays(period.start, 7), end: period.end },
+  ];
 }
 
 /** Did this answer say "I'm coming" for a session of this kind? */
@@ -100,24 +138,38 @@ function answered(kind: AttendanceKind, rsvp: { regular: RsvpAnswer | null; flex
 
 export function buildReport(input: ReportInput): ReportData {
   const rsvpByKey = new Map(input.rsvps.map((r) => [`${r.userId}|${r.date}`, r]));
-  const present = new Set(input.records.map((r) => `${r.sessionId}|${r.userId}`));
+  // "No credit" (0) is on the sheet but didn't come.
+  const came = input.records.filter((r) => (r.credit ?? CREDIT_SIXTHS) > 0);
+  const present = new Set(came.map((r) => `${r.sessionId}|${r.userId}`));
   const sessions = [...input.sessions].sort((a, b) => (a.date === b.date ? a.kind.localeCompare(b.kind) : a.date < b.date ? -1 : 1));
 
   const sessionRows: ReportSessionRow[] = sessions.map((s) => ({
     ...s,
-    present: input.records.filter((r) => r.sessionId === s.id).length,
+    present: came.filter((r) => r.sessionId === s.id).length,
     saidYes: input.rsvps.filter((r) => r.date === s.date && saidYesFor(s.kind, r)).length,
   }));
   const held = {
     regular: sessions.filter((s) => s.kind === "REGULAR").length,
     flex: sessions.filter((s) => s.kind === "FLEX").length,
   };
+  const weeks = input.period ? periodWeeks(input.period) : [];
+  const dateOf = new Map(sessions.map((s) => [s.id, s.date]));
+  const credits = new Map<string, WeekCredit[]>();
+  for (const r of came) {
+    const date = dateOf.get(r.sessionId);
+    const w = date === undefined ? -1 : weeks.findIndex((x) => date >= x.start && date <= x.end);
+    if (w < 0) continue;
+    const mine = credits.get(r.userId) ?? weeks.map(() => emptyWeekCredit());
+    addCredit(mine[w], { credit: r.credit ?? 6, creditKind: r.creditKind ?? "REGULAR" });
+    credits.set(r.userId, mine);
+  }
 
   const people: ReportPersonRow[] = input.people.map(({ since, ...p }) => {
     const row: ReportPersonRow = {
       ...p,
       regular: { attended: 0, held: 0 },
       flex: { attended: 0, held: 0 },
+      weeks: credits.get(p.id) ?? weeks.map(() => emptyWeekCredit()),
       saidYesMissed: 0,
       cameUnanswered: 0,
     };
@@ -137,7 +189,7 @@ export function buildReport(input: ReportInput): ReportData {
     return row;
   });
   people.sort((a, b) => a.name.localeCompare(b.name));
-  return { sessions: sessionRows, people, held };
+  return { sessions: sessionRows, people, held, weeks, weeklyTarget: input.weeklyTarget ?? DEFAULT_ATTENDANCE_SETTINGS.weeklyTarget };
 }
 
 // ---------- CSV ----------
@@ -159,23 +211,40 @@ export function csvRow(cells: (string | number | null | undefined)[]): string {
 
 /** "What got done" in the period, for the CSV (the same lists the report page shows). */
 export interface ReportDoneCsv {
-  meetingUpdates: { meetingDate: DateOnly; subteam: Subteam; authorName: string | null; body: string }[];
   tasks: { title: string; subteam: Subteam | null; people: string[] }[];
   parts: { name: string; quantity: number; madeBy: string | null }[];
   notebook: { title: string; notebook: string; page: string; author: string | null }[];
 }
 
 /**
- * The report as CSV: the per-person table, a blank line, the sessions, and (when given) what got done.
- * CRLF line ends (Excel).
+ * The report as CSV: the per-person table (with each week's credits toward the weekly target when the report has
+ * weeks), a blank line, the sessions, and (when given) what got done. CRLF line ends (Excel).
  */
 export function reportCsv(report: ReportData, period: { start: DateOnly; end: DateOnly }, done?: ReportDoneCsv): string {
+  // Credits as decimals (1/2 = 0.5, 2/3 = 0.67): a "1/2" cell would open as a date in Excel.
+  const weekHeads = report.weeks.flatMap((w, i) => [
+    `Week ${i + 1} (${w.start} to ${w.end})`,
+    `Week ${i + 1} regular`,
+    `Week ${i + 1} EC`,
+    `Week ${i + 1} Flex`,
+    `Week ${i + 1} met the target (${report.weeklyTarget})`,
+  ]);
+  const weekCells = (weeks: WeekCredit[]) =>
+    weeks.flatMap((w) => [
+      sixthsToDecimal(w.total),
+      sixthsToDecimal(w.regular),
+      sixthsToDecimal(w.extra),
+      sixthsToDecimal(w.flex),
+      metWeeklyTarget(w.total, report.weeklyTarget) ? "Yes" : "No",
+    ]);
   const lines = [
     csvRow([`Attendance ${period.start} to ${period.end}`]),
+    ...(report.weeks.length > 0 ? [csvRow([`Weekly target: ${report.weeklyTarget} (regular + EC + Flex)`])] : []),
     "",
     csvRow([
       "Name",
       "Subteam",
+      ...weekHeads,
       "Regular attended",
       "Regular held",
       "Flex attended",
@@ -187,6 +256,7 @@ export function reportCsv(report: ReportData, period: { start: DateOnly; end: Da
       csvRow([
         p.name,
         p.subteam ? SUBTEAM_LABELS[p.subteam] : "",
+        ...weekCells(p.weeks),
         p.regular.attended,
         p.regular.held,
         p.flex.attended,
@@ -206,8 +276,6 @@ export function reportCsv(report: ReportData, period: { start: DateOnly; end: Da
     lines.push(
       "",
       csvRow(["What got done"]),
-      csvRow(["Meeting update", "Date", "Subteam", "Written by", "What we did"]),
-      ...done.meetingUpdates.map((u) => csvRow(["", u.meetingDate, SUBTEAM_LABELS[u.subteam], u.authorName ?? "", u.body])),
       csvRow(["Task approved", "Title", "Subteam", "People"]),
       ...done.tasks.map((t) => csvRow(["", t.title, subteam(t.subteam), t.people.join(", ")])),
       csvRow(["Part made", "Name", "Quantity", "Made by"]),

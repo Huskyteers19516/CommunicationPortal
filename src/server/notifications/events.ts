@@ -28,7 +28,12 @@ export type NotificationEvent =
    */
   | { type: "resource.submitted"; resourceId: string }
   /** Someone approved or turned down a member's resource. Recipient: the person who shared it. */
-  | { type: "resource.reviewed"; resourceId: string };
+  | { type: "resource.reviewed"; resourceId: string }
+  /**
+   * A runner closed attendance while people who said they'd come hadn't checked in (`userIds`, nobody dealt with
+   * yet). Posted to the leaders' Discord channel (no email).
+   */
+  | { type: "attendance.no_shows"; sessionId: string; userIds: string[] };
 
 export type NotificationType = NotificationEvent["type"];
 

@@ -1,28 +1,27 @@
 import { CalendarDays, Clock, Hourglass, ListChecks, PartyPopper, TriangleAlert } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { TodayAnnouncements } from "@/components/announcements/today-announcements";
 import { TodayAttendanceCard } from "@/components/attendance/today-card";
+import { TodayNoShowsCard } from "@/components/attendance/today-no-shows";
 import { NextMeetCard } from "@/components/calendar/next-meet-card";
 import { ChecklistList, ChecklistSection, DueGroupedList } from "@/components/checklist/checklist-list";
 import { firstName, greetingFor, longDate } from "@/components/checklist/format";
 import { ReviewQueueLink, TodaySummary } from "@/components/checklist/today-summary";
 import { OrdersToOrderLink } from "@/components/orders/orders-to-order-link";
 import { PartsMakingLink } from "@/components/parts/parts-making-link";
-import { TodayUpdateNudge } from "@/components/updates/today-update-nudge";
 import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-import { isTeamDay } from "@/lib/attendance";
 import { timeInTimezone } from "@/lib/calendar";
 import { todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { canAccessManage } from "@/server/permissions";
-import { getAttendanceSettings } from "@/server/queries/attendance-settings";
+import { listUnreadAnnouncements } from "@/server/queries/announcements";
 import { getNextMeet } from "@/server/queries/calendar";
 import { getTodayView } from "@/server/queries/checklist";
-import { getTodayUpdateStatus } from "@/server/queries/meeting-updates";
 import { getNavCounts } from "@/server/queries/nav";
 import { countPartsImMaking } from "@/server/queries/parts";
 
@@ -40,18 +39,14 @@ export default async function TodayPage() {
   const today = todayInTimezone(timeZone, now);
   const nowIso = now.toISOString();
 
-  const [view, navCounts, partsMaking, attendanceSettings, updateStatus, nextMeet] = await Promise.all([
+  const [view, navCounts, partsMaking, nextMeet, unreadAnnouncements] = await Promise.all([
     getTodayView(actor, today),
     // Cached per request — the layout already loaded these for the nav badges.
     canAccessManage(actor) ? getNavCounts(actor) : null,
     countPartsImMaking(actor),
-    getAttendanceSettings(),
-    getTodayUpdateStatus(actor, today),
     getNextMeet(today, timeInTimezone(timeZone, now)),
+    listUnreadAnnouncements(actor),
   ]);
-  // The meeting-update nudge is for meeting days (or once someone has written one for today anyway).
-  const showUpdateNudge =
-    isTeamDay(attendanceSettings, today) || (updateStatus?.subteams.some((s) => s.updates.length > 0) ?? false);
   const reviewCount = navCounts?.reviewQueue ?? 0;
 
   const allEmpty =
@@ -66,13 +61,14 @@ export default async function TodayPage() {
       <PageHeader title={`${greetingFor(now, timeZone)}, ${firstName(actor.name)}`} description={longDate(today)} />
 
       <div className="max-w-3xl space-y-6">
+        <TodayAnnouncements items={unreadAnnouncements.items} total={unreadAnnouncements.total} now={now} timeZone={timeZone} />
         <NextMeetCard nextMeet={nextMeet} today={today} />
         <TodayAttendanceCard actor={actor} today={today} />
+        <TodayNoShowsCard actor={actor} today={today} />
         {!allEmpty && <TodaySummary summary={view.summary} />}
         <ReviewQueueLink count={reviewCount} />
         <PartsMakingLink count={partsMaking} />
         <OrdersToOrderLink actor={actor} />
-        {showUpdateNudge && <TodayUpdateNudge status={updateStatus} />}
 
         {allEmpty ? (
           <Card>

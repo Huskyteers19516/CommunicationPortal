@@ -663,3 +663,19 @@ export function icsFilename(title: string): string {
 export function parseDateParam(value: unknown): DateOnly | null {
   return typeof value === "string" && isDateOnly(value) ? value : null;
 }
+
+/**
+ * Attendance pages that open the new-event form ("Add an extra meeting" on Who's coming and the Schedule), by the
+ * `?from=` they add: the form's Back / Cancel and the new event's back link lead there instead of the calendar.
+ */
+export const CALENDAR_RETURNS = {
+  plan: { href: "/attendance/plan", label: "Who's coming" },
+  schedule: { href: "/attendance/settings", label: "Schedule" },
+} as const;
+
+export type CalendarReturn = keyof typeof CALENDAR_RETURNS;
+
+/** `?from=` / the form's `from` field: only the pages above (anything else is ignored). */
+export function parseCalendarReturn(value: unknown): CalendarReturn | null {
+  return value === "plan" || value === "schedule" ? value : null;
+}

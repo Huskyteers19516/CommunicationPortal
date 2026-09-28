@@ -1,25 +1,10 @@
-import { ChevronRight, ShieldCheck } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { AccountStatusBadge } from "@/components/app/badges";
+import { AccountStatusBadge, OwnerBadge } from "@/components/app/badges";
 import { UserChip } from "@/components/app/user-chip";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { timeAgo } from "@/lib/dates";
+import { lastSeenLabel } from "@/lib/dates";
 import type { UserListItem } from "@/server/queries/admin";
-
-/** Site owner (the `isAdmin` flag). Leaders, mentors, and teachers have admin access through their position. */
-function AdminBadge() {
-  return (
-    <Badge tone="brand">
-      <ShieldCheck className="size-3" aria-hidden />
-      Owner
-    </Badge>
-  );
-}
-
-function lastSeen(u: UserListItem, now: Date, timeZone: string) {
-  return u.lastSeenAt ? timeAgo(u.lastSeenAt, now, timeZone) : "Never";
-}
 
 /** People list: stacked cards on phones, a table from md up. */
 export function UserList({ users, now, timeZone }: { users: UserListItem[]; now: Date; timeZone: string }) {
@@ -35,8 +20,8 @@ export function UserList({ users, now, timeZone }: { users: UserListItem[]; now:
                 <p className="truncate text-xs text-ink-500">{u.email}</p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   <AccountStatusBadge status={u.status} />
-                  {u.isAdmin && <AdminBadge />}
-                  <span className="text-xs text-ink-500">Seen {lastSeen(u, now, timeZone)}</span>
+                  {u.isAdmin && <OwnerBadge />}
+                  <span className="text-xs text-ink-500">Seen {lastSeenLabel(u.lastSeenAt, now, timeZone)}</span>
                 </div>
               </div>
               <ChevronRight className="size-4 shrink-0 text-ink-300" aria-hidden />
@@ -77,10 +62,10 @@ export function UserList({ users, now, timeZone }: { users: UserListItem[]; now:
               <td className="px-3 py-2 lg:px-4">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <AccountStatusBadge status={u.status} />
-                  {u.isAdmin && <AdminBadge />}
+                  {u.isAdmin && <OwnerBadge />}
                 </div>
               </td>
-              <td className="truncate px-3 py-2 text-right text-ink-500 lg:px-4">{lastSeen(u, now, timeZone)}</td>
+              <td className="truncate px-3 py-2 text-right text-ink-500 lg:px-4">{lastSeenLabel(u.lastSeenAt, now, timeZone)}</td>
             </tr>
           ))}
         </tbody>

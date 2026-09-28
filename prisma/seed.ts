@@ -11,7 +11,16 @@ import { randomBytes } from "node:crypto";
 import { config as loadEnv } from "dotenv";
 import type { Prisma } from "../src/generated/prisma/client";
 import type { AccountStatus, AssignmentStatus, Priority, QuestionStatus, Role, Subteam } from "../src/generated/prisma/enums";
-import { ATTENDANCE_SETTINGS_KEY, DEFAULT_ATTENDANCE_SETTINGS, isFlexDay, isRegularDay, isTeamDay, weekdayOf } from "../src/lib/attendance";
+import {
+  ATTENDANCE_SETTINGS_KEY,
+  type AttendanceSettings,
+  DEFAULT_ATTENDANCE_SETTINGS,
+  isFlexDay,
+  isRegularDay,
+  isTeamDay,
+  serializeAttendanceSettings,
+  weekdayOf,
+} from "../src/lib/attendance";
 import { ROLE_LABELS, STATUS_LABELS, SUBTEAM_LABELS } from "../src/lib/constants";
 import { addDays, dateOnlyToDb, type DateOnly, formatDateOnly, todayInTimezone } from "../src/lib/dates";
 import { STANDARD_NOTEBOOKS } from "../src/lib/notebook";
@@ -1422,17 +1431,61 @@ const ATTENDANCE_NOTES = [
 ];
 
 /**
+ * How much a demo scanned check-in counts (in sixths, see CREDIT_OPTIONS in src/lib/attendance.ts). At Regular a
+ * scan counts as 1; a few were lowered (or made EC) by the runner afterwards (`byRunner`: "changed by", in the change
+ * log). At Flex members pick 1 Flex or 1/2 Flex themselves.
+ */
+function seedCredit(kind: "REGULAR" | "FLEX", i: number, n: number) {
+  if (kind === "FLEX") return { credit: (i + n) % 5 === 0 ? 3 : 6, creditKind: "FLEX" as const, byRunner: false };
+  const k = (i * 5 + n * 3) % 16;
+  const changed = ([[3, "REGULAR"], [4, "REGULAR"], [2, "REGULAR"], [6, "EXTRA"]] as const)[k];
+  return changed && i % 4 === 0
+    ? { credit: changed[0], creditKind: changed[1], byRunner: true }
+    : { credit: 6, creditKind: "REGULAR" as const, byRunner: false };
+}
+
+/** Added by hand (no scan): only a partial credit or EC (src/lib/attendance.ts: HAND_CREDIT_IDS). */
+function seedHandCredit(i: number, n: number) {
+  return ([[4, "REGULAR"], [3, "REGULAR"], [2, "REGULAR"], [3, "EXTRA"], [6, "EXTRA"]] as const)[(i + n) % 5];
+}
+
+/** The next Saturday after `today` (1–7 days ahead): the demo's extra meeting. */
+export function seedExtraMeetingDay(today: DateOnly): DateOnly {
+  return addDays(today, (6 - weekdayOf(today) + 7) % 7 || 7);
+}
+
+/**
  * Two weeks of attendance before today (Regular every team day but one, Flex on Flex days), with "What we did",
  * check-ins (mostly scanned, some typed, a few added by hand), "Coming?" answers for those days and the next
- * week, and a plan for the next team day. Today has no sessions, so attendance can be started fresh.
+ * week (the regular Mon/Tue/Thu meetings plus an extra meeting — a Saturday build day on the Team calendar), and
+ * a plan for the next team day. Today has no sessions, so attendance can be started fresh.
  */
 async function seedAttendance(tx: Tx, today: DateOnly, uid: (key: PersonKey) => string) {
   // Reports start on the Monday about three weeks back, so there's a past two weeks and a current one.
   const back = addDays(today, -21);
   const reportStart = addDays(back, -((weekdayOf(back) + 6) % 7));
-  const settings = { ...DEFAULT_ATTENDANCE_SETTINGS, reportStart };
-  // Key "attendance-settings" = ATTENDANCE_SETTINGS_KEY in src/lib/attendance.ts.
-  await tx.teamNote.create({ data: { key: ATTENDANCE_SETTINGS_KEY, body: JSON.stringify(settings), updatedById: uid("david") } });
+  // Key "attendance-settings" = ATTENDANCE_SETTINGS_KEY in src/lib/attendance.ts. Extra meetings are never saved in it.
+  const saved = { ...DEFAULT_ATTENDANCE_SETTINGS, reportStart };
+  await tx.teamNote.create({ data: { key: ATTENDANCE_SETTINGS_KEY, body: serializeAttendanceSettings(saved), updatedById: uid("david") } });
+
+  // An extra meeting (Team calendar, kind MEETING): a build day next Saturday. It's a meeting day in Attendance.
+  const extraDay = seedExtraMeetingDay(today);
+  await tx.calendarEvent.create({
+    data: {
+      title: "Extra build day",
+      kind: "MEETING",
+      startsOn: dateOnlyToDb(extraDay),
+      startTime: "09:00",
+      endTime: "13:00",
+      location: "Robotics room",
+      notes: "Finishing the intake before League Scrimmage 0. Bring safety glasses; lunch is on the team.",
+      createdById: uid("jordan"),
+      // Added two days ago, around 4 PM Pacific.
+      createdAt: new Date(dateOnlyToDb(addDays(today, -2)).getTime() + 23 * HOUR),
+      updatedAt: new Date(dateOnlyToDb(addDays(today, -2)).getTime() + 23 * HOUR),
+    },
+  });
+  const settings: AttendanceSettings = { ...saved, extraDays: [extraDay] };
 
   const runners: PersonKey[] = ["david", "amara", "jordan"];
   const rsvps = new Map<string, Prisma.AttendanceRsvpCreateManyInput>();
@@ -1441,21 +1494,79 @@ async function seedAttendance(tx: Tx, today: DateOnly, uid: (key: PersonKey) => 
     rsvps.set(key, { userId: uid(who), date: dateOnlyToDb(day), ...rsvps.get(key), ...data });
   };
 
+  // The admins' change log (AttendanceChange): every hand add, credit a runner changed, and one person taken off.
+  const changes: Prisma.AttendanceChangeCreateManyInput[] = [];
+  let lastRegular: { id: string; day: DateOnly; opener: PersonKey; openedAt: Date; people: PersonKey[] } | null = null;
+
   let n = 0;
+  let skipped = false;
+  let removedOne = false;
   for (let offset = -14; offset <= -1; offset++) {
     const day = addDays(today, offset);
     if (!isTeamDay(settings, day)) continue;
     const midnight = dateOnlyToDb(day).getTime(); // 00:00 UTC ≈ 5 pm the day before in California
     const kinds: ("REGULAR" | "FLEX")[] = [];
     if (isFlexDay(settings, day)) kinds.push("FLEX");
-    if (isRegularDay(settings, day) && offset !== -6) kinds.push("REGULAR"); // one day with no practice
+    // One day with no practice (the first regular day without Flex, so nothing was taken that day).
+    const noPractice = !skipped && !isFlexDay(settings, day);
+    if (noPractice) skipped = true;
+    else if (isRegularDay(settings, day)) kinds.push("REGULAR");
     for (const kind of kinds) {
       n++;
       const opener = runners[n % runners.length];
       // Flex around 10 am, regular practice around 3:30 pm (Pacific).
       const openedAt = new Date(midnight + (kind === "FLEX" ? 17 : 22.5) * HOUR);
       const people = ATTENDANCE_TEAM.filter((_, i) => (i * 7 + n * 3) % (kind === "FLEX" ? 3 : 6) !== 0);
-      await tx.attendanceSession.create({
+      type SeedRecord = {
+        who: PersonKey;
+        record: Omit<Prisma.AttendanceRecordCreateWithoutSessionInput, "user" | "markedBy" | "creditChangedBy"> & {
+          userId: string;
+          markedById: string | null;
+          creditChangedById?: string;
+        };
+        change: Pick<Prisma.AttendanceChangeCreateManyInput, "action" | "fromCredit" | "fromKind" | "toCredit" | "toKind" | "createdAt"> | null;
+      };
+      const records: SeedRecord[] = people.map((who, i): SeedRecord => {
+        const checkedInAt = new Date(openedAt.getTime() + (2 + ((i * 3) % 20)) * 60 * 1000);
+        const e2e = ATTENDANCE_E2E_PEOPLE.includes(who);
+        // A few added by hand at Regular (forgot their phone, came for part of it): partial credit or EC only.
+        if (kind === "REGULAR" && (i + n) % 12 === 4 && who !== opener && !e2e) {
+          const [credit, creditKind] = seedHandCredit(i, n);
+          return {
+            who,
+            record: {
+              userId: uid(who),
+              method: "MANUAL" as const,
+              markedById: uid(opener),
+              checkedInAt,
+              credit,
+              creditKind,
+              creditChangedAt: checkedInAt,
+              creditChangedById: uid(opener),
+            },
+            change: { action: "ADDED" as const, toCredit: credit, toKind: creditKind, createdAt: checkedInAt },
+          };
+        }
+        const { credit, creditKind, byRunner } = seedCredit(kind, i, n);
+        const changedAt = new Date(openedAt.getTime() + 2 * HOUR);
+        const lowered = byRunner && who !== opener && !e2e;
+        // Flex: the member's own pick (never logged). Regular: 1, unless the runner changed it.
+        const kept = kind === "FLEX" || lowered;
+        return {
+          who,
+          record: {
+            userId: uid(who),
+            method: i % 4 === 1 ? "CODE" : "QR",
+            markedById: null,
+            checkedInAt,
+            credit: kept ? credit : 6,
+            creditKind: kept ? creditKind : "REGULAR",
+            ...(lowered ? { creditChangedAt: changedAt, creditChangedById: uid(opener) } : {}),
+          },
+          change: lowered ? { action: "CREDIT_CHANGED", fromCredit: 6, fromKind: "REGULAR", toCredit: credit, toKind: creditKind, createdAt: changedAt } : null,
+        };
+      });
+      const session = await tx.attendanceSession.create({
         data: {
           date: dateOnlyToDb(day),
           kind,
@@ -1464,17 +1575,42 @@ async function seedAttendance(tx: Tx, today: DateOnly, uid: (key: PersonKey) => 
           openedAt,
           closedAt: new Date(openedAt.getTime() + (kind === "FLEX" ? 0.75 : 2.5) * HOUR),
           note: kind === "REGULAR" ? ATTENDANCE_NOTES[n % ATTENDANCE_NOTES.length] : "Flex: notebook and CAD.",
-          records: {
-            create: people.map((who, i) => ({
-              userId: uid(who),
-              method: i % 9 === 4 ? "MANUAL" : i % 4 === 1 ? "CODE" : "QR",
-              markedById: i % 9 === 4 ? uid(opener) : null,
-              checkedInAt: new Date(openedAt.getTime() + (2 + ((i * 3) % 20)) * 60 * 1000),
-            })),
-          },
+          records: { create: records.map((r) => r.record) },
         },
         select: { id: true },
       });
+      for (const r of records) {
+        if (!r.change) continue;
+        changes.push({
+          sessionId: session.id,
+          sessionDate: dateOnlyToDb(day),
+          sessionKind: kind,
+          userId: uid(r.who),
+          userName: PEOPLE[r.who].name,
+          changedById: uid(opener),
+          ...r.change,
+        });
+      }
+      if (kind === "REGULAR") lastRegular = { id: session.id, day, opener, openedAt, people };
+      // Someone who scanned from the hallway and left: the runner took them off (only the log remembers).
+      if (!removedOne && kind === "REGULAR") {
+        const gone = ATTENDANCE_TEAM.find((who) => !people.includes(who) && who !== opener && !ATTENDANCE_E2E_PEOPLE.includes(who));
+        if (gone) {
+          removedOne = true;
+          changes.push({
+            sessionId: session.id,
+            sessionDate: dateOnlyToDb(day),
+            sessionKind: kind,
+            userId: uid(gone),
+            userName: PEOPLE[gone].name,
+            changedById: uid(opener),
+            action: "REMOVED",
+            fromCredit: 6,
+            fromKind: "REGULAR",
+            createdAt: new Date(openedAt.getTime() + 0.5 * HOUR),
+          });
+        }
+      }
       // Most people answered ahead; a couple said yes and didn't make it.
       ATTENDANCE_TEAM.forEach((who, i) => {
         if ((i + n) % 5 === 0) return; // didn't answer
@@ -1484,8 +1620,43 @@ async function seedAttendance(tx: Tx, today: DateOnly, uid: (key: PersonKey) => 
       });
     }
   }
+  // On the last Regular day, someone who said Yes and didn't come was marked "No credit" (not an e2e person).
+  if (lastRegular) {
+    const { id, day, opener, openedAt, people } = lastRegular;
+    const who = ATTENDANCE_TEAM.find((p) => !people.includes(p) && p !== opener && !ATTENDANCE_E2E_PEOPLE.includes(p));
+    if (who) {
+      rsvp(who, day, { regular: "YES" });
+      const when = new Date(openedAt.getTime() + 1.5 * HOUR);
+      await tx.attendanceRecord.create({
+        data: {
+          sessionId: id,
+          userId: uid(who),
+          method: "MANUAL",
+          markedById: uid(opener),
+          checkedInAt: when,
+          credit: 0,
+          creditKind: "REGULAR",
+          creditChangedAt: when,
+          creditChangedById: uid(opener),
+        },
+      });
+      changes.push({
+        sessionId: id,
+        sessionDate: dateOnlyToDb(day),
+        sessionKind: "REGULAR",
+        userId: uid(who),
+        userName: PEOPLE[who].name,
+        changedById: uid(opener),
+        action: "ADDED",
+        toCredit: 0,
+        toKind: "REGULAR",
+        createdAt: when,
+      });
+    }
+  }
+  await tx.attendanceChange.createMany({ data: changes });
 
-  // The next week's answers (not for the people the e2e tests use).
+  // The next week's answers, the extra meeting's too (not for the people the e2e tests use).
   const upcoming: DateOnly[] = [];
   for (let offset = 0; offset <= 7; offset++) {
     const day = addDays(today, offset);
@@ -1514,75 +1685,199 @@ async function seedAttendance(tx: Tx, today: DateOnly, uid: (key: PersonKey) => 
   }
 }
 
-// ── Meeting updates ───────────────────────────────────────────────────────────
+// ── Announcements ─────────────────────────────────────────────────────────────
 
-type SeedUpdate = { who: PersonKey; subteam: Subteam; body: string; nextSteps?: string; blockers?: string; editedBy?: PersonKey };
+type SeedAnnouncement = { by: PersonKey; subteam: Subteam | null; title: string; body: string; hoursAgo: number; pinned?: boolean; editedHoursAgo?: number };
 
-/** Newest meeting day first; the oldest one has no Business update ("No update yet"). Nothing for today (e2e writes today's). */
-const MEETING_UPDATES: SeedUpdate[][] = [
-  [
-    {
-      who: "maya",
-      subteam: "SOFTWARE",
-      body: "Tuned the left-start auto: the second sample pickup is 0.4 s faster.\nFixed the lift PID oscillating near the top.",
-      nextSteps: "Try the right-start path on the full field.",
-    },
-    {
-      who: "ethan",
-      subteam: "BUILD",
-      body: "Cut and mounted the new outtake side plates. Re-tensioned the lift string.",
-      blockers: "We're out of M4 nylock nuts. Added them to the Order list.",
-      editedBy: "marcus",
-    },
-    { who: "ava", subteam: "BUSINESS", body: "Called two sponsors back and finished the Dirty Soda flyer.", nextSteps: "Print flyers on Thursday." },
-  ],
-  [
-    { who: "priya", subteam: "SOFTWARE", body: "Set up the vision pipeline for sample color. Code review with Aiden and Chloe." },
-    { who: "marcus", subteam: "BUILD", body: "Drivetrain maintenance: new belts on the back wheels, checked every bolt.", nextSteps: "Prototype the wider intake." },
-    { who: "amara", subteam: "BUSINESS", body: "Outreach planning for the elementary school visit. Updated the sponsor tracker." },
-  ],
-  [
-    { who: "aiden", subteam: "SOFTWARE", body: "Driver practice: 6 matches. Logged cycle times in the notebook." },
-    { who: "isabella", subteam: "BUILD", body: "Printed spare intake rollers (3) and organized the parts box.", blockers: "The 3D printer's bed keeps losing level." },
-  ],
+/** A pinned whole-team one, one for Build, one for Business, and an older one everyone has seen. */
+const ANNOUNCEMENTS: SeedAnnouncement[] = [
+  {
+    by: "jordan",
+    subteam: null,
+    pinned: true,
+    title: "Welcome to the 2026–27 season!",
+    body: "Big season ahead: League Scrimmage 0 is our first chance to drive in front of judges.\n\nCheck Today every day for your tasks, answer Coming? for each meeting, and ask in Questions if you're stuck.\nGame manual: https://www.firstinspires.org/resource-library/ftc/game-and-season-info",
+    hoursAgo: 50,
+  },
+  {
+    by: "marcus",
+    subteam: "BUILD",
+    title: "Bring safety glasses on Saturday",
+    body: "Extra build day this Saturday, 9 to 1. We're cutting aluminum for the intake, so no glasses = no tools.\nLunch is on the team.",
+    hoursAgo: 20,
+  },
+  {
+    by: "amara",
+    subteam: "BUSINESS",
+    title: "Sponsor thank-you cards due Friday",
+    body: "Each of us writes two cards. The list of sponsors and addresses is in Sponsorships → Info for applications.",
+    hoursAgo: 5,
+  },
+  {
+    by: "elena",
+    subteam: null,
+    title: "Engineering notebook check next week",
+    body: "I'll read every notebook page next Tuesday. Make sure your entries have dates, pictures, and what you'd change next time.",
+    hoursAgo: 24 * 8,
+    editedHoursAgo: 24 * 8 - 2,
+  },
 ];
 
-/** A few past meeting days of updates, one per subteam (one edited by the Build leader, one with a problem flagged). */
-async function seedMeetingUpdates(tx: Tx, today: DateOnly, uid: (key: PersonKey) => string) {
-  const days: DateOnly[] = [];
-  for (let offset = -1; days.length < MEETING_UPDATES.length && offset >= -21; offset--) {
-    const day = addDays(today, offset);
-    if (isRegularDay(DEFAULT_ATTENDANCE_SETTINGS, day)) days.push(day);
-  }
-  const rows: Prisma.MeetingUpdateCreateManyInput[] = [];
-  days.forEach((day, i) => {
-    // About 6 PM on the meeting day (Pacific), written a few minutes apart.
-    const base = dateOnlyToDb(day).getTime() + 25 * HOUR;
-    MEETING_UPDATES[i].forEach((u, j) => {
-      const createdAt = new Date(base + j * 7 * 60 * 1000);
-      rows.push({
-        meetingDate: dateOnlyToDb(day),
-        subteam: u.subteam,
-        body: u.body,
-        nextSteps: u.nextSteps ?? "",
-        blockers: u.blockers ?? "",
-        authorId: uid(u.who),
-        createdAt,
-        lastEditedAt: u.editedBy ? new Date(createdAt.getTime() + 2 * HOUR) : null,
-        lastEditedById: u.editedBy ? uid(u.editedBy) : null,
-      });
-    });
+/** When everyone last opened Announcements in the demo: the older one is seen, the rest are new. */
+const ANNOUNCEMENTS_SEEN_HOURS_AGO = 24 * 5;
+
+async function seedAnnouncements(tx: Tx, ago: (hours: number) => Date, uid: (key: PersonKey) => string) {
+  await tx.announcement.createMany({
+    data: ANNOUNCEMENTS.map((a) => ({
+      title: a.title,
+      body: a.body,
+      subteam: a.subteam,
+      pinned: a.pinned ?? false,
+      authorId: uid(a.by),
+      createdAt: ago(a.hoursAgo),
+      editedAt: a.editedHoursAgo === undefined ? null : ago(a.editedHoursAgo),
+      updatedAt: ago(a.editedHoursAgo ?? a.hoursAgo),
+    })),
   });
-  await tx.meetingUpdate.createMany({ data: rows });
+  await tx.user.updateMany({ where: { status: "ACTIVE" }, data: { announcementsSeenAt: ago(ANNOUNCEMENTS_SEEN_HOURS_AGO) } });
+}
+
+// ── Discussion ────────────────────────────────────────────────────────────────
+
+interface SeedDiscussion {
+  /** Fixed, so e2e and the screenshot tour can open them. */
+  id: string;
+  title: string;
+  body: string;
+  category: NonNullable<Prisma.DiscussionThreadCreateManyInput["category"]>;
+  by: PersonKey;
+  hoursAgo: number;
+  pinned?: boolean;
+  locked?: boolean;
+  replies: { by: PersonKey; hoursAgo: number; body: string; editedHoursAgo?: number }[];
+  /** Who has opened it: "everyone" (ACTIVE) up to its last activity, or each person up to how many replies they saw. */
+  readBy: "everyone" | Partial<Record<PersonKey, number>>;
+}
+
+/** A pinned welcome, a busy Software one, a Build one with news for its helpers, and a locked vote. */
+const DISCUSSIONS: SeedDiscussion[] = [
+  {
+    id: "demo-thread-welcome",
+    title: "Welcome to Discussion: read me first",
+    body: "This is the team's place to talk things over: ideas, robot questions, plans, and fun stuff.\n\nQuestions just for your leaders still go in Questions. Keep it kind, and use Off-topic for everything that isn't robots.\nLeaders can pin or lock a discussion when needed. Go Huskies!",
+    category: "GENERAL",
+    by: "jordan",
+    hoursAgo: 24 * 10,
+    pinned: true,
+    replies: [
+      { by: "maya", hoursAgo: 24 * 9 + 20, body: "Love this! Way easier than scrolling through the group chat." },
+      { by: "david", hoursAgo: 24 * 9 + 18, body: "Great idea. Remember that the whole team, mentors included, can read everything here." },
+    ],
+    readBy: "everyone",
+  },
+  {
+    id: "demo-thread-autos",
+    title: "Pedro Pathing or Road Runner for this season's autos?",
+    body: "We used Road Runner last year, but the Pedro planner on the Strategy page is really nice: smoother curves, and we can draw paths in the visualizer.\n\nShould we switch, or stick with what we know?",
+    category: "SOFTWARE",
+    by: "aiden",
+    hoursAgo: 24 * 3,
+    replies: [
+      { by: "priya", hoursAgo: 24 * 2 + 20, body: "Let's try Pedro on the red audience auto first and compare cycle times at the scrimmage." },
+      { by: "lucas", hoursAgo: 24 * 2, body: "I can port the drive constants this week. Does anyone know where last year's tuning values are?" },
+      { by: "maya", hoursAgo: 30, body: "They're in the Software Notebook, on the Competition page. Screenshot of the old values: https://example.com/tuning-2025" },
+      {
+        by: "chloe",
+        hoursAgo: 5,
+        body: "Tested Pedro on the practice field today: the curve into the basket is way smoother, and the whole auto is about 2 s faster. +1 for switching.",
+        editedHoursAgo: 4,
+      },
+    ],
+    readBy: { aiden: 4, priya: 2, lucas: 3, maya: 3 },
+  },
+  {
+    id: "demo-thread-intake",
+    title: "Intake keeps jamming on the second ball",
+    body: "When we pick up two in a row, the second one gets stuck under the top roller. Video from Tuesday: https://example.com/intake-jam\n\nIdeas?",
+    category: "BUILD",
+    by: "ethan",
+    hoursAgo: 26,
+    replies: [
+      { by: "marcus", hoursAgo: 22, body: "Try raising the top roller about 1/4 in. and check the belt tension." },
+      { by: "zara", hoursAgo: 20, body: "We had the same problem last year. Softer compliant wheels fixed it." },
+      { by: "ethan", hoursAgo: 3, body: "Raised it 1/4 in. and it works now, 20 pickups in a row. Thanks!" },
+    ],
+    readBy: { ethan: 3, marcus: 1, zara: 2 },
+  },
+  {
+    id: "demo-thread-shirts",
+    title: "Team T-shirt color vote",
+    body: "Vote here! Options: green (team color), black, or gray. Most votes by Friday wins.",
+    category: "OFF_TOPIC",
+    by: "grace",
+    hoursAgo: 24 * 6,
+    locked: true,
+    replies: [
+      { by: "ava", hoursAgo: 24 * 6 - 1, body: "Green!" },
+      { by: "mateo", hoursAgo: 24 * 6 - 3, body: "Black looks cooler." },
+      { by: "hannah", hoursAgo: 24 * 5 + 20, body: "Green, obviously." },
+      { by: "amara", hoursAgo: 24 * 5, body: "Green wins! Ordering this week. Locking this so the vote stays final. Thanks, everyone." },
+    ],
+    readBy: "everyone",
+  },
+];
+
+async function seedDiscussions(tx: Tx, ago: (hours: number) => Date, uid: (key: PersonKey) => string) {
+  const everyone = await tx.user.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  for (const d of DISCUSSIONS) {
+    const startedAt = ago(d.hoursAgo);
+    const replies = d.replies.map((r) => ({ ...r, at: ago(r.hoursAgo) }));
+    const last = replies.at(-1);
+    await tx.discussionThread.create({
+      data: {
+        id: d.id,
+        title: d.title,
+        body: d.body,
+        category: d.category,
+        authorId: uid(d.by),
+        pinned: d.pinned ?? false,
+        locked: d.locked ?? false,
+        replyCount: replies.length,
+        lastActivityAt: last?.at ?? startedAt,
+        lastActivityById: uid(last?.by ?? d.by),
+        createdAt: startedAt,
+        updatedAt: startedAt,
+        replies: {
+          create: replies.map((r) => ({
+            body: r.body,
+            authorId: uid(r.by),
+            createdAt: r.at,
+            editedAt: r.editedHoursAgo === undefined ? null : ago(r.editedHoursAgo),
+            updatedAt: r.editedHoursAgo === undefined ? r.at : ago(r.editedHoursAgo),
+          })),
+        },
+      },
+      select: { id: true },
+    });
+    const marks =
+      d.readBy === "everyone"
+        ? everyone.map((u) => ({ userId: u.id, lastReadAt: last?.at ?? startedAt }))
+        : (Object.entries(d.readBy) as [PersonKey, number][]).map(([who, seen]) => ({
+            userId: uid(who),
+            lastReadAt: seen > 0 ? replies[seen - 1].at : startedAt,
+          }));
+    await tx.discussionRead.createMany({ data: marks.map((m) => ({ ...m, threadId: d.id })) });
+  }
 }
 
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 /** Delete every app row, children first. */
 async function wipeAppData(tx: Tx): Promise<void> {
-  await tx.meetingUpdate.deleteMany();
+  await tx.announcement.deleteMany();
   // The season schedule comes from a migration (it has a sourceKey) and stays; events people added go.
   await tx.calendarEvent.deleteMany({ where: { sourceKey: null } });
+  await tx.attendanceChange.deleteMany(); // the admins' change log (it outlives sessions and accounts otherwise)
   await tx.attendanceSession.deleteMany(); // check-ins cascade
   await tx.attendanceRsvp.deleteMany();
   await tx.attendancePlan.deleteMany();
@@ -1599,6 +1894,7 @@ async function wipeAppData(tx: Tx): Promise<void> {
   await tx.resource.deleteMany();
   await tx.emailLog.deleteMany();
   await tx.rateLimit.deleteMany();
+  await tx.discussionThread.deleteMany(); // replies and read marks cascade
   await tx.questionReply.deleteMany();
   await tx.question.deleteMany();
   await tx.taskAssignment.deleteMany();
@@ -2031,11 +2327,14 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
       // Order list (whole team): something in every status; the T-shirts have no price yet.
       await tx.purchaseItem.createMany({ data: purchaseRows(ago, uid) });
 
+      // Discussion: a pinned welcome, a busy Software discussion, a Build one, and a locked vote (with read marks).
+      await seedDiscussions(tx, ago, uid);
+
       // Attendance: two weeks of sessions and check-ins, "Coming?" answers, and the next team day's plan.
       await seedAttendance(tx, today, uid);
 
-      // Meeting updates: a few past meeting days, each subteam writing its own.
-      await seedMeetingUpdates(tx, today, uid);
+      // Announcements: a pinned welcome, one each for Build and Business, and an older one everyone has seen.
+      await seedAnnouncements(tx, ago, uid);
 
       return {
         users: keys.length,

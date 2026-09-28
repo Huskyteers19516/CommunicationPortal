@@ -1,4 +1,4 @@
-import { Tag } from "lucide-react";
+import { ShieldCheck, Tag } from "lucide-react";
 import type { AccountStatus, AssignmentStatus, Priority, QuestionStatus, Role, Subteam } from "@/generated/prisma/enums";
 import {
   ASSIGNMENT_STATUS_LABELS,
@@ -33,6 +33,16 @@ const subteamTone: Record<Subteam, BadgeTone> = { SOFTWARE: "blue", BUILD: "yell
 export function SubteamBadge({ subteam }: { subteam: Subteam | null }) {
   if (!subteam) return <Badge tone="brand">Whole team</Badge>;
   return <Badge tone={subteamTone[subteam]}>{SUBTEAM_LABELS[subteam]}</Badge>;
+}
+
+/** Site owner (the `isAdmin` flag). Leaders, mentors, and teachers have admin access through their position. */
+export function OwnerBadge() {
+  return (
+    <Badge tone="brand">
+      <ShieldCheck className="size-3" aria-hidden />
+      Owner
+    </Badge>
+  );
 }
 
 const accountTone: Record<AccountStatus, BadgeTone> = { PENDING: "yellow", ACTIVE: "green", REJECTED: "red", DISABLED: "gray" };

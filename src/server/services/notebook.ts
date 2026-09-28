@@ -33,7 +33,7 @@ import {
   STANDARD_NOTEBOOKS,
 } from "@/lib/notebook";
 import { POSTER_IMAGE_MAX_PIXELS, POSTER_IMAGE_MAX_SIDE, posterImageTooLargeMessage } from "@/lib/posters";
-import { idSchema, optionalText, text } from "@/lib/validation";
+import { idSchema, normalizeLineBreaks, optionalText, text } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ConflictError, ForbiddenError, NotFoundError } from "../errors";
@@ -337,6 +337,7 @@ export async function moveNotebookPage(ctx: ServiceContext, raw: unknown): Promi
 
 const entryBody = z
   .string({ error: NOTEBOOK_ENTRY_EMPTY })
+  .overwrite(normalizeLineBreaks)
   .trim()
   .min(1, NOTEBOOK_ENTRY_EMPTY)
   .max(LIMITS.notebookEntryBodyMax, `Keep the entry under ${LIMITS.notebookEntryBodyMax.toLocaleString("en-US")} characters, or split it into two entries.`);
@@ -420,13 +421,15 @@ export async function updateNotebookEntry(
   const entry = await loadEditableEntry(ctx, data.entryId);
   const title = data.title ?? "";
   const unchanged = { id: entry.id, pageId: entry.pageId, changed: false };
-  // Saving it unchanged (or "Save again" to retry pictures) doesn't use up one of the hourly writes.
-  if (entry.title === title && entry.body === data.body) return unchanged;
+  // Saving it unchanged (or "Save again" to retry pictures) doesn't use up one of the hourly writes. Older entries
+  // may still have the CRLF line breaks forms send; the same text with "\n" is unchanged too.
+  const same = (saved: { title: string; body: string }) => saved.title === title && normalizeLineBreaks(saved.body) === data.body;
+  if (same(entry)) return unchanged;
   await limitWrites(ctx);
   return ctx.db.$transaction(async (tx) => {
     // Locks the row, so the history records exactly what this save replaced (even with two saves at once).
     const current = await lockEntry(tx, entry.id);
-    if (current.title === title && current.body === data.body) return unchanged;
+    if (same(current)) return unchanged;
     await tx.notebookEntryEdit.create({
       data: { entryId: entry.id, editorId: ctx.actor.id, editedAt: ctx.now, previousTitle: current.title, previousBody: current.body },
     });

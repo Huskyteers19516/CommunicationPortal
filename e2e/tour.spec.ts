@@ -75,8 +75,13 @@ test("member", async ({ page }, info) => {
   await shoot(page, p, "16t1-member-calendar", "/calendar?month=2026-11");
   await shoot(page, p, "16t2-member-calendar-list", "/calendar?view=list");
   await shoot(page, p, "16t3-member-calendar-event", "/calendar/season2627scrimmage0");
-  await shoot(page, p, "16u1-member-meeting-updates", "/updates");
-  await shoot(page, p, "16u2-member-write-update", "/updates/new");
+  await shoot(page, p, "16u3-member-team-members", "/people");
+  await shoot(page, p, "16u4-member-team-members-search", "/people?role=BUILD_LEADER");
+  await shoot(page, p, "16u5-member-announcements", "/announcements");
+  await shoot(page, p, "16u6-member-announcements-for-you", "/announcements?for=you");
+  await shoot(page, p, "16u7-member-discussion", "/discussion");
+  await shoot(page, p, "16u8-member-discussion-thread", "/discussion/demo-thread-autos");
+  await shoot(page, p, "16u9-member-start-discussion", "/discussion/new");
   await shoot(page, p, "16v-member-notebook", "/notebook");
   const [notebookPage] = await sql<{ id: string }>(
     `SELECT p.id FROM "NotebookPage" p JOIN "NotebookEntry" e ON e."pageId" = p.id GROUP BY p.id ORDER BY count(*) DESC, p.id LIMIT 1`,
@@ -140,6 +145,10 @@ test("build leader", async ({ page }, info) => {
   const report = await page.locator('a[href^="/attendance/reports/"]').first().getAttribute("href");
   if (report) await shoot(page, p, "37d-leader-attendance-report", report);
   await shoot(page, p, "37e-leader-notebook", "/notebook");
+  await shoot(page, p, "37f-leader-team-members", "/people");
+  await shoot(page, p, "37g-leader-announcements", "/announcements");
+  await shoot(page, p, "37h-leader-post-announcement", "/announcements/new");
+  await shoot(page, p, "37i-leader-discussion-locked", "/discussion/demo-thread-shirts");
   await shoot(page, p, "38-leader-parts", "/parts");
   await shoot(page, p, "38b-leader-parts-done", "/parts?view=done");
   const [part] = await sql<{ id: string }>(`SELECT id FROM "Part" WHERE status = 'NEEDED' ORDER BY position LIMIT 1`);
@@ -182,14 +191,18 @@ test("admin", async ({ page }, info) => {
   const [pending] = await sql<{ id: string }>(`SELECT id FROM "User" WHERE status = 'PENDING' ORDER BY "createdAt" LIMIT 1`);
   await shoot(page, p, "40-admin-approvals", "/admin");
   await shoot(page, p, "41-admin-people", "/admin/users");
+  await shoot(page, p, "41b-admin-team-members", "/people");
   if (pending) await shoot(page, p, "42-admin-person", `/admin/users/${pending.id}`);
   await shoot(page, p, "43-admin-emails", "/admin/emails");
   await shoot(page, p, "44-captain-overview", "/manage");
   await shoot(page, p, "45-captain-progress", "/manage/progress?range=month");
   await shoot(page, p, "45a-captain-add-other-team", "/strategy/teams/new");
   await shoot(page, p, "45b-captain-notebook", "/notebook");
-  await shoot(page, p, "45c-captain-meeting-updates", "/updates");
   await shoot(page, p, "45d-captain-add-event", "/calendar/new");
+  await shoot(page, p, "45e-captain-post-announcement", "/announcements/new");
+  const [announcement] = await sql<{ id: string }>(`SELECT id FROM "Announcement" ORDER BY pinned DESC, "createdAt" DESC LIMIT 1`);
+  if (announcement) await shoot(page, p, "45f-captain-edit-announcement", `/announcements/${announcement.id}/edit`);
+  await shoot(page, p, "45g-captain-edit-discussion", "/discussion/demo-thread-welcome/edit");
   await shoot(page, p, "45c-captain-new-notebook", "/notebook/new");
   const [notebook] = await sql<{ id: string }>(`SELECT id FROM "Notebook" ORDER BY position LIMIT 1`);
   if (notebook) await shoot(page, p, "45d-captain-edit-notebook", `/notebook/n/${notebook.id}/edit`);
@@ -197,4 +210,8 @@ test("admin", async ({ page }, info) => {
   await shoot(page, p, "47-captain-attendance-schedule", "/attendance/settings");
   const [session] = await sql<{ id: string }>(`SELECT id FROM "AttendanceSession" ORDER BY date DESC, kind LIMIT 1`);
   if (session) await shoot(page, p, "48-captain-attendance-session", `/attendance/sessions/${session.id}`);
+  // The last full two weeks: each person's week 1 and week 2 toward the weekly goal.
+  await shoot(page, p, "48b-captain-attendance-report-weeks", "/attendance/reports/0");
+  // The admins' change log (people added by hand, taken off, credits changed).
+  await shoot(page, p, "48c-captain-attendance-changes", "/attendance/changes");
 });

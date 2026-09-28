@@ -102,55 +102,63 @@ model User {
   emailOnSignup     Boolean @default(true) // admins: someone registered and needs approval
   emailOnResource   Boolean @default(true) // admins: a member shared a resource that needs approval
 
-  approvedById String?
-  approvedBy   User?     @relation("UserApprovals", fields: [approvedById], references: [id], onDelete: SetNull)
-  approved     User[]    @relation("UserApprovals")
-  approvedAt   DateTime?
-  lastSeenAt   DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  approvedById        String?
+  approvedBy          User?     @relation("UserApprovals", fields: [approvedById], references: [id], onDelete: SetNull)
+  approved            User[]    @relation("UserApprovals")
+  approvedAt          DateTime?
+  lastSeenAt          DateTime?
+  /// Last time they opened Announcements (announcements after it, for them, count as new).
+  announcementsSeenAt DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
-  sessions              Session[]
-  passwordResetTokens   PasswordResetToken[]
-  tasksCreated          Task[]                @relation("TaskCreator")
-  assignments           TaskAssignment[]      @relation("AssignmentAssignee")
-  reviews               TaskAssignment[]      @relation("AssignmentReviewer")
-  questionsAsked        Question[]            @relation("QuestionAsker")
-  questionsReceived     Question[]            @relation("QuestionRecipient")
-  questionReplies       QuestionReply[]
-  resourcesCreated      Resource[]            @relation("ResourceCreator")
-  resourcesReviewed     Resource[]            @relation("ResourceReviewer")
-  categoriesCreated     TaskCategory[]        @relation("CategoryCreator")
-  sponsorshipsOwned     Sponsorship[]         @relation("SponsorshipOwner")
-  sponsorshipsCreated   Sponsorship[]         @relation("SponsorshipCreator")
-  sponsorshipFiles      SponsorshipFile[]     @relation("SponsorshipFileUploader")
-  postersCreated        Poster[]              @relation("PosterCreator")
-  fundraisersLed        Fundraiser[]          @relation("FundraiserLead")
-  fundraisersCreated    Fundraiser[]          @relation("FundraiserCreator")
-  fundraiserHelping     FundraiserVolunteer[] @relation("FundraiserVolunteer")
-  attendanceOpened      AttendanceSession[]   @relation("AttendanceOpener")
-  attendanceRecords     AttendanceRecord[]    @relation("AttendanceAttendee")
-  attendanceMarked      AttendanceRecord[]    @relation("AttendanceMarker")
-  attendanceRsvps       AttendanceRsvp[]      @relation("AttendanceRsvpUser")
-  attendancePlans       AttendancePlan[]      @relation("AttendancePlanEditor")
-  notebooksCreated      Notebook[]            @relation("NotebookCreator")
-  notebookPagesMade     NotebookPage[]        @relation("NotebookPageCreator")
-  notebookEntries       NotebookEntry[]       @relation("NotebookEntryAuthor")
-  notebookEntryEdits    NotebookEntry[]       @relation("NotebookEntryEditor")
-  notebookEditLog       NotebookEntryEdit[]   @relation("NotebookEditLogEditor")
-  strategiesCreated     Strategy[]            @relation("StrategyCreator")
-  purchasesOrdering     PurchaseItem[]        @relation("PurchaseOrderer")
-  purchasesCreated      PurchaseItem[]        @relation("PurchaseCreator")
-  purchasesUpdated      PurchaseItem[]        @relation("PurchaseStatusChanger")
-  teamNotesEdited       TeamNote[]            @relation("TeamNoteEditor")
-  partsRequested        Part[]                @relation("PartRequester")
-  partsClaimed          Part[]                @relation("PartClaimer")
-  calendarEventsMade    CalendarEvent[]       @relation("CalendarEventCreator")
-  calendarEventsEdited  CalendarEvent[]       @relation("CalendarEventEditor")
-  leagueTeamsAdded      LeagueTeam[]          @relation("LeagueTeamCreator")
-  leagueTeamSummaries   LeagueTeam[]          @relation("LeagueTeamSummaryEditor")
-  meetingUpdatesWritten MeetingUpdate[]       @relation("MeetingUpdateAuthor")
-  meetingUpdatesEdited  MeetingUpdate[]       @relation("MeetingUpdateEditor")
+  sessions               Session[]
+  passwordResetTokens    PasswordResetToken[]
+  tasksCreated           Task[]                @relation("TaskCreator")
+  assignments            TaskAssignment[]      @relation("AssignmentAssignee")
+  reviews                TaskAssignment[]      @relation("AssignmentReviewer")
+  questionsAsked         Question[]            @relation("QuestionAsker")
+  questionsReceived      Question[]            @relation("QuestionRecipient")
+  questionReplies        QuestionReply[]
+  resourcesCreated       Resource[]            @relation("ResourceCreator")
+  resourcesReviewed      Resource[]            @relation("ResourceReviewer")
+  categoriesCreated      TaskCategory[]        @relation("CategoryCreator")
+  sponsorshipsOwned      Sponsorship[]         @relation("SponsorshipOwner")
+  sponsorshipsCreated    Sponsorship[]         @relation("SponsorshipCreator")
+  sponsorshipFiles       SponsorshipFile[]     @relation("SponsorshipFileUploader")
+  postersCreated         Poster[]              @relation("PosterCreator")
+  fundraisersLed         Fundraiser[]          @relation("FundraiserLead")
+  fundraisersCreated     Fundraiser[]          @relation("FundraiserCreator")
+  fundraiserHelping      FundraiserVolunteer[] @relation("FundraiserVolunteer")
+  attendanceOpened       AttendanceSession[]   @relation("AttendanceOpener")
+  attendanceRecords      AttendanceRecord[]    @relation("AttendanceAttendee")
+  attendanceMarked       AttendanceRecord[]    @relation("AttendanceMarker")
+  attendanceRsvps        AttendanceRsvp[]      @relation("AttendanceRsvpUser")
+  attendancePlans        AttendancePlan[]      @relation("AttendancePlanEditor")
+  notebooksCreated       Notebook[]            @relation("NotebookCreator")
+  notebookPagesMade      NotebookPage[]        @relation("NotebookPageCreator")
+  notebookEntries        NotebookEntry[]       @relation("NotebookEntryAuthor")
+  notebookEntryEdits     NotebookEntry[]       @relation("NotebookEntryEditor")
+  notebookEditLog        NotebookEntryEdit[]   @relation("NotebookEditLogEditor")
+  strategiesCreated      Strategy[]            @relation("StrategyCreator")
+  purchasesOrdering      PurchaseItem[]        @relation("PurchaseOrderer")
+  purchasesCreated       PurchaseItem[]        @relation("PurchaseCreator")
+  purchasesUpdated       PurchaseItem[]        @relation("PurchaseStatusChanger")
+  teamNotesEdited        TeamNote[]            @relation("TeamNoteEditor")
+  partsRequested         Part[]                @relation("PartRequester")
+  partsClaimed           Part[]                @relation("PartClaimer")
+  calendarEventsMade     CalendarEvent[]       @relation("CalendarEventCreator")
+  calendarEventsEdited   CalendarEvent[]       @relation("CalendarEventEditor")
+  leagueTeamsAdded       LeagueTeam[]          @relation("LeagueTeamCreator")
+  leagueTeamSummaries    LeagueTeam[]          @relation("LeagueTeamSummaryEditor")
+  discussionThreads      DiscussionThread[]    @relation("DiscussionThreadAuthor")
+  discussionActivity     DiscussionThread[]    @relation("DiscussionLastActivity")
+  discussionReplies      DiscussionReply[]     @relation("DiscussionReplyAuthor")
+  discussionReads        DiscussionRead[]      @relation("DiscussionReader")
+  announcementsPosted    Announcement[]        @relation("AnnouncementAuthor")
+  creditsChanged         AttendanceRecord[]    @relation("AttendanceCreditEditor")
+  attendanceChangesAbout AttendanceChange[]    @relation("AttendanceChangeSubject")
+  attendanceChangesMade  AttendanceChange[]    @relation("AttendanceChangeActor")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -624,22 +632,38 @@ model AttendanceSession {
   updatedAt  DateTime       @updatedAt
 
   records AttendanceRecord[]
+  changes AttendanceChange[]
 
   @@unique([date, kind])
 }
 
 /// Someone was there (checked in by QR/code, or added by hand).
+/// What a check-in counts as (members pick it when they check in: 1, 2/3, 1/2, 1/3, 1/2 EC, 1 EC, 1/2 Flex, 1 Flex).
+enum AttendanceCreditKind {
+  REGULAR
+  EXTRA // "EC", extra credit
+  FLEX
+}
+
 model AttendanceRecord {
-  id          String            @id @default(cuid())
-  sessionId   String
-  session     AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User              @relation("AttendanceAttendee", fields: [userId], references: [id], onDelete: Cascade)
-  method      CheckInMethod
-  checkedInAt DateTime          @default(now())
+  id                String               @id @default(cuid())
+  sessionId         String
+  session           AttendanceSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userId            String
+  user              User                 @relation("AttendanceAttendee", fields: [userId], references: [id], onDelete: Cascade)
+  method            CheckInMethod
+  checkedInAt       DateTime             @default(now())
   /// Who added them by hand (MANUAL).
-  markedById  String?
-  markedBy    User?             @relation("AttendanceMarker", fields: [markedById], references: [id], onDelete: SetNull)
+  markedById        String?
+  markedBy          User?                @relation("AttendanceMarker", fields: [markedById], references: [id], onDelete: SetNull)
+  /// How much this check-in counts toward the weekly target, in sixths (6 = 1, 4 = 2/3, 3 = 1/2, 2 = 1/3).
+  credit            Int                  @default(6)
+  /// Regular, extra credit (EC), or Flex. All of them count toward the weekly target.
+  creditKind        AttendanceCreditKind @default(REGULAR)
+  /// Set when someone other than the attendee (a runner) changed the credit.
+  creditChangedAt   DateTime?
+  creditChangedById String?
+  creditChangedBy   User?                @relation("AttendanceCreditEditor", fields: [creditChangedById], references: [id], onDelete: SetNull)
 
   @@unique([sessionId, userId])
   @@index([userId])
@@ -880,6 +904,8 @@ enum CalendarEventKind {
   ILT
   SCRIMMAGE
   COMPETITION
+  /// An extra team meeting on top of the regular days (Attendance schedule): counts as a meeting day everywhere.
+  MEETING
   OUTREACH
   TEAM
   DEADLINE
@@ -916,28 +942,125 @@ model CalendarEvent {
   @@index([kind, startsOn])
 }
 
-/// One subteam's write-up of a meeting (Meeting updates): what they did, what's next, what's stuck.
-/// Software, Build, and Business each write their own; several people may post for the same subteam and day.
-model MeetingUpdate {
-  id             String    @id @default(cuid())
-  /// The meeting day (team timezone).
-  meetingDate    DateTime  @db.Date
-  subteam        Subteam
-  /// What we did (required).
-  body           String
-  /// What's next time (optional).
-  nextSteps      String    @default("")
-  /// Problems / help needed (optional).
-  blockers       String    @default("")
-  authorId       String?
-  author         User?     @relation("MeetingUpdateAuthor", fields: [authorId], references: [id], onDelete: SetNull)
-  lastEditedAt   DateTime?
-  lastEditedById String?
-  lastEditedBy   User?     @relation("MeetingUpdateEditor", fields: [lastEditedById], references: [id], onDelete: SetNull)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+enum DiscussionCategory {
+  GENERAL
+  SOFTWARE
+  BUILD
+  BUSINESS
+  IDEAS
+  OFF_TOPIC
+}
 
-  @@index([meetingDate, subteam])
-  @@index([subteam, meetingDate])
+/// A thread on the team-wide Discussion page (unlike Questions, everyone ACTIVE sees and replies).
+model DiscussionThread {
+  id               String             @id @default(cuid())
+  title            String
+  body             String
+  category         DiscussionCategory @default(GENERAL)
+  authorId         String?
+  author           User?              @relation("DiscussionThreadAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  /// Pinned threads are listed first (people with admin access pin).
+  pinned           Boolean            @default(false)
+  /// Locked threads take no new replies (people with admin access lock).
+  locked           Boolean            @default(false)
+  replyCount       Int                @default(0)
+  /// The thread's creation or its newest reply; the list is ordered by it.
+  lastActivityAt   DateTime           @default(now())
+  lastActivityById String?
+  lastActivityBy   User?              @relation("DiscussionLastActivity", fields: [lastActivityById], references: [id], onDelete: SetNull)
+  /// Set when the author changes the title or text.
+  editedAt         DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  replies DiscussionReply[]
+  reads   DiscussionRead[]
+
+  @@index([pinned, lastActivityAt])
+  @@index([category, lastActivityAt])
   @@index([authorId])
+}
+
+model DiscussionReply {
+  id        String           @id @default(cuid())
+  threadId  String
+  thread    DiscussionThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  body      String
+  authorId  String?
+  author    User?            @relation("DiscussionReplyAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  editedAt  DateTime?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@index([threadId, createdAt])
+  @@index([authorId])
+}
+
+/// When someone last opened a thread (for "new replies" markers and the nav count).
+model DiscussionRead {
+  userId     String
+  user       User             @relation("DiscussionReader", fields: [userId], references: [id], onDelete: Cascade)
+  threadId   String
+  thread     DiscussionThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  lastReadAt DateTime
+
+  @@id([userId, threadId])
+  @@index([threadId])
+}
+
+/// A post on Announcements: from leaders, the captain, mentors, teachers, or owners, to the whole team or one subteam.
+model Announcement {
+  id        String    @id @default(cuid())
+  title     String
+  body      String
+  /// Who it's for. Null = the whole team.
+  subteam   Subteam?
+  /// Pinned ones are listed first.
+  pinned    Boolean   @default(false)
+  authorId  String?
+  author    User?     @relation("AnnouncementAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  /// Set when the title or text changes after posting.
+  editedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([createdAt])
+  @@index([subteam, createdAt])
+  @@index([pinned, createdAt])
+}
+
+/// What an admin did to someone's attendance (the change log only people with admin access see).
+enum AttendanceChangeAction {
+  ADDED // added by hand (with a partial / EC credit, or "No credit" = 0)
+  REMOVED // their check-in was taken off
+  CREDIT_CHANGED // their credit changed (e.g. 1 → 1/2, or 0 → 1/3)
+  SESSION_DELETED // a whole attendance session was deleted
+}
+
+/// One change an admin made to attendance. Copies the session's date/kind and the person's name so the log
+/// survives deleted sessions and accounts.
+model AttendanceChange {
+  id          String                 @id @default(cuid())
+  sessionId   String?
+  session     AttendanceSession?     @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  sessionDate DateTime               @db.Date
+  sessionKind AttendanceKind
+  /// Whose attendance changed (null for SESSION_DELETED, or when the account was deleted).
+  userId      String?
+  user        User?                  @relation("AttendanceChangeSubject", fields: [userId], references: [id], onDelete: SetNull)
+  userName    String                 @default("")
+  changedById String?
+  changedBy   User?                  @relation("AttendanceChangeActor", fields: [changedById], references: [id], onDelete: SetNull)
+  action      AttendanceChangeAction
+  /// Credit before / after, in sixths (null = no record).
+  fromCredit  Int?
+  fromKind    AttendanceCreditKind?
+  toCredit    Int?
+  toKind      AttendanceCreditKind?
+  createdAt   DateTime               @default(now())
+
+  @@index([createdAt])
+  @@index([sessionId])
+  @@index([userId, createdAt])
+  @@index([changedById, createdAt])
 }

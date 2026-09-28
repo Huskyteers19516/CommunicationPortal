@@ -3,6 +3,7 @@ import {
   AccountStatus,
   AssignmentStatus,
   CalendarEventKind,
+  DiscussionCategory,
   PartProcess,
   PartStatus,
   FundraiserKind,
@@ -20,6 +21,7 @@ import {
 
 export {
   CalendarEventKind,
+  DiscussionCategory,
   AccountStatus,
   AssignmentStatus,
   PartProcess,
@@ -56,6 +58,12 @@ export const SUBTEAM_LABELS: Record<Subteam, string> = {
   BUILD: "Build",
   BUSINESS: "Business",
 };
+
+/** A person's position as the app shows it: "Build Leader", "Software member", "Mentor". */
+export function describeRole(role: Role, subteam: Subteam | null): string {
+  if (role === "MEMBER") return subteam ? `${SUBTEAM_LABELS[subteam]} member` : "Member";
+  return ROLE_LABELS[role];
+}
 
 export const STATUS_LABELS: Record<AccountStatus, string> = {
   PENDING: "Pending approval",
@@ -182,13 +190,14 @@ export const STRATEGY_KIND_LABELS: Record<StrategyKind, string> = {
 };
 
 /** In the order they're offered on the form. */
-export const CALENDAR_EVENT_KINDS: CalendarEventKind[] = ["MEET", "ILT", "SCRIMMAGE", "COMPETITION", "OUTREACH", "TEAM", "DEADLINE", "OTHER"];
+export const CALENDAR_EVENT_KINDS: CalendarEventKind[] = ["MEET", "ILT", "SCRIMMAGE", "COMPETITION", "MEETING", "OUTREACH", "TEAM", "DEADLINE", "OTHER"];
 
 export const CALENDAR_EVENT_KIND_LABELS: Record<CalendarEventKind, string> = {
   MEET: "League meet",
   ILT: "League tournament (ILT)",
   SCRIMMAGE: "League scrimmage",
   COMPETITION: "Competition",
+  MEETING: "Extra meeting",
   OUTREACH: "Outreach",
   TEAM: "Team event",
   DEADLINE: "Deadline",
@@ -197,6 +206,18 @@ export const CALENDAR_EVENT_KIND_LABELS: Record<CalendarEventKind, string> = {
 
 /** Kinds that count as "the next meet" (Today's countdown and the calendar's banner). */
 export const CALENDAR_MEET_KINDS: CalendarEventKind[] = ["MEET", "ILT", "SCRIMMAGE", "COMPETITION"];
+
+/** In the order they're offered (Discussion). */
+export const DISCUSSION_CATEGORIES: DiscussionCategory[] = ["GENERAL", "SOFTWARE", "BUILD", "BUSINESS", "IDEAS", "OFF_TOPIC"];
+
+export const DISCUSSION_CATEGORY_LABELS: Record<DiscussionCategory, string> = {
+  GENERAL: "General",
+  SOFTWARE: "Software",
+  BUILD: "Build",
+  BUSINESS: "Business",
+  IDEAS: "Ideas",
+  OFF_TOPIC: "Off-topic",
+};
 
 /** Our FTC team number (left out of Strategy → Other teams). */
 export const OUR_TEAM_NUMBER = 19516;
@@ -290,7 +311,8 @@ export const LIMITS = {
   sponsorNotesMax: 5000,
   /** Biggest amount received that can be entered, in dollars. */
   sponsorAmountMax: 10_000_000,
-  teamNoteMax: 5000,
+  /** Sponsorships' "Info for applications" note (its textarea's maxLength too). */
+  teamNoteMax: 10000,
   /** Files attached to one sponsor (forms, filled-out copies…). */
   sponsorFilesMax: 10,
   partNameMax: 120,
@@ -333,8 +355,9 @@ export const LIMITS = {
   leagueTeamCityMax: 80,
   /** "Their strategy at a glance" on another league team. */
   leagueTeamSummaryMax: 5000,
-  /** Meeting updates: "What we did" / "Next time" / "Problems or help needed". */
-  meetingUpdateBodyMax: 10000,
-  meetingUpdateNextMax: 5000,
-  meetingUpdateBlockersMax: 5000,
+  discussionTitleMax: 160,
+  discussionBodyMax: 10000,
+  discussionReplyMax: 5000,
+  announcementTitleMax: 160,
+  announcementBodyMax: 10000,
 } as const;

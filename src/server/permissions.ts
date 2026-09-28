@@ -303,8 +303,9 @@ export function canManageFundraisers(actor: ActorLike): boolean {
 // ── Attendance ────────────────────────────────────────────────────────────────
 
 /**
- * Start attendance (show the rotating QR code), add/remove people by hand, write "What we did", change
- * the schedule: teachers, the Business leader, the captain, mentors, and owners.
+ * Start, close, and reopen attendance (show the rotating QR code), write "What we did", delete a session started
+ * by mistake, change the schedule: teachers, the Business leader, the captain, mentors, and owners. Fixing who was
+ * there is for every admin (canFixAttendance).
  */
 export function canRunAttendance(actor: ActorLike): boolean {
   return (
@@ -321,9 +322,31 @@ export function canPlanAttendance(actor: ActorLike): boolean {
   return isStaff(actor);
 }
 
-/** Fix attendance from more than a week ago (ATTENDANCE_EDIT_DAYS): the adults (teachers, mentors) and owners. */
+/**
+ * Change "What we did" or delete a session from more than a week ago (ATTENDANCE_EDIT_DAYS): the adults (teachers,
+ * mentors) and owners. Who was there and their credits have no time limit (canFixAttendance).
+ */
 export function canFixOldAttendance(actor: ActorLike): boolean {
   return isOwner(actor) || actor.role === "TEACHER" || actor.role === "MENTOR";
+}
+
+/**
+ * Fix anyone's attendance at any time: open any session's page, add people by hand (partial credit, EC, or No
+ * credit), take them off, and change credits — everyone with admin access (every leader, the captain, mentors,
+ * teachers, owners). Each change goes into the change log.
+ */
+export function canFixAttendance(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
+/** Give EC (extra credit: "1/2 EC", "1 EC"): the Business leader, teachers, mentors, and owners. */
+export function canGiveExtraCredit(actor: ActorLike): boolean {
+  return isOwner(actor) || actor.role === "BUSINESS_LEADER" || actor.role === "TEACHER" || actor.role === "MENTOR";
+}
+
+/** The attendance change log (/attendance/changes, a session's History, the report's "Changes by admins"). */
+export function canViewAttendanceChanges(actor: ActorLike): boolean {
+  return canAdminister(actor);
 }
 
 // ── Team notebook ─────────────────────────────────────────────────────────────
@@ -375,22 +398,40 @@ export function canManageLeagueTeams(actor: ActorLike): boolean {
   return canAdminister(actor);
 }
 
-// ── Meeting updates ───────────────────────────────────────────────────────────
+// ── Announcements ─────────────────────────────────────────────────────────────
+// Everyone ACTIVE reads every announcement; who it's "for" (whole team or one subteam) drives badges and Today.
 
-/** Subteams someone can write a meeting update for: their own; the captain, mentors, teachers, and owners any. */
-export function meetingUpdateSubteams(actor: ActorLike): Subteam[] {
-  if (hasAllScope(actor)) return ["SOFTWARE", "BUILD", "BUSINESS"];
-  return actor.subteam ? [actor.subteam] : [];
+/** Who it can be for (null = whole team): all-scope staff any; a subteam leader the whole team or their own subteam. */
+export function announcementAudiences(actor: ActorLike): (Subteam | null)[] {
+  if (hasAllScope(actor)) return [null, "SOFTWARE", "BUILD", "BUSINESS"];
+  const led = ledSubteam(actor);
+  return led ? [null, led] : [];
 }
 
-export function canWriteMeetingUpdate(actor: ActorLike, subteam: Subteam): boolean {
-  return meetingUpdateSubteams(actor).includes(subteam);
+/** Post an announcement: every leader, the captain, mentors, teachers, and owners. */
+export function canPostAnnouncement(actor: ActorLike): boolean {
+  return announcementAudiences(actor).length > 0;
 }
 
-/** Edit or remove a meeting update: whoever wrote it, that subteam's leader, and all-scope staff. */
-export function canEditMeetingUpdate(actor: ActorLike, update: { authorId: string | null; subteam: Subteam }): boolean {
-  if (update.authorId !== null && update.authorId === actor.id) return true;
-  return canManageSubteam(actor, update.subteam);
+/**
+ * Edit, pin, or remove one: whoever posted it (while they can still post — a leader who becomes a member no longer
+ * can), and all-scope staff.
+ */
+export function canEditAnnouncement(actor: ActorLike, a: { authorId: string | null }): boolean {
+  return hasAllScope(actor) || (a.authorId !== null && a.authorId === actor.id && canPostAnnouncement(actor));
+}
+
+// ── Discussion ────────────────────────────────────────────────────────────────
+// Everyone ACTIVE reads, starts threads, and replies (unless a thread is locked).
+
+/** Pin, lock, and delete anyone's threads and replies: everyone with admin access. */
+export function canModerateDiscussion(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
+/** Change a thread's or reply's text: only whoever wrote it. */
+export function canEditDiscussionPost(actor: ActorLike, post: { authorId: string | null }): boolean {
+  return post.authorId !== null && post.authorId === actor.id;
 }
 
 // ── Order list ────────────────────────────────────────────────────────────────

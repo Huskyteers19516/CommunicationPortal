@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { CheckInPanel } from "@/components/attendance/check-in-panel";
+import { TodayCredits } from "@/components/attendance/my-credits";
 import { ScanCheckIn } from "@/components/attendance/scan-check-in";
 import { Alert } from "@/components/ui/alert";
 import { Card, CardBody } from "@/components/ui/card";
@@ -9,7 +10,8 @@ import { ATTENDANCE_KIND_LABELS, scanOrigins } from "@/lib/attendance";
 import { formatDateOnly, todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
-import { getScanLanding } from "@/server/queries/attendance";
+import { getMyWeeks, getScanLanding } from "@/server/queries/attendance";
+import { getSavedAttendanceSettings } from "@/server/queries/attendance-settings";
 import { OTHER_DAY, QR_EXPIRED, QR_INVALID, SESSION_CLOSED } from "@/server/services/attendance";
 
 // The token is in the address: don't send it to other sites as a referrer.
@@ -35,7 +37,8 @@ function Problem({ title, message, origins }: { title: string; message: string; 
  * Where the attendance QR code leads (signed-out people go to /login first and come back). Opening it only
  * reads; the check-in itself is sent once by <ScanCheckIn> after the page has loaded. <ScanCheckIn> is the same
  * element whether or not I'm already checked in, so the refresh after its own check-in (which now says "already
- * checked in") keeps it mounted and it shows its own result.
+ * checked in") keeps it mounted and it shows its own result. Once I'm on today's list, what it counts as (at Flex,
+ * "How long are you at Flex?", saved as 1 Flex until changed) and this week's total show under it.
  */
 export default async function ScanPage({ params }: PageProps<"/attendance/scan/[token]">) {
   const actor = await requireActiveUser();
@@ -46,6 +49,7 @@ export default async function ScanPage({ params }: PageProps<"/attendance/scan/[
   const origins = scanOrigins(env.appUrl);
 
   let content: ReactNode;
+  let credits: ReactNode = null;
   let title = "Check in";
   if (landing.status === "invalid") {
     content = <Problem title="Couldn't check you in" message={QR_INVALID} origins={origins} />;
@@ -54,6 +58,11 @@ export default async function ScanPage({ params }: PageProps<"/attendance/scan/[
     title = `Check in · ${ATTENDANCE_KIND_LABELS[session.kind]}`;
     if (session.checkedIn || (landing.status === "ok" && landing.isToday && session.open)) {
       content = <ScanCheckIn token={token} origins={origins} alreadyCheckedIn={session.checkedIn} />;
+      if (session.myCredit && landing.isToday) {
+        const { weeklyTarget } = await getSavedAttendanceSettings();
+        const weeks = await getMyWeeks(actor, today, weeklyTarget);
+        credits = <TodayCredits sessions={[session]} week={weeks?.thisWeek.credit ?? null} target={weeklyTarget} />;
+      }
     } else if (landing.status === "expired") {
       content = <Problem title="This code expired" message={QR_EXPIRED} origins={origins} />;
     } else if (!landing.isToday) {
@@ -70,7 +79,10 @@ export default async function ScanPage({ params }: PageProps<"/attendance/scan/[
         description={landing.status === "invalid" ? undefined : formatDateOnly(landing.session.date, today)}
       />
       <Card className="max-w-lg">
-        <CardBody>{content}</CardBody>
+        <CardBody className="space-y-6">
+          {content}
+          {credits}
+        </CardBody>
       </Card>
     </>
   );

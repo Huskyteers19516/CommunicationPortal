@@ -317,6 +317,9 @@ export const NO_ACTIVITY = {
   attendanceRsvps: { none: {} },
   attendanceOpened: { none: {} },
   attendanceMarked: { none: {} },
+  // Discussion: their posts would show as "A former member" and their replies would count as someone else's.
+  discussionThreads: { none: {} },
+  discussionReplies: { none: {} },
 } satisfies Prisma.UserWhereInput;
 
 export const HAS_ACTIVITY_MESSAGE = "This person has activity in the portal — disable the account instead.";
@@ -348,6 +351,8 @@ export async function deleteUser(ctx: ServiceContext, raw: unknown): Promise<voi
           attendanceRsvps: true,
           attendanceOpened: true,
           attendanceMarked: true,
+          discussionThreads: true,
+          discussionReplies: true,
         },
       },
     },

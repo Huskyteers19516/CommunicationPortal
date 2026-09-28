@@ -1,5 +1,5 @@
 import type { Role, Subteam } from "@/generated/prisma/enums";
-import { ROLE_LABELS, SUBTEAM_LABELS } from "@/lib/constants";
+import { describeRole } from "@/lib/constants";
 import { cn } from "@/lib/cn";
 import { Avatar } from "../ui/avatar";
 
@@ -28,7 +28,5 @@ export function UserChip({
   );
 }
 
-export function describeRole(role: Role, subteam: Subteam | null): string {
-  if (role === "MEMBER") return subteam ? `${SUBTEAM_LABELS[subteam]} member` : "Member";
-  return ROLE_LABELS[role];
-}
+// Lives in lib/constants (queries use it too); re-exported here for the components that already import it from here.
+export { describeRole };

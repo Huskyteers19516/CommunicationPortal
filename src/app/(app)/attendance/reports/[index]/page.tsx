@@ -6,15 +6,23 @@ import type { ReactNode } from "react";
 import { PrintButton } from "@/components/attendance/print-button";
 import { BackLink } from "@/components/tasks/back-link";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { MissingMeetingUpdates } from "@/components/updates/missing-updates";
 import { PageHeader } from "@/components/ui/page-header";
-import { ATTENDANCE_KIND_LABELS, formatPeriod, parseReportIndex } from "@/lib/attendance";
+import {
+  ATTENDANCE_KIND_LABELS,
+  creditBreakdown,
+  formatPeriod,
+  metWeeklyTarget,
+  parseReportIndex,
+  type WeekCredit,
+  weekProgressText,
+} from "@/lib/attendance";
 import { cn } from "@/lib/cn";
 import { SUBTEAM_LABELS } from "@/lib/constants";
 import { formatDateOnly, formatDateTime, todayInTimezone } from "@/lib/dates";
+import { attendanceChangeQuery, describeAttendanceChange } from "@/server/attendance/changes";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
-import { canPlanAttendance, canRunAttendance } from "@/server/permissions";
+import { canFixAttendance, canPlanAttendance } from "@/server/permissions";
 import { getAttendanceReport } from "@/server/queries/attendance";
 
 export const metadata: Metadata = { title: "Two-week report" };
@@ -28,6 +36,8 @@ const PRINT_CSS = `
   main { margin: 0 !important; padding: 0 !important; }
   [data-print-avoid-break] { break-inside: avoid; }
   .overflow-x-auto { overflow: visible !important; }
+  /* Fit the page's width (the week columns make the people table wide on screen). */
+  table { min-width: 0 !important; }
 }
 `;
 
@@ -54,9 +64,30 @@ function TableScroll({ label, children }: { label: string; children: ReactNode }
   );
 }
 
+/** "1⅔ of 2 ✓" (✓ once the weekly target is met) with what it's made of under it when there's EC or Flex. */
+function WeekCell({ week, target }: { week: WeekCredit; target: number }) {
+  const met = metWeeklyTarget(week.total, target);
+  const parts = creditBreakdown(week);
+  return (
+    <>
+      <span className={cn("whitespace-nowrap font-medium tabular-nums", met ? "text-brand-700" : "text-ink-800")}>
+        {weekProgressText(week.total, target)}
+        {met && (
+          <>
+            <span aria-hidden> ✓</span>
+            <span className="sr-only"> (met)</span>
+          </>
+        )}
+      </span>
+      {/* Only regular: the total says it all. */}
+      {(week.extra > 0 || week.flex > 0) && <span className="block text-xs text-ink-500">{parts}</span>}
+    </>
+  );
+}
+
 /**
- * Staff: one two-week period — sessions, each person's attendance, and what got done. Print or download as CSV.
- * People who run attendance can open each session from here to fix its list or "What we did".
+ * Staff: one two-week period — sessions, each person's attendance, what got done, and the changes admins made to
+ * attendance in it. Print or download as CSV. Admins open each session from here to fix its list or credits.
  */
 export default async function AttendanceReportPage({ params }: PageProps<"/attendance/reports/[index]">) {
   const actor = await requireActiveUser();
@@ -69,7 +100,8 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
   if (!report) notFound();
   const { period, data } = report;
   const periodLabel = formatPeriod(period, today);
-  const canRun = canRunAttendance(actor);
+  const weekLabels = data.weeks.map((w, i) => `Week ${i + 1} (${formatPeriod(w, today)})`);
+  const canFix = canFixAttendance(actor);
   const sessionLink = "inline-flex min-h-10 items-center font-medium text-brand-700 underline-offset-2 hover:underline";
 
   return (
@@ -140,7 +172,7 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
                   return (
                     <li key={s.id} className="space-y-0.5 px-4 py-2.5 text-sm">
                       <p className="wrap-anywhere text-ink-900">
-                        {canRun ? (
+                        {canFix ? (
                           <Link href={`/attendance/sessions/${s.id}`} className={sessionLink}>
                             {date} · {ATTENDANCE_KIND_LABELS[s.kind]}
                           </Link>
@@ -155,7 +187,7 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
                         {s.present} came · {s.saidYes} said yes
                       </p>
                       <p className="whitespace-pre-line wrap-anywhere text-ink-800">
-                        {s.note || <span className="text-ink-400">No “What we did”</span>}
+                        {s.note || <span className="text-ink-500">No “What we did”</span>}
                       </p>
                     </li>
                   );
@@ -177,7 +209,7 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
                     {data.sessions.map((s) => (
                       <tr key={s.id}>
                         <Td className="whitespace-nowrap">
-                          {canRun ? (
+                          {canFix ? (
                             <Link
                               href={`/attendance/sessions/${s.id}`}
                               className={sessionLink}
@@ -193,7 +225,7 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
                         <Td className="wrap-anywhere">{s.openedByName ?? "—"}</Td>
                         <Td className="text-right tabular-nums">{s.present}</Td>
                         <Td className="text-right tabular-nums">{s.saidYes}</Td>
-                        <Td className="whitespace-pre-line wrap-anywhere">{s.note || <span className="text-ink-400">—</span>}</Td>
+                        <Td className="whitespace-pre-line wrap-anywhere">{s.note || <span className="text-ink-500">—</span>}</Td>
                       </tr>
                     ))}
                   </tbody>
@@ -206,7 +238,7 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
         <Card>
           <CardHeader
             title="People"
-            description="Sessions each person came to, out of the ones held since they joined. “Said yes” counts Yes or Half for Regular."
+            description={`Each week: how much they came, out of ${data.weeklyTarget} (regular, EC, and Flex all count; ✓ = goal met). Regular and Flex: the sessions they came to, out of the ones held since they joined (“No credit” counts as not coming). “Said yes” counts Yes or Half for Regular.`}
           />
           {data.people.length === 0 ? (
             <CardBody>
@@ -221,8 +253,14 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
                       <span className="font-medium text-ink-900">{p.name}</span>
                       <span className="text-ink-500"> · {p.subteam ? SUBTEAM_LABELS[p.subteam] : "No subteam"}</span>
                     </p>
+                    {p.weeks.map((w, i) => (
+                      <div key={weekLabels[i]} className="text-ink-700">
+                        <span className="text-ink-500">Week {i + 1}: </span>
+                        <WeekCell week={w} target={data.weeklyTarget} />
+                      </div>
+                    ))}
                     <p className="tabular-nums text-ink-700">
-                      Regular {p.regular.attended}/{p.regular.held} · Flex {p.flex.attended}/{p.flex.held}
+                      Regular {p.regular.attended} of {p.regular.held} · Flex {p.flex.attended} of {p.flex.held}
                       {p.saidYesMissed > 0 && <span className="font-semibold text-amber-700"> · Said yes, didn&apos;t come {p.saidYesMissed}</span>}
                       {p.cameUnanswered > 0 && ` · Came without answering ${p.cameUnanswered}`}
                     </p>
@@ -230,11 +268,14 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
                 ))}
               </ul>
               <TableScroll label="People table">
-              <table className="w-full min-w-[40rem]">
+              <table className="w-full min-w-[52rem]">
                 <thead className="border-b border-ink-100 bg-ink-50/60">
                   <tr>
                     <Th>Name</Th>
                     <Th>Subteam</Th>
+                    {weekLabels.map((label) => (
+                      <Th key={label}>{label}</Th>
+                    ))}
                     <Th className="text-right">Regular</Th>
                     <Th className="text-right">Flex</Th>
                     <Th className="text-right">Said yes, didn&apos;t come</Th>
@@ -244,13 +285,19 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
                 <tbody className="divide-y divide-ink-100">
                   {data.people.map((p) => (
                     <tr key={p.id}>
-                      <Td className="font-medium wrap-anywhere">{p.name}</Td>
+                      {/* break-words (not wrap-anywhere): the column never shrinks below a whole word. */}
+                      <Td className="min-w-32 font-medium break-words">{p.name}</Td>
                       <Td>{p.subteam ? SUBTEAM_LABELS[p.subteam] : "—"}</Td>
-                      <Td className="text-right tabular-nums">
-                        {p.regular.attended}/{p.regular.held}
+                      {p.weeks.map((w, i) => (
+                        <Td key={weekLabels[i]}>
+                          <WeekCell week={w} target={data.weeklyTarget} />
+                        </Td>
+                      ))}
+                      <Td className="whitespace-nowrap text-right tabular-nums">
+                        {p.regular.attended} of {p.regular.held}
                       </Td>
-                      <Td className="text-right tabular-nums">
-                        {p.flex.attended}/{p.flex.held}
+                      <Td className="whitespace-nowrap text-right tabular-nums">
+                        {p.flex.attended} of {p.flex.held}
                       </Td>
                       <Td className={cn("text-right tabular-nums", p.saidYesMissed > 0 && "font-semibold text-amber-700")}>
                         {p.saidYesMissed}
@@ -268,43 +315,9 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
         <Card>
           <CardHeader
             title="What got done"
-            description="Meeting updates, checklist items approved, parts made, and notebook entries written in these two weeks."
+            description="Checklist items approved, parts made, and notebook entries written in these two weeks."
           />
           <CardBody className="space-y-6">
-            <section aria-labelledby="done-updates">
-              <h3 id="done-updates" className="mb-2 font-semibold text-ink-900">
-                Meeting updates <span className="font-normal text-ink-500">({report.meetingUpdates.length})</span>
-              </h3>
-              <MissingMeetingUpdates days={data.sessions.map((s) => s.date)} updates={report.meetingUpdates} today={report.period.end} />
-              {report.meetingUpdates.length === 0 ? (
-                <p className="text-sm text-ink-500">No meeting updates written.</p>
-              ) : (
-                <ul className="space-y-3">
-                  {report.meetingUpdates.map((u) => (
-                    <li key={u.id} className="text-sm text-ink-800" data-print-avoid-break>
-                      <p className="font-medium text-ink-900">
-                        {formatDateOnly(u.meetingDate, report.period.end)} · {SUBTEAM_LABELS[u.subteam]}
-                        <span className="font-normal text-ink-500"> · written by {u.authorName ?? "a former member"}</span>
-                      </p>
-                      <p className="mt-0.5 whitespace-pre-wrap wrap-anywhere">{u.body}</p>
-                      {u.nextSteps && (
-                        <p className="mt-1 whitespace-pre-wrap text-ink-600 wrap-anywhere">
-                          <span className="font-medium text-ink-700">Next time: </span>
-                          {u.nextSteps}
-                        </p>
-                      )}
-                      {u.blockers && (
-                        <p className="mt-1 whitespace-pre-wrap text-ink-600 wrap-anywhere">
-                          <span className="font-medium text-ink-700">Problems or help needed: </span>
-                          {u.blockers}
-                        </p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
             <section aria-labelledby="done-tasks" data-print-avoid-break>
               <h3 id="done-tasks" className="mb-2 font-semibold text-ink-900">
                 Tasks approved <span className="font-normal text-ink-500">({report.tasks.length})</span>
@@ -373,6 +386,39 @@ export default async function AttendanceReportPage({ params }: PageProps<"/atten
             </section>
           </CardBody>
         </Card>
+
+        {report.changes && (
+          <Card data-print-avoid-break>
+            <CardHeader
+              title="Changes by admins"
+              description="People added by hand, taken off, and credits changed for attendance in these two weeks, newest first."
+            />
+            {report.changes.rows.length === 0 ? (
+              <CardBody>
+                <p className="text-sm text-ink-500">No changes by admins in these two weeks.</p>
+              </CardBody>
+            ) : (
+              <ul className="divide-y divide-ink-100" aria-label="Changes by admins">
+                {report.changes.rows.map((c) => (
+                  <li key={c.id} className="space-y-0.5 px-4 py-2.5 text-sm sm:px-5">
+                    <p className="text-ink-800 wrap-anywhere">{describeAttendanceChange(c, today)}</p>
+                    <p className="text-xs text-ink-500">{formatDateTime(c.createdAt, timeZone)}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <CardBody className="border-t border-ink-100" data-print-hidden>
+              <Link
+                href={`/attendance/changes${attendanceChangeQuery({ from: period.start, to: period.end })}`}
+                className="inline-flex min-h-10 items-center text-sm font-medium text-brand-700 hover:underline"
+              >
+                {report.changes.total > report.changes.rows.length
+                  ? `See all ${report.changes.total} in Attendance changes`
+                  : "Open in Attendance changes (filter, CSV)"}
+              </Link>
+            </CardBody>
+          </Card>
+        )}
       </div>
     </>
   );

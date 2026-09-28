@@ -1,6 +1,7 @@
 // Posts question activity to a leaders-only Discord channel through an incoming webhook
 // (DISCORD_WEBHOOK_URL). One-way: people still answer in the portal, so question status and
-// email notifications keep working.
+// email notifications keep working. Also posts who said they'd come to practice but didn't check in,
+// when a runner closes attendance ("attendance.no_shows").
 //
 // - Questions addressed to ONE specific person are never posted (the asker chose who sees them).
 // - Long text is split across follow-up messages so the full question arrives.
@@ -9,8 +10,10 @@
 //   whether it went through.
 //
 // No "server-only" / next/* imports: this runs inside after() and in tests.
-import type { Role, Subteam } from "@/generated/prisma/enums";
+import type { AttendanceKind, Role, Subteam } from "@/generated/prisma/enums";
+import { ATTENDANCE_KIND_LABELS } from "@/lib/attendance";
 import { SUBTEAM_LABELS } from "@/lib/constants";
+import { type DateOnly, dbToDateOnly, formatDateOnly } from "@/lib/dates";
 import type { Db } from "../db";
 import { env } from "../env";
 import type { NotificationEvent } from "./events";
@@ -25,6 +28,7 @@ const COLORS = {
   asked: 0x4ca256, // brand green: new question
   followUp: 0xf59e0b, // amber: asker added more, waiting on leaders
   answered: 0x6d6e73, // brand gray: a leader answered
+  noShows: 0xf59e0b, // amber: said they'd come, didn't check in
   test: 0x4ca256,
 } as const;
 
@@ -224,6 +228,27 @@ export function questionRepliedPayloads(q: { id: string; title: string }, reply:
   );
 }
 
+export interface NoShowsForDiscord {
+  sessionId: string;
+  kind: AttendanceKind;
+  date: DateOnly;
+  /** Who said they'd come but didn't check in, by name. */
+  names: string[];
+}
+
+/** "Regular attendance · Tue, Sep 29" — "3 said they'd come but didn't check in: A, B, C". */
+export function attendanceNoShowsPayload(s: NoShowsForDiscord, appUrl: string): DiscordPayload {
+  const names = s.names.map((n) => safeLine(n, 100)).join(", ");
+  const count = s.names.length;
+  return payload({
+    title: clip(`${ATTENDANCE_KIND_LABELS[s.kind]} attendance · ${formatDateOnly(s.date)}`, LIMITS.title),
+    url: `${appUrl.replace(/\/+$/, "")}/attendance/sessions/${encodeURIComponent(s.sessionId)}`,
+    description: clip(`${count} said they'd come but didn't check in: ${names}`, LIMITS.firstChunk),
+    color: COLORS.noShows,
+    footer: { text: "Give them part credit or No credit on the session page (click the title)." },
+  });
+}
+
 export function testPayload(adminName: string, appUrl: string): DiscordPayload {
   return payload({
     title: "Huskyteers Portal is connected",
@@ -322,15 +347,27 @@ export async function deleteFromDiscord(messageIds: string[], options: DiscordOp
 const personSelect = { name: true, role: true, subteam: true } as const;
 
 /**
- * Mirror question activity to Discord, if configured. Other events are ignored.
+ * Mirror question activity (and attendance no-shows) to Discord, if configured. Other events are ignored.
  * Questions addressed to one specific person (and their replies) are not posted.
  */
 export async function deliverDiscord(db: Db, event: NotificationEvent, options: DiscordOptions = {}): Promise<void> {
-  if (event.type !== "question.asked" && event.type !== "question.replied" && event.type !== "question.deleted") return;
+  if (
+    event.type !== "question.asked" &&
+    event.type !== "question.replied" &&
+    event.type !== "question.deleted" &&
+    event.type !== "attendance.no_shows"
+  ) {
+    return;
+  }
   const url = resolveUrl(options);
   if (!url) return;
   const opts: DiscordOptions = { ...options, webhookUrl: url };
   const appUrl = (options.appUrl ?? env.appUrl).replace(/\/+$/, "");
+
+  if (event.type === "attendance.no_shows") {
+    await deliverNoShows(db, event, appUrl, opts);
+    return;
+  }
 
   if (event.type === "question.deleted") {
     await deleteFromDiscord(event.discordMessageIds, opts);
@@ -381,6 +418,38 @@ export async function deliverDiscord(db: Db, event: NotificationEvent, options: 
     opts,
   );
   await rememberIds(db, "reply", reply.id, result.messageIds, opts);
+}
+
+/**
+ * The names of the people in the event who still aren't on the session's list (an admin may have added them
+ * since it closed), then one post. Nothing when the session is gone or everyone's been dealt with.
+ */
+async function deliverNoShows(
+  db: Db,
+  event: Extract<NotificationEvent, { type: "attendance.no_shows" }>,
+  appUrl: string,
+  options: DiscordOptions,
+): Promise<void> {
+  if (event.userIds.length === 0) return;
+  const session = await db.attendanceSession.findUnique({
+    where: { id: event.sessionId },
+    select: { id: true, kind: true, date: true, records: { where: { userId: { in: event.userIds } }, select: { userId: true } } },
+  });
+  if (!session) return;
+  const onList = new Set(session.records.map((r) => r.userId));
+  const people = await db.user.findMany({
+    where: { id: { in: event.userIds.filter((id) => !onList.has(id)) } },
+    select: { name: true },
+    orderBy: { name: "asc" },
+  });
+  if (people.length === 0) return;
+  const names = people.map((p) => p.name).sort((a, b) => a.localeCompare(b));
+  await postToDiscord(
+    db,
+    attendanceNoShowsPayload({ sessionId: session.id, kind: session.kind, date: dbToDateOnly(session.date), names }, appUrl),
+    event.type,
+    options,
+  );
 }
 
 /** Store message ids on the row. If the row was deleted meanwhile, remove the posts instead. */

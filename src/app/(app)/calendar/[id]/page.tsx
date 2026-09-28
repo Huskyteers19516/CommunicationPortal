@@ -1,5 +1,6 @@
-import { CalendarDays, CalendarPlus, Clock, ExternalLink, Map as MapIcon, MapPin, Pencil, Trash2 } from "lucide-react";
+import { CalendarCheck, CalendarDays, CalendarPlus, Clock, ExternalLink, Map as MapIcon, MapPin, Pencil, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 import { CalendarKindBadge } from "@/components/calendar/kind-styles";
@@ -11,11 +12,23 @@ import { ButtonLink, buttonClasses } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { RichText } from "@/components/ui/rich-text";
-import { eventCountdown, formatEventDates, formatEventTimes, icsFilename, monthOf, multiDayTimedEnds } from "@/lib/calendar";
+import { extraMeetingAnswerDay } from "@/lib/attendance";
+import {
+  CALENDAR_RETURNS,
+  eventCountdown,
+  formatEventDates,
+  formatEventTimes,
+  icsFilename,
+  monthOf,
+  multiDayTimedEnds,
+  parseCalendarReturn,
+} from "@/lib/calendar";
 import { cn } from "@/lib/cn";
-import { timeAgo, todayInTimezone } from "@/lib/dates";
+import { LIMITS } from "@/lib/constants";
+import { type DateOnly, timeAgo, todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { canPlanAttendance } from "@/server/permissions";
 import { type CalendarPerson, getCalendarEvent } from "@/server/queries/calendar";
 import { deleteCalendarEventAction } from "../actions";
 
@@ -60,10 +73,19 @@ export default async function CalendarEventPage({ params, searchParams }: PagePr
   const ends = multiDayTimedEnds(event, today);
   const who = (p: CalendarPerson) => (p.id === actor.id ? "you" : p.name);
   const edited = event.updatedBy && event.updatedAt !== event.createdAt;
+  // An extra meeting: the first of its days people can answer "Coming?" for now ("later" when it's more than
+  // LIMITS.rsvpDaysAhead days off, null once it's over).
+  const answerDay = event.kind === "MEETING" ? extraMeetingAnswerDay(event, today, LIMITS.rsvpDaysAhead) : null;
+  const planDay: DateOnly | null = answerDay && answerDay !== "later" ? answerDay : null;
+  // Added from Who's coming or the Schedule ("Add an extra meeting"): back to that page (Who's coming on this day).
+  const from = parseCalendarReturn(first(sp.from));
+  const back = from
+    ? { href: from === "plan" && planDay ? `/attendance/plan?day=${planDay}` : CALENDAR_RETURNS[from].href, label: CALENDAR_RETURNS[from].label }
+    : { href: `/calendar?month=${monthOf(event.startsOn)}`, label: "Team calendar" };
 
   return (
     <div className="mx-auto w-full max-w-3xl min-w-0">
-      <BackLink href={`/calendar?month=${monthOf(event.startsOn)}`}>Team calendar</BackLink>
+      <BackLink href={back.href}>{back.label}</BackLink>
       {flash && (
         <div className="mb-4">
           <FocusAlert tone="success">{flash}</FocusAlert>
@@ -82,7 +104,11 @@ export default async function CalendarEventPage({ params, searchParams }: PagePr
                 action={deleteCalendarEventAction}
                 fields={{ eventId: event.id }}
                 variant="secondary"
-                confirm={`Remove “${event.title}” from the team calendar?`}
+                confirm={
+                  event.kind === "MEETING"
+                    ? `Remove “${event.title}” from the team calendar? It won't be a meeting day in Attendance any more.`
+                    : `Remove “${event.title}” from the team calendar?`
+                }
                 pendingText="Removing…"
                 aria-label={`Remove ${event.title}`}
               >
@@ -112,6 +138,37 @@ export default async function CalendarEventPage({ params, searchParams }: PagePr
 
       <Card>
         <CardBody className="space-y-5">
+          {event.kind === "MEETING" && (
+            <div className="flex items-start gap-2 rounded-lg bg-teal-50 px-3 py-2 text-sm text-teal-900">
+              <CalendarCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <div className="min-w-0 space-y-1">
+                <p>An extra team meeting: it counts as a meeting day in Attendance (Coming? and check-in).</p>
+                {planDay ? (
+                  // Straight to that day's card (opened even when it's past the first few days).
+                  <p className="flex flex-wrap gap-x-4 gap-y-1">
+                    <Link
+                      href={`/attendance?day=${planDay}#day-${planDay}`}
+                      className="inline-flex min-h-10 items-center font-medium underline underline-offset-2 hover:text-teal-950"
+                    >
+                      Say if you&apos;re coming
+                    </Link>
+                    {canPlanAttendance(actor) && (
+                      <Link
+                        href={`/attendance/plan?day=${planDay}`}
+                        className="inline-flex min-h-10 items-center font-medium underline underline-offset-2 hover:text-teal-950"
+                      >
+                        See who&apos;s coming
+                      </Link>
+                    )}
+                  </p>
+                ) : (
+                  answerDay === "later" && (
+                    <p>You can answer “Coming?” in Attendance up to {Math.floor(LIMITS.rsvpDaysAhead / 7)} weeks ahead.</p>
+                  )
+                )}
+              </div>
+            </div>
+          )}
           <dl className="space-y-3 text-sm">
             {ends ? (
               // A multi-day event's times are its first day's start and last day's end, not daily hours.

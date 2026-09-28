@@ -47,6 +47,7 @@ import {
   importSponsorships,
   SPONSORSHIP_CHANGED,
   SPONSORSHIP_IMPORTS_PER_HOUR,
+  SPONSORSHIP_WRITES_LIMITED,
   SPONSORSHIP_WRITES_PER_HOUR,
   setSponsorshipStage,
   updateSponsorship,
@@ -304,6 +305,8 @@ describe("sponsorship fields", () => {
     await expect(createSponsorship(ctx(busy), { name: "One too many" })).rejects.toBeInstanceOf(RateLimitError);
     const s = await makeSponsorship();
     await expect(setSponsorshipStage(ctx(busy), { sponsorshipId: s.id, stage: "DO_SOON" })).rejects.toBeInstanceOf(RateLimitError);
+    // The info note shares the allowance, and says which one ran out (not "Too many attempts").
+    await expect(updateSponsorshipInfo(ctx(busy), { body: "Team address" })).rejects.toThrow(SPONSORSHIP_WRITES_LIMITED);
   });
 });
 
@@ -758,6 +761,26 @@ describe("sponsorship info note", () => {
     const err = await updateSponsorshipInfo(ctx(ava), { body: "x".repeat(LIMITS.teamNoteMax + 1) }).catch((e) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as ValidationError).fieldErrors.body).toBe(`Info must be at most ${LIMITS.teamNoteMax} characters.`);
+  });
+
+  it("a note typed up to the box's limit fits, although browsers send its line breaks as CRLF", async () => {
+    await t.db.rateLimit.deleteMany();
+    // What the textarea holds: exactly LIMITS.teamNoteMax characters, each line break counted once (its maxLength).
+    const lines = Array.from({ length: 100 }, (_, i) => `Line ${i}: `.padEnd(99, "x"));
+    const typed = lines.join("\n");
+    expect(typed).toHaveLength(LIMITS.teamNoteMax - 1);
+    // The form sends each line break as "\r\n": 99 characters more than the box counted.
+    expect(await updateSponsorshipInfo(ctx(amara), { body: `${lines.join("\r\n")}!` })).toEqual({ mentionsPassword: false });
+    const saved = (await getSponsorshipInfo(ava, t.db))?.body;
+    expect(saved).toBe(`${typed}!`);
+    expect(saved).toHaveLength(LIMITS.teamNoteMax);
+    expect(saved).not.toContain("\r");
+
+    // One character more is too long.
+    const err = await updateSponsorshipInfo(ctx(amara), { body: `${lines.join("\r\n")}!!` }).catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).fieldErrors.body).toBe(`Info must be at most ${LIMITS.teamNoteMax} characters.`);
+    expect((await getSponsorshipInfo(ava, t.db))?.body).toBe(`${typed}!`);
   });
 
   it("saves text with a password in it anyway, and says it looks like one", async () => {

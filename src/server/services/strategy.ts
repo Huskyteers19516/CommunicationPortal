@@ -170,8 +170,8 @@ const linkField = z.preprocess(
 const strategyFields = z.object({
   title: text("Title", LIMITS.strategyTitleMax),
   kind: z.enum(StrategyKind, { error: KIND_MESSAGE }),
-  // Browsers send a textarea's line breaks as CRLF; its maxlength counts each as one character, so we do too.
-  description: z.preprocess((v) => (typeof v === "string" ? v.replace(/\r\n?/g, "\n") : v), optionalText("Description", LIMITS.strategyDescriptionMax)),
+  // optionalText turns the CRLF line breaks browsers send into "\n", so text typed up to the box's maxLength fits.
+  description: optionalText("Description", LIMITS.strategyDescriptionMax),
 });
 // Checked on its own, so a problem elsewhere doesn't hide a bad link.
 const linkInput = z.object({ link: linkField });

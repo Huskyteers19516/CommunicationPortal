@@ -662,6 +662,17 @@ describe("entries", () => {
     expect(await count()).toBe(before + 1);
   });
 
+  it("saves line breaks as \\n, and an older entry saved with CRLF line breaks is unchanged by the same text", async () => {
+    const { id } = await write(amara, intake, "Goals:\r\n- faster intake");
+    expect((await t.db.notebookEntry.findUniqueOrThrow({ where: { id } })).body).toBe("Goals:\n- faster intake");
+    // Entries saved before line breaks were normalized kept the CRLF forms send.
+    await t.db.notebookEntry.update({ where: { id }, data: { body: "Goals:\r\n- faster intake" } });
+    expect((await updateNotebookEntry(ctx(amara), { entryId: id, body: "Goals:\r\n- faster intake" })).changed).toBe(false);
+    expect(await t.db.notebookEntryEdit.count({ where: { entryId: id } })).toBe(0);
+    expect((await updateNotebookEntry(ctx(amara), { entryId: id, body: "Goals:\r\n- faster intake\r\n- lighter" })).changed).toBe(true);
+    expect((await t.db.notebookEntry.findUniqueOrThrow({ where: { id } })).body).toBe("Goals:\n- faster intake\n- lighter");
+  });
+
   it("subteam leaders can't change or delete what the captain, mentors, teachers, or owners wrote", async () => {
     for (const author of [jordan, elena, david, olivia]) {
       const { id } = await write(author, intake, `${author.name}'s entry`);

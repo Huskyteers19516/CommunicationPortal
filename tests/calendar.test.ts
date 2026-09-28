@@ -1,9 +1,12 @@
+import { CalendarPlus } from "lucide-react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { CALENDAR_KIND_ICONS } from "@/components/calendar/kind-styles";
 import type { CalendarEventKind } from "@/generated/prisma/enums";
 import {
   addMonths,
   buildIcs,
   buildMonthGrid,
+  CALENDAR_RETURNS,
   CALENDAR_DATE_TOO_EARLY,
   CALENDAR_DATE_TOO_LATE,
   CALENDAR_END_BEFORE_START,
@@ -28,12 +31,14 @@ import {
   type IcsEvent,
   monthLastDay,
   multiDayTimedEnds,
+  parseCalendarReturn,
   parseMonthKey,
   parseTime,
   placeEventsOnGrid,
   timeInTimezone,
   zonedTimeToUtc,
 } from "@/lib/calendar";
+import { CALENDAR_EVENT_KIND_LABELS, CALENDAR_EVENT_KINDS, CALENDAR_MEET_KINDS } from "@/lib/constants";
 import { addDays, dateOnlyToDb, todayInTimezone } from "@/lib/dates";
 import type { Actor } from "@/server/actor";
 import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, ValidationError } from "@/server/errors";
@@ -378,6 +383,46 @@ describe("editing and removing", () => {
   });
 });
 
+describe("extra meetings (kind MEETING)", () => {
+  it("are their own kind, offered after Competition and never counted as a meet", () => {
+    expect(CALENDAR_EVENT_KINDS).toEqual(["MEET", "ILT", "SCRIMMAGE", "COMPETITION", "MEETING", "OUTREACH", "TEAM", "DEADLINE", "OTHER"]);
+    expect(CALENDAR_EVENT_KIND_LABELS.MEETING).toBe("Extra meeting");
+    expect(CALENDAR_MEET_KINDS).not.toContain("MEETING");
+  });
+
+  it("have an icon of their own: no other kind uses it, and it isn't the \"Add …\" buttons' calendar-plus", () => {
+    const icons = CALENDAR_EVENT_KINDS.map((k) => CALENDAR_KIND_ICONS[k]);
+    expect(new Set(icons).size).toBe(icons.length);
+    expect(icons).not.toContain(CalendarPlus);
+  });
+
+  it("the form's ?from= only leads back to Who's coming or the Schedule", () => {
+    expect(parseCalendarReturn("plan")).toBe("plan");
+    expect(parseCalendarReturn("schedule")).toBe("schedule");
+    for (const bad of ["", "PLAN", "calendar", "/attendance/plan", "https://example.com", null, undefined, ["plan"]]) {
+      expect(parseCalendarReturn(bad)).toBeNull();
+    }
+    expect(CALENDAR_RETURNS).toEqual({
+      plan: { href: "/attendance/plan", label: "Who's coming" },
+      schedule: { href: "/attendance/settings", label: "Schedule" },
+    });
+  });
+
+  it("staff add, edit, and remove them like any event; they show on the calendar and in the kind filter", async () => {
+    const ctx = ctxFor(p.bizLead);
+    const { id } = await createCalendarEvent(ctx, validInput({ title: "Extra build day", kind: "MEETING", startsOn: day(2), endsOn: day(3) }));
+    expect(await t.db.calendarEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({ kind: "MEETING", sourceKey: null });
+    await expect(createCalendarEvent(ctxFor(p.buildMember), validInput({ kind: "MEETING" }))).rejects.toThrow(ForbiddenError);
+    await makeEvent({ title: "Outreach", kind: "OUTREACH", starts: 2 });
+    const upcoming = await getUpcomingCalendarEvents({ today: TEST_TODAY, kind: "MEETING" }, t.db);
+    expect(upcoming.items.map((e) => [e.title, e.startsOn, e.endsOn])).toEqual([["Extra build day", day(2), day(3)]]);
+    expect((await getCalendarEventsBetween({ from: day(0), to: day(6) }, t.db)).map((e) => e.kind).sort()).toEqual(["MEETING", "OUTREACH"]);
+    expect(await getNextMeet(TEST_TODAY, null, t.db)).toBeNull();
+    await deleteCalendarEvent(ctx, { eventId: id });
+    expect(await t.db.calendarEvent.count({ where: { kind: "MEETING" } })).toBe(0);
+  });
+});
+
 describe("the next meet", () => {
   it("is null with nothing coming up", async () => {
     await makeEvent({ kind: "MEET", starts: -3 });
@@ -390,6 +435,7 @@ describe("the next meet", () => {
     await makeEvent({ title: "Outreach tomorrow", kind: "OUTREACH", starts: 1 });
     await makeEvent({ title: "Deadline", kind: "DEADLINE", starts: 2 });
     await makeEvent({ title: "Team social", kind: "TEAM", starts: 3 });
+    await makeEvent({ title: "Extra build day", kind: "MEETING", starts: 4 }); // a team meeting, not a meet
     await makeEvent({ title: "League Meet 2", kind: "MEET", starts: 12 });
     await makeEvent({ title: "Scrimmage", kind: "SCRIMMAGE", starts: 20 });
     await makeEvent({ title: "ILT", kind: "ILT", starts: 40, ends: 41 });

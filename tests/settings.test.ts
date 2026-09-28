@@ -5,6 +5,7 @@ import type { Db } from "@/server/db";
 import { RateLimitError, UnauthorizedError, ValidationError } from "@/server/errors";
 import { addDays, dateOnlyToDb } from "@/lib/dates";
 import {
+  announcementAudiences,
   canAssignTo,
   canBeQuestionRecipient,
   canCreateTask,
@@ -21,7 +22,12 @@ import {
   updateNotificationPrefs,
   updateProfile,
 } from "@/server/services/settings";
-import { checkSeedSafety, DEMO_PASSWORD, isLocalDatabaseUrl, seed, SeedRefusedError } from "../prisma/seed";
+import { DEFAULT_ATTENDANCE_SETTINGS, isRegularDay, isTeamDay, weekdayOf } from "@/lib/attendance";
+import { actorSelect } from "@/server/actor";
+import { canFixAttendance, canGiveExtraCredit } from "@/server/permissions";
+import { countUnreadAnnouncements } from "@/server/queries/announcements";
+import { countUnreadDiscussions, getDiscussionThread } from "@/server/queries/discussion";
+import { checkSeedSafety, DEMO_PASSWORD, isLocalDatabaseUrl, seed, seedExtraMeetingDay, SeedRefusedError } from "../prisma/seed";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeUser, TEST_NOW, TEST_PASSWORD, TEST_TODAY, TEST_TZ } from "./helpers/factories";
 
@@ -836,13 +842,148 @@ describe("demo seed", () => {
       }
     }
     expect(new Set(sessions.flatMap((x) => x.records.map((r) => r.method)))).toEqual(new Set(["QR", "CODE", "MANUAL"]));
+    // Credits: a mix at Regular (1, 2/3, 1/2, 1/3, EC, one No credit) and at Flex (1 Flex, 1/2 Flex), each fitting its
+    // session and the rules: a scan at Regular is 1 unless the runner changed it; by hand only partial credit, EC, or
+    // No credit (never 1 or Flex), and only at Regular.
+    const records = sessions.flatMap((x) => x.records.map((r) => ({ ...r, kind: x.kind, openedById: x.openedById, sessionId: x.id })));
+    for (const r of records) {
+      expect(r.kind === "FLEX").toBe(r.creditKind === "FLEX");
+      expect([0, 2, 3, 4, 6]).toContain(r.credit);
+      // Set by the runner of that session (never by the person themselves).
+      if (r.creditChangedById) expect([r.creditChangedById, r.userId !== r.creditChangedById]).toEqual([r.openedById, true]);
+      expect(r.creditChangedById === null).toBe(r.creditChangedAt === null);
+      if (r.method === "MANUAL") {
+        expect(r.kind).toBe("REGULAR");
+        expect(r.credit === 6 && r.creditKind === "REGULAR").toBe(false);
+        expect(r.creditChangedById).toBe(r.markedById);
+      } else if (r.kind === "REGULAR" && !r.creditChangedById) {
+        expect([r.credit, r.creditKind]).toEqual([6, "REGULAR"]);
+      }
+    }
+    expect(new Set(records.map((r) => r.creditKind))).toEqual(new Set(["REGULAR", "EXTRA", "FLEX"]));
+    expect(new Set(records.filter((r) => r.creditKind === "REGULAR").map((r) => r.credit))).toEqual(new Set([0, 2, 3, 4, 6]));
+    const noCredit = records.filter((r) => r.credit === 0);
+    expect(noCredit).toHaveLength(1);
+    expect(noCredit[0].method).toBe("MANUAL");
+    // They said they'd come.
+    const noCreditSession = sessions.find((x) => x.id === noCredit[0].sessionId)!;
+    expect(
+      (await db.attendanceRsvp.findUniqueOrThrow({ where: { userId_date: { userId: noCredit[0].userId, date: noCreditSession.date } } })).regular,
+    ).toBe("YES");
+    // The admins' change log: every hand add (ADDED), every credit a runner changed (CREDIT_CHANGED), one taken off.
+    const changes = await db.attendanceChange.findMany();
+    const key = (x: { sessionId: string | null; userId: string | null }) => `${x.sessionId}|${x.userId}`;
+    const byKey = new Map(changes.map((c) => [key(c), c]));
+    for (const r of records.filter((x) => x.creditChangedById)) {
+      const c = byKey.get(key(r));
+      expect(c, r.id).toMatchObject({
+        action: r.method === "MANUAL" ? "ADDED" : "CREDIT_CHANGED",
+        changedById: r.creditChangedById,
+        toCredit: r.credit,
+        toKind: r.creditKind,
+        sessionKind: r.kind,
+        userName: users.get(r.userId)?.name,
+      });
+    }
+    expect(changes.filter((c) => c.action === "REMOVED")).toHaveLength(1);
+    expect(changes).toHaveLength(records.filter((x) => x.creditChangedById).length + 1);
+    for (const c of changes) {
+      const by = users.get(c.changedById!)!;
+      expect(by.status).toBe("ACTIVE");
+      expect(canFixAttendance(by)).toBe(true);
+      if (c.toKind === "EXTRA") expect(canGiveExtraCredit(by)).toBe(true);
+    }
+    expect(new Set(records.filter((r) => r.creditKind === "FLEX").map((r) => r.credit))).toEqual(new Set([3, 6]));
+    expect(records.filter((r) => r.credit === 6).length).toBeGreaterThan(records.length / 2);
+    expect(records.some((r) => r.creditChangedById !== null)).toBe(true);
     expect(sessions.some((x) => x.note !== "")).toBe(true);
     const settings = await db.teamNote.findUniqueOrThrow({ where: { key: "attendance-settings" } });
-    expect(JSON.parse(settings.body)).toMatchObject({ regularDays: [1, 2, 3, 4, 5], flexDays: [2, 4] });
+    // Regular meetings Mon/Tue/Thu, Flex Tue/Thu; extra meetings are never saved in it.
+    expect(JSON.parse(settings.body)).toEqual({ regularDays: [1, 2, 4], flexDays: [2, 4], reportStart: "2026-08-31", weeklyTarget: 2 });
+    const sessionDays = new Set(sessions.map((x) => x.date.toISOString().slice(0, 10)));
+    for (const day of sessionDays) expect(isTeamDay(DEFAULT_ATTENDANCE_SETTINGS, day), day).toBe(true);
+    // One regular day in the last two weeks had no practice.
+    const regularDays = [...Array(14)].map((_, i) => addDays(TEST_TODAY, -14 + i)).filter((d) => isRegularDay(DEFAULT_ATTENDANCE_SETTINGS, d));
+    expect(regularDays.filter((d) => !sessionDays.has(d))).toHaveLength(1);
     const upcoming = await db.attendanceRsvp.count({ where: { date: { gte: dateOnlyToDb(TEST_TODAY) } } });
     expect(upcoming).toBeGreaterThan(10);
     const plan = await db.attendancePlan.findFirstOrThrow();
     expect(plan.date.getTime()).toBeGreaterThan(today);
+
+    // An extra meeting on the Team calendar next Saturday (added by a person, so no sourceKey), with answers.
+    const extraDay = seedExtraMeetingDay(TEST_TODAY);
+    expect(extraDay).toBe("2026-09-26");
+    expect(weekdayOf(seedExtraMeetingDay("2026-09-26"))).toBe(6);
+    expect(seedExtraMeetingDay("2026-09-26")).toBe("2026-10-03");
+    const extra = await db.calendarEvent.findFirstOrThrow({ where: { kind: "MEETING" } });
+    expect(extra).toMatchObject({ title: "Extra build day", sourceKey: null, startsOn: dateOnlyToDb(extraDay), endsOn: null });
+    expect(users.get(extra.createdById!)?.status).toBe("ACTIVE");
+    expect(await db.calendarEvent.count({ where: { kind: "MEETING" } })).toBe(1);
+    const extraAnswers = await db.attendanceRsvp.findMany({ where: { date: dateOnlyToDb(extraDay) } });
+    expect(extraAnswers.length).toBeGreaterThan(5);
+    expect(extraAnswers.every((r) => r.flex === null)).toBe(true);
+  });
+
+  it("seeds a few announcements: a pinned welcome, one for Build, one for Business, and an older one everyone has seen", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const announcements = await db.announcement.findMany({ orderBy: { createdAt: "desc" } });
+    expect(announcements.map((a) => [a.subteam, a.pinned])).toEqual([
+      ["BUSINESS", false],
+      ["BUILD", false],
+      [null, true],
+      [null, false],
+    ]);
+    for (const a of announcements) {
+      const author = users.get(a.authorId!)!;
+      expect(author.status, a.title).toBe("ACTIVE");
+      expect(announcementAudiences(author), a.title).toContain(a.subteam);
+      expect(a.createdAt.getTime()).toBeLessThan(TEST_NOW.getTime());
+      expect(a.editedAt === null || a.editedAt > a.createdAt).toBe(true);
+    }
+    expect(announcements.filter((a) => a.editedAt).map((a) => a.title)).toEqual(["Engineering notebook check next week"]);
+    // Everyone active opened Announcements before the three newer ones: a Build member has two new, a mentor three.
+    const byEmail = async (email: string) => db.user.findUniqueOrThrow({ where: { email }, select: actorSelect });
+    expect(await countUnreadAnnouncements(await byEmail("ethan.chen@example.com"), db)).toBe(2);
+    expect(await countUnreadAnnouncements(await byEmail("ava.thompson@example.com"), db)).toBe(2);
+    expect(await countUnreadAnnouncements(await byEmail("elena.petrova@example.com"), db)).toBe(3);
+    expect(await countUnreadAnnouncements(await byEmail("marcus.johnson@example.com"), db)).toBe(1);
+  });
+
+  it("seeds four discussions (pinned, locked, busy) with consistent reply counts, last activity, and read marks", async () => {
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const threads = await db.discussionThread.findMany({
+      include: { replies: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] }, reads: true },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(threads.map((d) => [d.id, d.category, d.pinned, d.locked])).toEqual([
+      ["demo-thread-welcome", "GENERAL", true, false],
+      ["demo-thread-shirts", "OFF_TOPIC", false, true],
+      ["demo-thread-autos", "SOFTWARE", false, false],
+      ["demo-thread-intake", "BUILD", false, false],
+    ]);
+    for (const d of threads) {
+      expect(users.get(d.authorId!)?.status, d.title).toBe("ACTIVE");
+      expect(d.replyCount, d.title).toBe(d.replies.length);
+      const last = d.replies.at(-1);
+      expect(d.lastActivityAt, d.title).toEqual(last?.createdAt ?? d.createdAt);
+      expect(d.lastActivityById, d.title).toBe(last?.authorId ?? d.authorId);
+      expect(d.lastActivityAt.getTime()).toBeLessThan(TEST_NOW.getTime());
+      for (const r of d.replies) {
+        expect(users.get(r.authorId!)?.status, r.body).toBe("ACTIVE");
+        expect(r.createdAt.getTime()).toBeGreaterThan(d.createdAt.getTime());
+        if (r.editedAt) expect(r.editedAt.getTime()).toBeGreaterThan(r.createdAt.getTime());
+      }
+      for (const m of d.reads) expect(m.lastReadAt.getTime()).toBeLessThanOrEqual(d.lastActivityAt.getTime());
+    }
+    // Everyone has read the welcome and the vote; the Software and Build ones have news for some people.
+    const byEmail = async (email: string) => db.user.findUniqueOrThrow({ where: { email }, select: actorSelect });
+    expect(await countUnreadDiscussions(await byEmail("aiden.nguyen@example.com"), db)).toBe(1);
+    expect(await countUnreadDiscussions(await byEmail("ethan.chen@example.com"), db)).toBe(1);
+    expect(await countUnreadDiscussions(await byEmail("priya.raman@example.com"), db)).toBe(2);
+    const autos = await getDiscussionThread(await byEmail("priya.raman@example.com"), "demo-thread-autos", db);
+    expect(autos?.replies.findIndex((r) => r.id === autos.newFromReplyId)).toBe(2);
   });
 
   it("refuses to run on a database that already has users", async () => {
@@ -869,13 +1010,27 @@ describe("demo seed", () => {
     const ordersBefore = await s.db.purchaseItem.count();
     const sessionsBefore = await s.db.attendanceSession.count();
     const checkInsBefore = await s.db.attendanceRecord.count();
+    const attendanceChangesBefore = await s.db.attendanceChange.count();
     const ourStrategiesBefore = await s.db.strategy.count({ where: { teamId: null } });
     const notebookEntriesBefore = await s.db.notebookEntry.count();
+    const discussionRepliesBefore = await s.db.discussionReply.count();
+    await s.db.discussionThread.create({ data: { title: "Leftover discussion", body: "Old", authorId: someone.id, replies: { create: { body: "Old reply" } } } });
     // A calendar event someone added goes; the season schedule (loaded by a migration, with a sourceKey) stays.
     await s.db.calendarEvent.create({ data: { title: "Leftover test meet", startsOn: TEST_NOW, createdById: someone.id } });
     const seasonEventsBefore = await s.db.calendarEvent.count({ where: { sourceKey: { not: null } } });
 
+    await s.db.announcement.create({ data: { title: "Leftover", body: "Old news", authorId: someone.id } });
+    await s.db.attendanceChange.create({
+      data: { sessionDate: TEST_NOW, sessionKind: "REGULAR", userName: "Extra", changedById: someone.id, action: "REMOVED" },
+    });
     const result = await seed(s.db, { now: TEST_NOW, timezone: TEST_TZ, reset: true });
+    // The attendance change log is replaced too (its rows outlive sessions and accounts).
+    expect(attendanceChangesBefore).toBeGreaterThan(0);
+    expect(await s.db.attendanceChange.count()).toBe(attendanceChangesBefore);
+    expect(await s.db.attendanceChange.count({ where: { userName: "Extra" } })).toBe(0);
+    // Announcements are replaced, not duplicated.
+    expect(await s.db.announcement.count()).toBe(4);
+    expect(await s.db.announcement.count({ where: { title: "Leftover" } })).toBe(0);
     // Strategies (and their files, which cascade) are replaced, not duplicated.
     expect(await s.db.strategy.count({ where: { teamId: null } })).toBe(ourStrategiesBefore);
     expect(ourStrategiesBefore).toBe(3);
@@ -901,7 +1056,9 @@ describe("demo seed", () => {
     expect(await s.db.emailLog.count()).toBe(0);
     expect(await s.db.rateLimit.count()).toBe(0);
     expect(await s.db.user.findUnique({ where: { email: "extra@example.com" } })).toBeNull();
-    expect(await s.db.calendarEvent.count({ where: { sourceKey: null } })).toBe(0);
+    // Only the demo's extra meeting (added again, not duplicated).
+    expect(await s.db.calendarEvent.count({ where: { sourceKey: null } })).toBe(1);
+    expect(await s.db.calendarEvent.count({ where: { sourceKey: null, kind: "MEETING", title: "Extra build day" } })).toBe(1);
     expect(await s.db.calendarEvent.count({ where: { sourceKey: { not: null } } })).toBe(seasonEventsBefore);
     expect(seasonEventsBefore).toBe(4);
     // Resources (and their uploaded files, which cascade) are replaced, not duplicated.
@@ -916,5 +1073,10 @@ describe("demo seed", () => {
     expect(await s.db.notebook.count()).toBe(3);
     expect(await s.db.notebookEntry.count()).toBe(notebookEntriesBefore);
     expect(await s.db.notebookImage.count()).toBe(1);
+    // Discussions (with their replies and read marks) too.
+    expect(await s.db.discussionThread.count()).toBe(4);
+    expect(await s.db.discussionThread.count({ where: { title: "Leftover discussion" } })).toBe(0);
+    expect(await s.db.discussionReply.count()).toBe(discussionRepliesBefore);
+    expect(discussionRepliesBefore).toBe(13);
   });
 });

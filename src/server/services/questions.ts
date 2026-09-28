@@ -7,7 +7,7 @@
 import { z } from "zod";
 import type { QuestionStatus, Subteam } from "@/generated/prisma/enums";
 import { LIMITS } from "@/lib/constants";
-import { text } from "@/lib/validation";
+import { normalizeLineBreaks, text } from "@/lib/validation";
 import type { Actor } from "../actor";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
@@ -62,6 +62,7 @@ const askInput = z.object({
   title: text("Title", LIMITS.questionTitleMax),
   body: z
     .string({ error: "Add a few details so your leaders can help." })
+    .overwrite(normalizeLineBreaks)
     .trim()
     .min(1, "Add a few details so your leaders can help.")
     .max(LIMITS.questionBodyMax, `Keep the details under ${LIMITS.questionBodyMax} characters.`),
@@ -79,6 +80,7 @@ const replyInput = z.object({
   questionId: questionIdSchema,
   body: z
     .string({ error: "Write a reply first." })
+    .overwrite(normalizeLineBreaks)
     .trim()
     .min(1, "Write a reply first.")
     .max(LIMITS.replyBodyMax, `Replies must be at most ${LIMITS.replyBodyMax} characters.`),

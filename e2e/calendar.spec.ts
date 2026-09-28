@@ -1,13 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { addDays, todayInTimezone } from "../src/lib/dates";
 import { expectNoHorizontalScroll, PEOPLE, signIn, sql, uniq } from "./helpers";
 
 const TEAM_TZ = "America/Los_Angeles";
 
-/** "YYYY-MM-DD" in the team timezone, `days` from today. */
+/** "YYYY-MM-DD", `days` from today in the team timezone (counted on the date, so daylight saving can't shift it). */
 function teamDay(days: number): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: TEAM_TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(
-    new Date(Date.now() + days * 24 * 60 * 60 * 1000),
-  );
+  return addDays(todayInTimezone(TEAM_TZ), days);
 }
 
 /** The team timezone's wall-clock time now, "HH:MM" (24 h). */
@@ -118,6 +117,11 @@ test.describe("team calendar", () => {
     await kinds.getByRole("link", { name: "Outreach" }).click();
     await expect(page).toHaveURL(/kind=OUTREACH/);
     await expect(upcoming.getByRole("link").filter({ hasText: title })).toHaveCount(0);
+    // Extra meetings (the demo's Saturday build day) are on the calendar too, with their own filter chip.
+    await kinds.getByRole("link", { name: "Extra meeting" }).click();
+    await expect(page).toHaveURL(/kind=MEETING/);
+    await expect(upcoming.getByRole("link").filter({ hasText: "Extra build day" })).toBeVisible();
+    await expect(upcoming.getByRole("link").filter({ hasText: title })).toHaveCount(0);
 
     // …and on its page, without Edit or Remove.
     await page.goto(eventPath);
@@ -210,7 +214,15 @@ test.describe("team calendar", () => {
       const month = starts.slice(0, 7);
       const pages: Record<string, string[]> = {
         [PEOPLE.buildMember]: ["/calendar", `/calendar?month=${month}`, "/calendar?view=list", "/calendar?view=past", `/calendar/${id}`],
-        [PEOPLE.mentor]: [`/calendar?month=${month}&kind=ILT`, "/calendar/new", `/calendar/new?date=${starts}`, `/calendar/${id}`, `/calendar/${id}/edit`],
+        [PEOPLE.mentor]: [
+          `/calendar?month=${month}&kind=ILT`,
+          `/calendar?month=${month}&kind=MEETING`,
+          "/calendar/new",
+          `/calendar/new?date=${starts}`,
+          "/calendar/new?kind=MEETING",
+          `/calendar/${id}`,
+          `/calendar/${id}/edit`,
+        ],
       };
       for (const [email, paths] of Object.entries(pages)) {
         await signIn(page, email);
@@ -239,9 +251,23 @@ test.describe("team calendar", () => {
       }
       await page.goto(`/calendar/new?date=${starts}`);
       await expect(page.getByLabel("Date", { exact: true })).toHaveValue(starts);
-      // A bad date in the address is ignored.
-      await page.goto("/calendar/new?date=2026-02-30");
+      await expect(page.getByRole("radio", { name: /League meet/ })).toBeChecked();
+      // `?kind=MEETING` (Attendance's "Add an extra meeting") picks "Extra meeting", with the date too; the form
+      // explains it while it's the kind picked, and `from=` leads Back / Cancel to that Attendance page.
+      await page.goto(`/calendar/new?kind=MEETING&date=${starts}&from=schedule`);
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText("Add an event");
+      await expect(page.getByRole("radio", { name: /Extra meeting/ })).toBeChecked();
+      await expect(page.getByText(/everyone's asked “Coming\?” in Attendance/)).toBeVisible();
+      await expect(page.getByLabel("Date", { exact: true })).toHaveValue(starts);
+      await expect(page.getByRole("link", { name: "Schedule", exact: true })).toHaveAttribute("href", "/attendance/settings");
+      await expect(page.getByRole("link", { name: "Cancel" })).toHaveAttribute("href", "/attendance/settings");
+      await expectNoHorizontalScroll(page);
+      // A bad date, kind, or `from` in the address is ignored.
+      await page.goto("/calendar/new?date=2026-02-30&kind=PARTY&from=https://example.com");
       await expect(page.getByLabel("Date", { exact: true })).toHaveValue("");
+      await expect(page.getByRole("radio", { name: /League meet/ })).toBeChecked();
+      await expect(page.getByText(/everyone's asked “Coming\?” in Attendance/)).toHaveCount(0);
+      await expect(page.getByRole("link", { name: "Cancel" })).toHaveAttribute("href", "/calendar");
       // A bad month or view falls back to this month.
       expect((await page.goto("/calendar?month=nope&view=weird&kind=PARTY"))?.status()).toBe(200);
       await expect(page.getByRole("link", { name: "This month" })).toHaveAttribute("aria-current", "true");

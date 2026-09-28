@@ -1,14 +1,4 @@
-import {
-  CalendarClock,
-  CalendarHeart,
-  Flag,
-  Handshake,
-  type LucideIcon,
-  Swords,
-  Trophy,
-  Users,
-  Medal,
-} from "lucide-react";
+import { CalendarClock, CalendarHeart, Flag, Hammer, Handshake, type LucideIcon, Medal, Swords, Trophy, Users } from "lucide-react";
 import type { CalendarEventKind } from "@/generated/prisma/enums";
 import { cn } from "@/lib/cn";
 import { CALENDAR_EVENT_KIND_LABELS, CALENDAR_EVENT_KINDS } from "@/lib/constants";
@@ -42,6 +32,12 @@ export const CALENDAR_KIND_STYLES: Record<CalendarEventKind, { dot: string; chip
     badge: "bg-orange-50 text-orange-800 ring-orange-200",
     block: "bg-orange-50 text-orange-800",
   },
+  MEETING: {
+    dot: "bg-teal-600",
+    chip: "bg-teal-100 text-teal-900 hover:bg-teal-200",
+    badge: "bg-teal-50 text-teal-800 ring-teal-200",
+    block: "bg-teal-50 text-teal-800",
+  },
   OUTREACH: {
     dot: "bg-pink-600",
     chip: "bg-pink-100 text-pink-900 hover:bg-pink-200",
@@ -68,11 +64,13 @@ export const CALENDAR_KIND_STYLES: Record<CalendarEventKind, { dot: string; chip
   },
 };
 
+/** Each kind's icon. No other kind or button uses the same one (CalendarPlus stays for the "Add …" buttons). */
 export const CALENDAR_KIND_ICONS: Record<CalendarEventKind, LucideIcon> = {
   MEET: Flag,
   ILT: Trophy,
   SCRIMMAGE: Swords,
   COMPETITION: Medal,
+  MEETING: Hammer,
   OUTREACH: Handshake,
   TEAM: Users,
   DEADLINE: CalendarClock,
@@ -85,8 +83,9 @@ export const CALENDAR_KIND_HINTS: Record<CalendarEventKind, string> = {
   ILT: "The qualifying tournament",
   SCRIMMAGE: "Biobuzz league Saturdays",
   COMPETITION: "Qualifiers, regionals",
+  MEETING: "Counts as a meeting day",
   OUTREACH: "Demos, STEM nights",
-  TEAM: "Build days, socials",
+  TEAM: "Socials, team photos",
   DEADLINE: "Registrations, forms",
   OTHER: "Anything else",
 };

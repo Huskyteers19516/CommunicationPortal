@@ -71,7 +71,7 @@ export async function deliverNotification(db: Db, event: NotificationEvent, opti
     today: todayInTimezone(options.teamTimezone ?? env.teamTimezone, options.now ?? new Date()),
   };
 
-  // Question activity also goes to the leaders' Discord channel (if configured), alongside the emails.
+  // Question activity (and attendance no-shows) also go to the leaders' Discord channel (if configured), alongside the emails.
   const discord = deliverDiscord(db, event, { appUrl: cfg.appUrl, ...options.discord }).catch((e) =>
     console.error(`[notify] ${event.type}: Discord post failed`, e),
   );
@@ -123,6 +123,8 @@ function planFor(db: Db, event: NotificationEvent, cfg: DeliverConfig): Promise<
       return planResourceReviewed(db, event, cfg);
     case "question.deleted":
       return Promise.resolve(null); // Discord-only (deliverDiscord removes the posts)
+    case "attendance.no_shows":
+      return Promise.resolve(null); // Discord-only (deliverDiscord posts the names)
     default: {
       const unknown: never = event;
       console.warn("[notify] unknown event", unknown);

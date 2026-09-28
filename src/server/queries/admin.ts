@@ -2,6 +2,7 @@ import "server-only";
 import type { Prisma } from "@/generated/prisma/client";
 import { AccountStatus, type AssignmentStatus, type EmailStatus, Role, Subteam } from "@/generated/prisma/enums";
 import { ROLE_LABELS, SEAT_LIMITS } from "@/lib/constants";
+import { cleanSearchText } from "@/lib/search";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
 import { env } from "../env";
@@ -149,9 +150,8 @@ function parsePageParam(v: string | undefined): number {
 
 /** Read People filters from the URL, ignoring anything unexpected. */
 export function parseUserFilters(sp: SearchParams): UserFilters {
-  const q = first(sp.q)?.trim().slice(0, 100);
   return {
-    q: q || undefined,
+    q: cleanSearchText(first(sp.q), 100),
     status: pickEnum(AccountStatus, first(sp.status)),
     role: pickEnum(Role, first(sp.role)),
     subteam: pickEnum(Subteam, first(sp.subteam)),

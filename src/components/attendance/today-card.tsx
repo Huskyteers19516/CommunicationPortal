@@ -8,28 +8,38 @@ import { getTodayAttendance } from "@/server/queries/attendance";
 import { ButtonLink } from "../ui/button";
 import { Card } from "../ui/card";
 import { CheckInPanel } from "./check-in-panel";
+import { ExtraMeetingBadge, ExtraMeetingLinks } from "./extra-meeting";
+import { TodayCredits } from "./my-credits";
 import { RsvpDay } from "./rsvp-day";
+import { WeekProgress } from "./week-progress";
 
 /**
- * The Today page's small attendance card: on team days "Coming today?" (same answers as Attendance), and while
+ * The Today page's small attendance card: on team days (extra meetings included, with a link to theirs on the
+ * Team calendar) "Coming today?" (same answers as Attendance), and while
  * attendance is open a "Scan to check in" button until I'm checked in (runners also get "Show code" back to the
- * projector screen). Staff see when a two-week report has just finished. Renders nothing otherwise.
+ * projector screen), then what today's check-ins count as (at Flex, "How long are you at Flex?"; added by hand, who
+ * did and "scan the code if you're here now") and this week's "1 of 2 this week". Staff
+ * see when a two-week report has just finished. Renders nothing otherwise.
  */
 export async function TodayAttendanceCard({ actor, today }: { actor: Actor; today: DateOnly }) {
   const data = await getTodayAttendance(actor, today);
   if (!data) return null;
   const notYet = data.openSessions.filter((s) => !s.checkedIn);
-  const checkedInText = data.checkedInKinds.map((k) => ATTENDANCE_KIND_LABELS[k]).join(" and ");
+  const checkedInLine = `You're checked in for ${data.checkedInKinds.map((k) => ATTENDANCE_KIND_LABELS[k]).join(" and ")} ✓`;
   const label = formatDateOnly(today, today);
 
   return (
     <Card>
       <section aria-labelledby="today-attendance" className="space-y-3 px-4 py-3 sm:px-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="today-attendance" className="flex items-center gap-2 font-semibold text-ink-900">
-            <CalendarCheck className="size-5 text-brand-600" aria-hidden />
-            {data.day ? "Coming today?" : "Attendance"}
-          </h2>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h2 id="today-attendance" className="flex items-center gap-2 font-semibold text-ink-900">
+              <CalendarCheck className="size-5 text-brand-600" aria-hidden />
+              {data.day ? "Coming today?" : "Attendance"}
+            </h2>
+            {/* Why it asks on a day without regular practice, like on Attendance's day cards. */}
+            {data.day && <ExtraMeetingBadge meetings={data.day.extraMeetings} />}
+          </div>
           <Link href="/attendance" className="inline-flex h-10 items-center rounded-lg px-2 text-sm font-medium text-brand-700 hover:bg-brand-50">
             All days
           </Link>
@@ -43,6 +53,7 @@ export async function TodayAttendanceCard({ actor, today }: { actor: Actor; toda
             <span className="min-w-0">The {formatPeriod(data.reportReady, today)} report is ready</span>
           </Link>
         )}
+        {data.day && <ExtraMeetingLinks meetings={data.day.extraMeetings} />}
         {data.day?.plan && (
           <div className="flex gap-2 rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-900">
             <ClipboardList className="mt-0.5 size-4 shrink-0" aria-hidden />
@@ -56,7 +67,7 @@ export async function TodayAttendanceCard({ actor, today }: { actor: Actor; toda
         {data.openSessions.length === 0 && data.checkedInKinds.length > 0 && (
           <p className="flex items-center gap-2 rounded-lg bg-brand-50 px-3 py-2 text-sm font-medium text-brand-800">
             <CircleCheck className="size-5 shrink-0" aria-hidden />
-            You&apos;re checked in ✓ ({checkedInText})
+            {checkedInLine}
           </p>
         )}
         {data.openSessions.length > 0 && (
@@ -70,7 +81,7 @@ export async function TodayAttendanceCard({ actor, today }: { actor: Actor; toda
               size="md"
               scanLabel="Scan to check in"
               done={notYet.length === 0}
-              doneText={`You're checked in ✓ (${checkedInText})`}
+              doneText={checkedInLine}
             />
             {data.canRun && (
               <div className="flex flex-wrap gap-2">
@@ -83,6 +94,11 @@ export async function TodayAttendanceCard({ actor, today }: { actor: Actor; toda
               </div>
             )}
           </div>
+        )}
+        {data.creditSessions.length > 0 ? (
+          <TodayCredits sessions={data.creditSessions} week={data.week?.credit ?? null} target={data.week?.target ?? 0} />
+        ) : (
+          data.week && <WeekProgress week={data.week.credit} target={data.week.target} />
         )}
       </section>
     </Card>

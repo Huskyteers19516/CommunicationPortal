@@ -200,6 +200,22 @@ describe("askQuestion", () => {
     expect(c.notifier.events).toHaveLength(0);
   });
 
+  it("counts a line break as one character (browsers send CRLF) and saves it as \\n", async () => {
+    const me = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    // 50 lines: exactly 5000 characters in the box, 49 more as sent.
+    const lines = Array.from({ length: 50 }, (_, i) => `${i}`.padEnd(99, "x"));
+    const typed = `${lines.join("\n")}!`;
+    expect(typed).toHaveLength(5000);
+    const { id } = await askQuestion(ctx(me), { title: "Long one", body: `${lines.join("\r\n")}!`, to: "subteam" });
+    expect((await t.db.question.findUniqueOrThrow({ where: { id } })).body).toBe(typed);
+    const tooLong = await catchError(() => askQuestion(ctx(me), { title: "Too long", body: `${lines.join("\r\n")}!!` }));
+    expect(fieldErrorsOf(tooLong).body).toMatch(/5000/);
+
+    await replyToQuestion(ctx(me), { questionId: id, body: `${lines.join("\r\n")}!` });
+    expect((await t.db.questionReply.findFirstOrThrow({ where: { questionId: id } })).body).toBe(typed);
+    await t.db.question.deleteMany({ where: { id } });
+  });
+
   it("accepts FormData input", async () => {
     const fd = new FormData();
     fd.set("title", "From a form");

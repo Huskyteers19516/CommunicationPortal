@@ -71,13 +71,32 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 - `/tasks` (Task dashboard) and `/tasks/[id]` are for every ACTIVE user (`queries/board.ts`). They show who's on each task
   with a **public** status only (done / checked off / to do — "sent back" shows as to do) and never notes.
 
+## Team members (`src/server/queries/people.ts`, `/people`)
+
+"Team members" (first item of the menu's Team section) is the read-only team directory for every ACTIVE user:
+avatar, name, position ("Build Leader", "Software member"), email as a `mailto:` link, the Owner badge, and last seen
+(`lastSeenLabel`, the same as Admin → People), by name. `listTeamMembers` requires an ACTIVE viewer, lists **only ACTIVE
+accounts** (sign-ups waiting for approval, turned-down and disabled accounts stay admin-only in Admin → People), and
+selects only `id, name, email, role, subteam, isAdmin, lastSeenAt` — never the password hash, sessions, approval info, or
+email preferences; it stops at `TEAM_MEMBERS_MAX` (300) and counts everyone, then sorts by name with `Intl.Collator`
+(the database's C collation would put "jason" and "Élodie" after "Zara"). Search (`?q=`) matches name or email, or a
+word of the position as shown (`describeRole`: "build", "mentor", "software member"; 3+ letters) — `cleanSearchText`
+drops control characters (a NUL byte makes Postgres fail the page) and `escapeLike` makes `%` / `_` literal
+(`src/lib/search.ts`; Prisma's `contains` doesn't escape them). `?role=` / `?subteam=` filters (`parseTeamMemberFilters`
+drops anything else, e.g. a `status`) apply as soon as they're picked (`AutoSubmitSelect`; the Filter button still sends
+the search and works without JS). The filter form is keyed by the filters, so "Clear filters" and the menu link (client
+navigations) reset the menus too — same for Admin → People. Phones get stacked cards ("Seen 6 h ago" / "Never signed
+in" on its own line). Members get no links into Admin; people with admin access get "Manage people in Admin → People",
+and a person's name links to `/admin/users/[id]` (with a chevron, and a row hover only on those rows) only when
+`canManageAccount` allows it (`teamMemberAdminHref`). What Admin → People shows and who can open it is unchanged.
+
 ## Sponsorships (`src/server/services/sponsorships.ts`, `/sponsors`)
 
 The Business team's sponsor tracker (replaces their spreadsheet). Only the Business subteam and staff can see or change it
 (`canUseSponsorships`; pages show everyone else a short explanation, never data); deleting is for whoever added it, the Business leader, and all-scope
 staff (`canDeleteSponsorship`; the Business leader and all-scope staff are `canManageSponsorships`). Stages: Haven't started → Do soon → Needs work → Submitted → Accepted / Declined → Finished.
 Moving into Submitted/Accepted fills that date with today (team timezone) only if it's empty. `amountReceived` is whole
-dollars (`src/lib/money.ts`). "Info for applications" is a `TeamNote` (key `sponsorship-info`) — never store passwords in it (the card warns, without blocking the save, when `mentionsPassword` in `src/lib/sponsorships.ts` matches).
+dollars (`src/lib/money.ts`). "Info for applications" is a `TeamNote` (key `sponsorship-info`, up to `LIMITS.teamNoteMax` = 10,000 characters) — never store passwords in it (the card warns, without blocking the save, when `mentionsPassword` in `src/lib/sponsorships.ts` matches).
 The edit form sends `version` (the `updatedAt` it loaded): a stale save is a `ConflictError`, so it can't undo a stage change
 made from the list meanwhile (the list's stage menu itself is last-write-wins and only writes the stage and an empty date).
 Field validation lives in `src/lib/sponsorship-fields.ts` (client-safe). `/sponsors/import` parses rows pasted from a sheet
@@ -181,7 +200,7 @@ at most 4 MB of new files (`STRATEGY_SAVE_MAX_BYTES`, the request limit — add 
 `src/app/(app)/strategy/files/[id]/route.ts` (any ACTIVE user, Resources headers via `strategyFileHeaders`: a `.pp` is
 **always** an attachment; pictures/PDFs inline). The page shows pictures inline, PDFs to open, and `.pp` files as
 **Download path** with "the planner → Load (the ↑ arrow at the top) → pick this file" (for a strategy about another
-team, "the planner" links to that team's page). Descriptions (and team summaries) turn CRLF line breaks into `\n`
+team, "the planner" links to that team's page). Descriptions (via `optionalText`) and team summaries turn CRLF line breaks into `\n`
 before the length check, so text typed up to the textarea's `maxLength` fits. Deleting a strategy deletes its files. No
 emails. Both tabs show both counts (`getStrategyTabCounts`: our strategies, other teams).
 
@@ -244,24 +263,35 @@ tab the item was on) — never text from the link.
 
 Taking attendance with a rotating QR code, "Coming?" answers, day plans, and two-week reports.
 
-- **Who**: `canRunAttendance` (teachers, the Business leader, the captain, mentors, owners) start/close attendance, add or
-  remove people by hand (`MANUAL`, `markedBy`; works on closed/past sessions too, to fix the list), write "What we did",
-  delete a session started by mistake, and change the schedule (`/attendance/settings`). Sessions more than
-  `ATTENDANCE_EDIT_DAYS` (7) days old can only be changed by teachers, mentors, and owners (`canFixOldAttendance`,
-  `canEditSessionOn`); the live screen shows them read-only to other runners. `canPlanAttendance` (all staff) see
-  **Who's coming** (`/attendance/plan`), write a day's plan, and read reports (`/attendance/reports`). Everyone ACTIVE checks
-  in and answers "Coming?" for themselves. Members get 404 on session and report pages (and the CSV) and are sent back from
-  plan/settings/the reports list.
+- **Who**: `canRunAttendance` (teachers, the Business leader, the captain, mentors, owners) start / close / reopen
+  attendance (the projector QR code and 6-digit code), write "What we did", delete a session started by mistake, and
+  change the schedule (`/attendance/settings`). "What we did" and deleting a session more than `ATTENDANCE_EDIT_DAYS` (7)
+  days old: only teachers, mentors, and owners (`canFixOldAttendance`, `canEditSessionOn`). **Everyone with admin
+  access** (`canFixAttendance` = `canAdminister`: every leader, the captain, mentors, teachers, owners) opens any
+  session's page (`/attendance/sessions/[id]`) and fixes who was there **at any time, however old**: adds people by
+  hand (`MANUAL`, `markedBy`), takes them off, and changes credits (see Credits) — each change goes into the change log.
+  **Never their own**: nobody adds themselves by hand (`NOT_YOURSELF`) or changes their own credit (`OWN_CREDIT`), so
+  nobody gives themselves credit without a scan; another admin does it (taking yourself off is allowed, and logged).
+  `canPlanAttendance` (all staff) see **Who's coming** (`/attendance/plan`), write a day's plan, and read reports
+  (`/attendance/reports`). Everyone ACTIVE checks in and answers "Coming?" for themselves. Members get 404 on session,
+  report, and change-log pages (and the CSVs) and are sent back from plan/settings/the reports list.
 - **Fixing mistakes**: `deleteSession` removes today's session, or an earlier one nobody checked in to themselves (only
-  `MANUAL` records), with a conditional `deleteMany` (records cascade), so a mis-tap doesn't count as "held". Start asks
-  first on a day without regular practice. "What we did" and day plans send back the saved text the form started from
-  (`base`): if it changed meanwhile the save is a `ConflictError` and the form shows their text ("Use theirs"); forms that
-  must keep typing (these, the schedule) submit with `onSubmit` + `startTransition` so React's form reset can't undo edits.
+  `MANUAL` records): in one transaction it locks the session row (`FOR UPDATE`, so nobody checks in meanwhile), writes
+  the change log (one `SESSION_DELETED` row plus a `REMOVED` row per record), and deletes it (records cascade), so a
+  mis-tap doesn't count as "held". Start asks
+  first on a day that's neither a regular day nor an extra meeting. "What we did" and day plans send back the
+  saved text the form started from (`base`): if it changed meanwhile the save is a `ConflictError` and the form shows
+  their text ("Use theirs"); forms that must keep typing (these, the schedule) submit with `onSubmit` + `startTransition`
+  so React's form reset can't undo edits.
   Accounts with attendance history can't be deleted (`NO_ACTIVITY` in `services/admin.ts`); disable them instead.
 - **Sessions**: `AttendanceSession` is unique per `(date, kind)` — one REGULAR and one FLEX per team-timezone day.
   `openSession` creates today's, reopens a closed one with a **fresh random secret** (old codes stop working), or returns the
   open one unchanged. Check-ins only go into **open sessions of today**; `AttendanceRecord` is unique per person, so a
-  second scan returns `already: true` ("You're already checked in ✓").
+  second scan returns `already: true` ("You're already checked in ✓"). Someone already on the list **by hand** who
+  scans in while it's open becomes a real check-in (`recordCheckIn`, see "Scanning over a hand entry" under Credits).
+  "Checked in" (`checkedIn` on Attendance, Today, the scan page) means **checked in myself** with credit: a hand entry
+  or No credit isn't, so the Scan / Enter code buttons stay. Closing works on any open session, also one left open from
+  an earlier day (its page shows "Still open from …" with Close; Attendance's earlier list marks it "Still open").
 - **Codes** (`src/server/attendance/codes.ts`, pure): 30-second slots. QR token = `<sessionId>.<slot base36>.<HMAC-SHA256(secret,
   "qr:<id>:<slot>") first 16 bytes, base64url>`, accepted up to 10 slots old (~5 min, so a sign-in redirect still lands) and
   one slot ahead (clock skew). A forged signature is "invalid", never "expired". The 6-digit code is HMAC-derived per slot
@@ -282,34 +312,155 @@ Taking attendance with a rotating QR code, "Coming?" answers, day plans, and two
   `/attendance/scan/<token>` links (`attendanceScanPath`: the configured app origin or this page's own, no query/userinfo),
   stops the camera on success, "Stop camera", and unmount. Blocked / missing / busy camera and insecure pages get a clear
   message and **Type the code instead**. `next.config.ts` allows `camera=(self)`.
-- **Live screen** `/attendance/sessions/[id]`: big QR + code, live count and roster (`router.refresh()` every 10 s while
-  visible), "Said they'd come, not here yet" with quick Add, search to add anyone ACTIVE, Remove, "What we did", Close /
-  Reopen (both inline: focus moves to the other button, a status line says what happened), Delete. **Full screen** is a
-  dialog portaled to `<body>` with everything else `inert` (and asks the browser for full screen); Esc exits. Past sessions
-  open here too: runners get the last 5 on Attendance, and the report's dates link to them.
+- **Session page / live screen** `/attendance/sessions/[id]` (every admin; `getRunnerSession`): while it's open today,
+  runners get the big QR + code **first** (Full screen at its top, so the projector view is one tap away), and **"Said
+  they'd come — not checked in yet (N)"** (see No-shows) sits **folded** under the counts (names only, "Show list" for
+  the quick actions: they may still be on their way); once it's closed, "didn't check in" is at the top, open.
+  Runners also get Close / Reopen (both inline: focus moves to the other button, a status line says what happened),
+  "What we did", and Delete; other admins see "Attendance is open" instead of the code. Everyone there gets the counts
+  — **Scanned in** (`scannedCount`: scans and typed codes with credit, what the headcount should match; "+ N added by
+  hand" under it, `handCount`) and Said they'd come — and the roster, **On the list** (`router.refresh()` every 10 s
+  while it's open and visible) with a credit menu per person offering only what this admin may set on that record
+  (at Flex grouped into "Flex" and "Regular credit", `creditMenuGroups`; the admin's own row shows its credit without a
+  menu), Remove, "Marked as not here" (No credit) listed apart, search to add anyone ACTIVE but yourself by hand ("People
+  you add count as", 1/2 to start), and **History** (this session's change-log rows, newest 50, linking to all
+  changes). **Full screen** is a dialog portaled to `<body>` with everything else `inert` (and asks the browser for full
+  screen); it shows "N scanned in" and "Just scanned in: …" (scans only, never people added by hand); Esc exits. Past
+  sessions open here too: admins get today's and the last 5 on Attendance ("Take attendance" for runners, "Fix
+  attendance" for other admins), and the report's dates link to them.
 - **Coming?** (`AttendanceRsvp`, one row per person per day): `setRsvp` changes only the fields sent (`regular`
   YES/HALF/NO on regular days, `flex` YES/NO on Flex days — no Half —, `note` ≤ `LIMITS.rsvpNoteMax`; `""` clears one, and
   clearing works on any day). Days from today to `today + LIMITS.rsvpDaysAhead`; **past days are read-only**. An answer
   with nothing left is deleted. The UI saves each tap right away (optimistic, buttons stay enabled, `aria-pressed`,
-  a `role="status"` line); tapping the chosen answer again clears it. The list shows the next 14 team days
-  (`upcomingTeamDays`): 5, then "Show 9 more days". The Today page shows a compact card for today ("Scan to check in"
+  a `role="status"` line); tapping the chosen answer again clears it. The list shows every team day people can answer
+  for (`upcomingTeamDays`: today to `today + LIMITS.rsvpDaysAhead`, the same days `setRsvp` accepts — about 13 with
+  Mon/Tue/Thu, plus extra meetings): 5, then "Show N more days". `/attendance?day=YYYY-MM-DD#day-YYYY-MM-DD` goes
+  straight to one day's card (`id="day-…"`, outlined; "Show more days" starts open when it's past the first 5). The Today page shows a compact card for today ("Scan to check in"
   while a session is open, plus "Show code" for runners, and for staff "The … report is ready" in the first
   `REPORT_READY_DAYS` days of a new period).
-- **Schedule** (`TeamNote` `attendance-settings`, JSON, read with `getAttendanceSettings`, defaults in `src/lib/attendance.ts`):
-  regular weekdays, Flex weekdays, and `reportStart` (must be a Monday). Two-week report periods run 14 days from it
+- **Schedule** (`TeamNote` `attendance-settings`, JSON, read with `getAttendanceSettings(today, db)`, defaults in
+  `src/lib/attendance.ts`): regular weekdays (default **Mon, Tue, Thu**), Flex weekdays (default Tue, Thu — the school's
+  Flex period), `reportStart` (must be a Monday), and `weeklyTarget` (times a week, default 2 — see Credits below). Two-week report periods run 14 days from it
   (`reportPeriodFor` / `reportPeriodByIndex`); periods before it (attendance taken before "Reports start" moved) get
   **negative indices** (`firstReportIndex`, `parseReportIndex`), so no report is ever hidden. `/attendance/reports/[index]`
   shows sessions (run by, came vs said yes — ACTIVE accounts or people who came —, "What we did"), a per-person table
   (attended/held for Regular and Flex **since the day they joined** — `since`, account creation in the team timezone; people
   who joined after the period aren't listed —, said yes but didn't come, came without answering — `buildReport` in
-  `src/server/attendance/report.ts`), and what got done (meeting updates, checklist items approved, parts marked done,
+  `src/server/attendance/report.ts`), and what got done (checklist items approved, parts marked done,
   notebook entries written — instants filtered by team-timezone day bounds, `startOfDayInTimezone`). Phones get stacked rows
   instead of the tables. Print CSS and a CSV route (`csvCell` quotes `, ; " CR LF` and prefixes `'` to cells starting with
   `= + - @`, tab, or CR; the CSV also lists what got done). Mentors and teachers aren't listed as "No answer" (only when they
-  answer or come). "Your attendance" also counts from the day you joined.
+  answer or come). "Your attendance" also counts from the day you joined. `/attendance/settings` says "Regular
+  meetings: Mon, Tue, Thu", lists the upcoming extra meetings (`getUpcomingExtraMeetings`, each linking to its event),
+  and has **Add an extra meeting** (`/calendar/new?kind=MEETING&from=schedule`, for `canManageCalendar`; Who's coming
+  has it too, with `from=plan`). The page and the form read the saved schedule only (`getSavedAttendanceSettings`: one
+  note read, no extra meetings), like the reports, which go by `reportStart` and the sessions held.
+- **Extra meetings** = Team calendar events of the kind `MEETING` ("Extra meeting"). Every day one covers
+  (`startsOn`…`endsOn`) is a regular day **everywhere** a "meeting day?" is asked: `getAttendanceSettings` /
+  `getAttendanceSchedule` (`queries/attendance-settings.ts`) also load the MEETING events in `extraMeetingWindow(today)`
+  (today to `today + LIMITS.rsvpDaysAhead`: nothing asks about earlier days — reports go by the sessions held) and return
+  their days as `settings.extraDays`, which
+  `isRegularDay` / `isTeamDay` / `teamDaysFrom` / `upcomingTeamDays` count (`isFlexDay` doesn't: Flex stays on its
+  weekdays). So members are asked "Coming?" (Yes / Half / No), `setRsvp` / `setDayPlan` accept the day (services pass
+  `ctx.db` and their team-timezone today), Who's coming lists it, starting Regular attendance doesn't ask, and Today shows
+  "Coming today?". Day cards, Today's card, and Who's coming show
+  an "Extra meeting" badge and the event's title linking to it (`RsvpDay.extraMeetings`, `DayCounts.extraMeetings`).
+  Reads through the app-wide client share one load per request (React `cache`: the Today page and its card); a
+  service's own `ctx.db` always reads fresh.
+  `extraDays` is **never saved**: `parseAttendanceSettings` always returns `[]` for it, and `serializeAttendanceSettings`
+  / `updateSettings` write only the weekdays and `reportStart`. Removing an extra meeting just takes the day off again:
+  answers, plans, and sessions already saved for it stay (clearing an answer works on any day). The regular
+  Mon/Tue/Thu meetings are never calendar events.
 - **Assign a task to the people coming** links to `/manage/tasks/new?people=<id>,<id>&due=<day>&back=/attendance/plan?day=<day>`;
   the page keeps only people the actor can assign (`prefillAssigneeIds`), uses the day as the due date when it's in range
   (`prefillDueDate`), and goes back to Who's coming (`prefillBackHref`, only that page) — `src/lib/task-prefill.ts`.
+- **Credits and the weekly target** (Gwen's "-/2 times"): each `AttendanceRecord` counts toward a weekly target by its
+  `credit`, in **sixths** (6 = 1, 4 = 2/3, 3 = 1/2, 2 = 1/3, so everything adds up exactly), and `creditKind`
+  (REGULAR / EXTRA = "EC" / FLEX). The options are `CREDIT_OPTIONS` in `src/lib/attendance.ts` (client-safe): 1, 2/3,
+  1/2, 1/3, 1/2 EC, 1 EC, 1/2 Flex, 1 Flex, and **No credit** (0, `NO_CREDIT`: on the sheet but counted as not there —
+  admins only). `creditOptionsFor(kind)` = what fits a session (Regular: 1…1 EC; Flex: 1/2 Flex, 1 Flex).
+  **Who sets what** (the owner's rules):
+  - A member's **own check-in** always needs the scan (QR, typed code, or the in-app scanner). At **Regular** it counts
+    as **1**, with nothing to pick (`memberCreditOptions("REGULAR")` is empty; the card says "Regular counts as 1").
+    At **Flex** it starts as 1 Flex (saved right away) and the member may switch between **1/2 Flex and 1 Flex**
+    (`setMyCredit`: own scanned record only, **only on the session's day** — `CREDIT_PAST_DAY` after —, never at Regular
+    (`REGULAR_NO_PICK`), never on a record added by hand (`ADDED_BY_HAND`), and never once an admin changed it
+    (`creditChangedAt` set → `ConflictError` naming them; the write is conditional on `creditChangedAt: null`),
+    `CREDIT_WRITES_PER_HOUR`). `CreditPicker` (`components/attendance/credit-picker.tsx`, via `TodayCredits` on
+    Attendance's Check in card, Today's card, and the scan page) saves on change (optimistic, focus stays on the radio,
+    a `role="status"` line). Own check-ins and Flex picks are **not** in the change log.
+  - **Admins** (`canFixAttendance`) change anyone's at any time (`setCredit`; `adminCreditOptions({ kind, method,
+    canGiveExtraCredit })` is both the menu and the rule, re-checked in the service): a **scanned** record (QR / CODE)
+    can be anything that fits the session, or a partial credit, EC, or No credit (so back to 1, or down); a record
+    **added by hand** (MANUAL — `addPerson` and the no-show buttons) only `HAND_CREDIT_IDS`: **1/3, 1/2, 2/3, EC, or
+    No credit, never 1 or Flex** (`BY_HAND_PARTIAL_ONLY`: those need a scan). Flex credit only at Flex
+    (`REGULAR_CREDIT_ONLY`), full credit at Flex is 1 Flex (`FLEX_FULL_CREDIT`). `addPerson` requires the option
+    (`PICK_HAND_CREDIT`); the same hand options apply at Flex sessions.
+  - **EC** ("1/2 EC", "1 EC") only by `canGiveExtraCredit`: the Business leader, teachers, mentors, and owners
+    (`EC_ONLY`, a `ForbiddenError`); any admin may change an EC credit to something else (menus show the current EC as
+    a disabled option).
+  - The menu sends `from` (what it showed): a change made meanwhile (the member's pick, another admin) is a
+    `ConflictError` saying what it is now and who did it; the write is conditional on the credit just read. Changing
+    someone's sets `creditChangedAt/ById` ("Credit changed by X", the member's card turns read-only with who to ask).
+    Adding someone by hand sets it too, to the same instant as `checkedInAt` ("as it was added": `untouchedByHand`).
+  - **Scanning over a hand entry** (`recordCheckIn`, while it's open today): a hand entry nobody changed since it was
+    added (a no-show given part credit or No credit before they got there, someone who forgot their phone) becomes a
+    real check-in — QR/CODE with the default credit (1 / 1 Flex; a hand 1 EC is already as much and is kept) — and
+    writes a `CREDIT_CHANGED` row **by the person themselves** (shown as "scanned in"), all conditional on what was
+    read. A hand entry an admin changed **later** stays as they set it: No credit is refused like a scan set to No
+    credit (`MARKED_NOT_HERE`), part credit becomes a scan that keeps their credit (`kept`: "It counts as 2/3 (X set
+    it)"), so an admin can now make it 1. An expired QR link never counts for a hand entry (they need a fresh code). On
+    their own card, a hand entry says who added them and, while it's open, "If you're here now, scan the code".
+  **Weekly totals** = the sum of a person's credits in sessions **dated** Monday–Sunday of that week (`weekOf` /
+  `weekStartOf` on calendar days, so daylight-saving changes don't matter; every kind counts; `WeekCredit` keeps the
+  regular / EC / Flex breakdown, `creditBreakdown` → "1 regular · ½ Flex · ½ EC"). Shown as "1⅔ of 2 this week"
+  (`formatCredits` with the ½ ⅓ ⅔ ⅙ ⅚ characters — `formatSixths` keeps "1 2/3" for odd credit labels —,
+  `weekProgressText`, `WeekProgress` / `WeekPill`, green with ✓ once `metWeeklyTarget`; right after a plain check-in
+  the card folds "Regular counts as 1" into the same box; session counts are "3 of 4", never "3/4"): "Your
+  attendance" (this week + last week, `getMyWeeks`; not for mentors and teachers), Today's card, next to each person on
+  the session page (the session's week) and on Who's coming (the picked day's week), and the two-week report: week 1
+  and week 2 per person (`periodWeeks`; a period starts on a Monday) — the CSV writes credits as decimals (0.5, 0.67: a
+  "1/2" cell opens as a date in Excel) plus "met" Yes/No. **No credit counts as not coming** everywhere "came" is
+  counted (`cameWith`: the reports' present / attended / "said yes but didn't come", "Your attendance", the live
+  count, recent sessions). The target is `weeklyTarget` in the schedule JSON (default 2, whole number
+  `WEEKLY_TARGET_MIN`–`WEEKLY_TARGET_MAX` = 1–7, `parseWeeklyTarget`; the Schedule form's "Goal: times a week";
+  `updateSettings` keeps the saved one when it isn't sent; parse/serialize never keep anything else).
+- **No-shows** ("said they'd come — not checked in", `findNoShows` in `src/server/attendance/no-shows.ts`, shared):
+  ACTIVE people who answered Coming? **Yes or Half** for a Regular session's day (**Attend Flex? Yes** for a Flex
+  session) and have **no record** on it — any record, No credit included, means an admin dealt with them — **except the
+  person who started the session** (`openedById`: they ran it; never listed or posted). Shown (`NoShowList`,
+  `components/attendance/no-shows.tsx`) on the session page ("not checked in yet", folded under the counts while it's
+  open today; "didn't check in", at the top, after) and, for admins on days with a session, on **Today**
+  (`TodayNoShowsCard` → `getTodayNoShows`, one amber card per session with a link to it, folded while it's open;
+  nothing while nobody's missing). Each person has quick actions — **2/3, 1/2, 1/3** (and **1/2 EC, 1 EC** for those
+  who may give EC), then **No credit** set apart (its own line on phones) — via `addPerson`, so logged; the admin's own
+  row has none ("That's you"). The row goes right away (optimistic), focus moves to the next person's first button (or
+  the heading), and a `role="status"` line says what happened with **Undo** (`removePerson` with `from` = what it gave:
+  only while it's still that hand entry, else `UNDO_TOO_LATE`; logged as REMOVED; focus goes back to their row); once
+  everyone's dealt with it says so. When a runner **closes** a
+  session (the open → closed transition only), `closeSession` emits `attendance.no_shows` (`sessionId`, `userIds`)
+  when there are any, and says how many in its status line; working that out is wrapped so it never stops the close.
+- **Change log** (`AttendanceChange`, admins only): every admin change to someone's attendance writes a row **in the same
+  transaction** — `addPerson` → `ADDED` (to), `removePerson` → `REMOVED` (from, the credit the `DELETE … RETURNING`
+  gave back), `setCredit` → `CREDIT_CHANGED` (from/to), `deleteSession` → `SESSION_DELETED` plus a `REMOVED` per
+  record; and a scan over an unchanged hand entry → `CREDIT_CHANGED` with `changedById` = the person (the only rows
+  not by an admin). Rows copy the session's date/kind and the person's name, so they outlive deleted sessions
+  (`sessionId` → null) and accounts; `createdAt = ctx.now`. Refused or no-op changes write nothing. Members' own
+  check-ins and Flex picks aren't logged. **`/attendance/changes`** ("Attendance changes", `canViewAttendanceChanges`,
+  404 for members; `queries/attendance-changes.ts`): newest first as sentences (`describeAttendanceChange` in
+  `src/server/attendance/changes.ts`: "Amara Okafor changed Ethan Chen's Regular · Tue, Sep 29 from 1 to 1/2", "…
+  added … as 1/2 EC", "… marked … as not here (No credit) for …", "… took … off … (was 1)", "… deleted …", "Ethan Chen
+  scanned in to …: now 1 (was 1/2 by hand)") with a badge per kind (`changeKindOf`: the actions plus **Marked not
+  here** = ADDED as No credit, **Scanned in** = CREDIT_CHANGED by the person; `ATTENDANCE_CHANGE_KIND_LABELS`), filters
+  in the address (`parseAttendanceChangeFilters`: `person`, `by`, `action` = one of those kinds (Added by hand leaves
+  out No credit, Credit changed leaves out scans; a column comparison, `fields.userId`), `from`/`to` = the
+  **attendance's day**, swapped when backwards; anything invalid is dropped; labelled menus, "Anyone" / "Any kind";
+  the Person / Changed by menus list only people in the log; with JS only the filters that are set go in the address
+  and focus moves to the "N changes match" status line), 50 per page, and **Download CSV** (`/attendance/changes/csv`,
+  same filters, ≤ `CHANGES_CSV_MAX`, `csvCell` formula-escaped, credits as "1/2 regular" so Excel keeps them text).
+  Linked from Attendance ("Changes", admins), each session's History, and the two-week report's **Changes by admins**
+  (its period's rows by attendance day, newest 100, with a link to the filtered log; the report's CSV ends with the
+  same block, `reportChangesCsv`, up to `CHANGES_CSV_MAX`).
 
 ## Team notebook (`src/server/services/notebook.ts`, `/notebook`)
 
@@ -372,8 +523,18 @@ and entries go). Limits: `NOTEBOOKS_MAX`, `NOTEBOOK_PAGES_MAX`, the `LIMITS.note
 
 ## Team calendar (`src/server/services/calendar.ts`, `/calendar`)
 
-The season schedule: league meets, the ILT, scrimmages, competitions, outreach, team events, deadlines (`CalendarEvent`).
-Everyone ACTIVE sees it; staff (`canManageCalendar` = `isStaff`) add, edit, and remove events. No emails.
+The season schedule: league meets, the ILT, scrimmages, competitions, extra meetings, outreach, team events, deadlines
+(`CalendarEvent`). Everyone ACTIVE sees it; staff (`canManageCalendar` = `isStaff`) add, edit, and remove events. No emails.
+**Extra meeting** (`MEETING`, teal, after Competition in `CALENDAR_EVENT_KINDS`) is a team meeting on top of the regular
+Mon/Tue/Thu: each of its days is a meeting day in Attendance (see Attendance → Extra meetings); it isn't a meet (not in
+`CALENDAR_MEET_KINDS`, never in the countdown; its icon, a hammer, is used by no other kind or button). Its event page
+says so, with "Say if you're coming" → `/attendance?day=<first day>#day-<first day>` (and "See who's coming" →
+`/attendance/plan?day=…` for `canPlanAttendance`) once a day of it is within `LIMITS.rsvpDaysAhead`
+(`extraMeetingAnswerDay`; further off it says you can answer up to 4 weeks ahead), and removing it asks with that in
+mind. `/calendar/new?kind=<KIND>` preselects the kind (`?kind=MEETING` from Attendance's "Add an extra meeting"), next to
+`?date=` and `?from=plan|schedule` (`parseCalendarReturn`: Back / Cancel and, after adding, the new event's back link go
+to Who's coming — on that day — or the Schedule); anything else is ignored. The heading stays "Add an event"; the form
+follows the kind picked (a teal note explains an Extra meeting while it's the one picked, and the title's example).
 An event has `startsOn` / optional `endsOn` (`@db.Date`, last day inclusive, at most 30 days after the first; 5 years back /
 2 years ahead like fundraising — an edit may keep a date it already has) and optional `startTime` / `endTime` ("HH:MM", team
 timezone; no start time = all day; an end time needs a start time and, on a one-day event, must be later; on a multi-day
@@ -383,11 +544,12 @@ loaded): a stale save is a `ConflictError`, checked before the fields (a stale f
 the action revalidates anyway, so saving again replaces the other change.
 Creates are rate-limited (60/hour/person). `sourceKey` marks events loaded from a season schedule by a data migration
 (`20260927225500_season_schedule_2026_27`: the four Biobuzz league scrimmages, kind "League scrimmage") so loading again
-never duplicates them; edits keep it, and `db:seed -- --reset` keeps them (it removes only events people added).
+never duplicates them; edits keep it, and `db:seed -- --reset` keeps them (it removes only events people added, then
+adds the demo's extra meeting, "Extra build day" next Saturday).
 `getNextMeet(today, time)` = the first `CALENDAR_MEET_KINDS` event that isn't over — its last day is today or later (so a
 tournament in progress counts), minus today's whose end time has passed (`time` = team timezone "HH:MM",
 `timeInTimezone`; `eventIsOver`) — by first day then start time (all day first), plus the two after it — the calendar's
-hero and Today's `NextMeetCard` (top of Today: "Next meet in N days"). While this season's ILT isn't on the calendar
+hero and Today's `NextMeetCard` (top of Today, under any new announcements: "Next meet in N days"). While this season's ILT isn't on the calendar
 (`isIltOnCalendar`: no ILT coming up or ended in the last 120 days) the hero says "Qualifying Tournament (ILT): date TBD".
 A multi-day event with times shows "Starts …" / "Ends …" with their days (`multiDayTimedEnds`), never daily-looking hours.
 `/calendar` has Month (`?month=YYYY-MM`; two-line 40px bars per day from `lg` up, where the per-day "+" is a mouse-only
@@ -397,28 +559,129 @@ shortcut; a dotted grid plus that month's list on phones and tablets), List (`?v
 events converted to UTC with `zonedTimeToUtc`, UID `<id>@huskyteers-portal`) — signed-in ACTIVE users only, `text/calendar`,
 `attachment`, `private, no-store`, `nosniff`.
 
-## Meeting updates (`src/server/services/meeting-updates.ts`, `/updates`)
+## Announcements (`src/server/services/announcements.ts`, `/announcements`)
 
-After every meeting each subteam writes what it did ("What we did", required), "Next time", and "Problems or help needed"
-(`MeetingUpdate`: `meetingDate` `@db.Date` + `subteam`, no unique constraint — several people may write for the same
-subteam and day, and each update shows its own author). You write for your own subteam; the captain, mentors, teachers, and
-owners write for any (`meetingUpdateSubteams` / `canWriteMeetingUpdate`). Whoever wrote it, that subteam's leader, and
-all-scope staff edit or remove it (`canEditMeetingUpdate`); moving it to another subteam also needs `canWriteMeetingUpdate`
-for the new one (keeping its subteam is always fine). Everyone ACTIVE reads everything. The meeting date can't be in the
-future (team timezone) or more than a year back (`src/lib/meeting-updates.ts`; an edit may keep its saved date). A save that
-changes something sets `lastEditedAt/lastEditedById` ("Edited by … · 2 h ago"); one that changes nothing writes nothing.
-The edit form sends `version` (the `updatedAt` it loaded): a stale save is a `ConflictError`, and the action refreshes the
-page even when the save fails, so saving again replaces the other edit. Every save sets `updatedAt` explicitly (`ctx.now`, but
-always at least 1 ms past the previous one), so the version moves even within one millisecond. A removal only deletes the
-row as it was when permission was checked (same author, subteam, and `updatedAt`), else `ConflictError`. Creates are rate-limited
-(`MEETING_UPDATE_RATE_LIMIT`, 30/hour), edits and removals 120/hour. The feed (`queries/meeting-updates.ts`) pages by
-meeting day (`MEETING_DAYS_PER_PAGE` = 10, newest first), each day's updates grouped by subteam (three columns once the feed itself is `@4xl` wide — a container query, so
-the sidebar counts; stacked below that, where the subteams nobody wrote for share one "No … update yet" line), with
-`?subteam=` and `?who=mine` filters. Today shows `TodayUpdateNudge` on team days (attendance
-schedule) or once someone wrote one for today; the attendance two-week report lists the period's updates
-(`getMeetingUpdatesBetween`) and the meeting days (days attendance was taken) missing a subteam's update
-(`missingMeetingUpdates`). `?focus=<id>` (`meetingUpdateFocusHref`: Today's links, the edit page's Back/Cancel) opens the feed
-at an update. No emails.
+News from leaders, the captain, mentors, teachers, and owners, for the whole team (`subteam` null) or one subteam
+(`Announcement`, added by the `20260928054502` migration). **Everyone ACTIVE reads all
+of them**; who one is "for" only decides whose menu badge and Today card it shows up on. No emails (for now).
+
+- **Posting**: `canPostAnnouncement`, for an audience in `announcementAudiences(actor)` (all-scope staff: anyone; a
+  subteam leader: the whole team or their own subteam — anything else is a `ForbiddenError`, whatever the form sent).
+  Title (`LIMITS.announcementTitleMax`), message (`LIMITS.announcementBodyMax`, CRLF counted as one character, NUL
+  characters dropped; shown with `RichText`, long ones folded to 10 lines with **Show more**, measured in the browser),
+  "For" (radio cards: `audience` = `team` or a subteam), and **Pin to the top**. `authorId` and `createdAt = ctx.now`
+  come from the server. Creates are rate-limited (`ANNOUNCEMENT_RATE_LIMIT`, 20/hour; only posts that pass the checks
+  count); edits, pins, and removals share `ANNOUNCEMENT_WRITES_PER_HOUR` (120). Pending and disabled accounts change
+  nothing.
+- **Editing / pinning / removing**: `canEditAnnouncement` (whoever posted it **while they can still post** — a leader
+  who becomes a member loses Edit / Pin / Remove on their old ones — and all-scope staff; never another leader). An
+  edit may keep the audience it has (even one the editor can no longer post for) or move it to one they can. Only a
+  change to the title or text sets `editedAt` ("edited", exact time on hover); moving or pinning doesn't, and a save
+  that changes nothing writes nothing (`changed: false`, "Nothing changed…"). The edit form sends `version` (the
+  `updatedAt` it loaded — held by the form, so a refresh of the page doesn't quietly move it), checked before the
+  fields: a stale save is a `ConflictError`, and the action returns the newest values (`latest`); the form then shows
+  them with the person's own edits on top (`mergeAnnouncementEdits`: only fields they changed stay theirs, so an
+  untouched "Pin to the top" box doesn't unpin what someone pinned meanwhile) and the newest version, and says so.
+  Removed meanwhile: the save says "That announcement was removed." and keeps what they typed (no refresh, so no 404);
+  Remove treats it as done (`?removed=1`). Every write is conditional on the version it read and sets the next one to
+  `max(now, updatedAt + 1 ms)` (Pin re-reads once when something landed in between, then says to try again). Pin /
+  Unpin (`setAnnouncementPinned`, an inline button with a `role="status"` line; its accessible name starts with its
+  words, "Pin to top: “…”") also moves the version, so an edit form opened before it can't quietly unpin it. Focus
+  stays on the button while the list re-sorts, and when the card moved out of view the page scrolls it back to the
+  middle. Removing sends the version the card showed (a changed one asks to look first).
+- **The list** (`queries/announcements.ts`, `listAnnouncements`): pinned first, then newest (ties by id), 20 per page
+  (Newer / Older, the page label centered; after paging, focus moves to the count line), chips **All / For you / Whole
+  team / Software / Build / Business** (`?for=you|team|SOFTWARE|BUILD|BUSINESS`, `parseAnnouncementFilters` drops
+  anything else; all-scope staff get no **For you** chip — for them it's everything, so `?for=you` is All). The count
+  line says the filter and page (`announcementCountText`: "17 announcements for Build · page 1 of 2"), since on a
+  phone the picked chip can be scrolled out of sight. Each card: Pinned, who it's for (`SubteamBadge`, "Whole team"),
+  **New**, the title, who posted it (name and position — `describeRole`, "Owner" for an owner who's a member), when
+  (`timeAgo`, exact time in `title`), "edited", and Edit / Pin / Remove for whoever can. `?posted=` / `?saved=` /
+  `?unchanged=` / `?focus=<id>` open the page that has it (`positionOf`), focus it, and say what happened on it
+  (`AnnouncementCardNotice`, once: `TidyAddress` then `router.replace`s the address with `?focus=<id>` and no #hash,
+  so a reload doesn't repeat it; Pin / Unpin on that card hides it); `?removed=1` after a removal (the list keeps its
+  filter and page).
+- **For you** = the whole team's plus your subteam's (`ledSubteam ?? subteam`); all-scope staff: all of them
+  (`announcementsForYou`, `isAnnouncementForYou`, `announcementsForYouWhere`).
+- **Seen / unread**: `User.announcementsSeenAt` (never opened: the account's `createdAt`, so a new member doesn't start
+  with every old announcement "new"). Unread = for you, not yours, posted after it. The nav badge
+  (`countUnreadAnnouncements`) is one raw count query joining the user row. Today shows up to 3 unread ones
+  (`listUnreadAnnouncements`: title, who, when, a link to it on the list, "See all"; nothing when there are none).
+  **Nothing is marked seen while rendering**: the list's `<MarkAnnouncementsSeen upTo={render time}>` calls
+  `markAnnouncementsSeenAction` once it's mounted and the tab is visible (so prefetching, or a tab opened in the
+  background, marks nothing), and `markAnnouncementsSeen` only moves `announcementsSeenAt` forward (never back before
+  the account's `createdAt` either), never past now or past when the page loaded minus
+  `ANNOUNCEMENTS_SEEN_MARGIN_MS` (2 s: a post stamped just before the page loaded may not have been saved yet when the
+  list was read, so it stays unread; the next visit clears it). When it cleared something, the list calls
+  `router.refresh()` (the menu badge and Today change). The action itself doesn't revalidate: an action's refresh
+  re-applies the address's `#hash`, and the next page (e.g. Today) then didn't open at the top.
+  The "New" markers go by the value from **before** the visit: `announcements/layout.tsx` reads it and
+  `AnnouncementsSeenProvider` keeps the first value it gets, so they stay while the person switches filters or pages,
+  posts, or edits (a layout stays mounted across those navigations; its refreshes are ignored), and they're gone on
+  the next visit. "New" shows on the same ones the badge and Today count (for you, not yours:
+  `isNewAnnouncement`). Editing an announcement doesn't make it new again. Today's list and its total are one query
+  (`count(*) OVER ()`).
+- Pages: `/announcements`, `/announcements/new` (`?for=<subteam>` preselects one the person can post for; others get a
+  short explanation), `/announcements/[id]/edit` (404 unless `canEditAnnouncement`).
+
+## Discussion (`src/server/services/discussion.ts`, `/discussion`)
+
+The team-wide forum (Questions stay private member → leader threads). Everyone ACTIVE reads every discussion, starts
+one (`DiscussionThread`: title, text shown with `RichText`, `category` from `DISCUSSION_CATEGORIES`), and replies
+(`DiscussionReply`). No emails. Pages: `/discussion` (list), `/discussion/new` (`?category=` preselects), `/discussion/[id]`,
+`/discussion/[id]/edit`; client-safe helpers (URL filters, links, the divider rule) in `src/lib/discussion.ts`.
+
+- **Who**: only whoever wrote a post changes its text (`canEditDiscussionPost`, never moderators). A discussion is
+  deleted by its author while nobody else replied (checked with the row locked; a reply from a deleted account counts
+  as someone else's) and by everyone with admin access any time (`canModerateDiscussion` = `canAdminister`), who also
+  **pin** (listed first) and **lock** it. A reply is deleted by its author or a moderator. **Locked** = frozen: no new
+  replies and no edits from anyone (a moderator who wants a last word unlocks, replies, and locks again), and only
+  moderators delete in it (authors can't take a post back, e.g. a vote; `DISCUSSION_LOCKED_DELETE`, checked with the
+  row locked). Accounts that aren't ACTIVE get `ForbiddenError` on every write and `null`/0 from the queries. Accounts
+  with posts can't be deleted (`NO_ACTIVITY` in `services/admin.ts`), so posts keep their author.
+- **Counts**: `replyCount` and `lastActivityAt/By` (the list's order and "last reply 2 h ago by Ethan") change in the same
+  transaction as the reply, with the discussion's row locked first (`createReply`: one raw `UPDATE … WHERE NOT locked
+  RETURNING`, which also picks the reply's time under that lock: now, but always after the last activity, so replies
+  are timed in the order they're saved and a slow request can't land behind someone's read mark). `deleteReply` locks
+  the row, deletes, and **recounts** both from what's left (the newest reply, else the discussion itself), so they're
+  right after deletes and races.
+- **Versions**: the edit form (`/discussion/[id]/edit`) and a reply's inline edit send `version` (the `updatedAt` they
+  loaded): a stale save is a `ConflictError`, checked before the fields; the actions refresh after it, so saving again
+  replaces it. They don't refresh when the post is gone (or, on the edit page, was just locked): the form stays with
+  the typed text and says why, instead of turning into a 404 or losing the reply. `/discussion/[id]/edit` sends
+  anyone who can't edit it (not theirs, or locked) to the discussion; a 404 only when it's gone. Only text edits move
+  `updatedAt` (always to a new value, `nextVersion`): replies, pins, and locks write with raw SQL, so they never make
+  an author's edit a conflict. Edits set `editedAt` ("edited"; not activity: the list order and unread marks don't
+  move); saving unchanged writes nothing.
+- **Unread**: `DiscussionRead(userId, threadId, lastReadAt)`. A discussion is unread for me when its `lastActivityAt` is
+  after my mark — or, never opened, after my account's `createdAt` — and the last activity wasn't mine (a deleted
+  account's counts as someone else's). `countUnreadDiscussions` (nav badge) is one raw count; the list's **Unread**
+  filter and markers ("New" = started by someone else after I joined and never opened; "3 new" = replies since my mark)
+  use the same SQL (`UNREAD` in `queries/discussion.ts`). The page marks it read with `<ThreadReadState>`: a Server
+  Action **after mount** and once the tab is visible (`markThreadReadAction`, never on render, so prefetching or a
+  background tab can't mark anything), up to the newest activity the page shows (`seen` = the newest reply it loaded,
+  else the discussion; not `lastActivityAt`, which is read separately; capped at now; marks never move back), again
+  only if a refresh shows newer activity. The action refreshes the page only when the mark moved (`{ moved }`).
+  Replying also marks it read. The **New** divider goes before the first reply by someone else since my
+  mark (`firstNewReplyId`; never opened: since I joined, or nothing when the whole discussion is new to me) and keeps
+  its place while the page is open (client state), so the refresh after marking doesn't take it away; so does the
+  "Jump to new replies" link under the title (`JumpToNewReplies`: scrolls to it and moves focus there).
+- **List** (`listDiscussionThreads`, raw SQL): pinned first, then `lastActivityAt` desc, 30 a page; `?category=`,
+  `?unread=1`, `?mine=1`, `?q=` (title, `cleanSearchText` + `escapeLike` with `ILIKE`), all validated
+  (`parseDiscussionFilters`). The active category chip is scrolled into view (`KeepChipInView`) and the count names it
+  ("3 discussions in Ideas"); a card's link name includes what's new ("… (2 new replies)"). **Page**: the newest
+  `DISCUSSION_REPLIES_SHOWN_MAX` (500) replies, oldest first, with a note when older ones are left out (counts come
+  from the replies loaded, so a reply saved mid-load can't fake one); each shows name + position (`describeRole`),
+  time, "edited". Posting a reply
+  redirects to `?posted=<id>#reply-<id>`: that reply (only one of mine on the page) takes focus and says "Reply posted.",
+  and the reply box remounts empty. Inline reply edits keep the text in state, move focus into the box and back, and
+  announce "Reply updated." in the reply's status line. Deleting goes to `?deleted=1` / `/discussion?removed=1`.
+- **Limits**: `LIMITS.discussionTitleMax` / `discussionBodyMax` / `discussionReplyMax`; `DISCUSSION_RATE_LIMITS`: 10 new
+  discussions, 60 replies, and 120 saved edits (discussions and replies together) per person per hour (counted after
+  the form is valid; an unchanged save isn't counted).
+- **Demo**: the seed adds four with fixed ids (`demo-thread-welcome` pinned, `demo-thread-shirts` locked,
+  `demo-thread-autos`, `demo-thread-intake`) and read marks, so some people start with unread ones; e2e and the tour
+  open them by id.
 
 ## Dates
 
@@ -476,6 +739,7 @@ export async function createThing(ctx: ServiceContext, raw: unknown) {
 ```
 
 - Signature: `(ctx: ServiceContext | PublicContext, raw: unknown)`. Validate **inside** the service with zod (so tests cover validation). Use helpers in `src/lib/validation.ts` (`text`, `optionalText`, `stringArray`, `checkbox`, `dateOnlySchema`, `emailSchema`, `idSchema`, `optionalEnum`).
+- Browsers send a textarea's line breaks as CRLF, but its `maxLength` counts each as one character: `text` / `optionalText` turn CRLF (and a lone CR) into `\n` before trimming and the length check, so text typed up to the box's limit fits and saved text uses `\n`. A custom `z.string()` for a textarea does the same with `.overwrite(normalizeLineBreaks)` before `.trim()` (question bodies and replies, notebook entries, the sponsor import box).
 - Use `ctx.now` (not `new Date()`) and `ctx.config` (not `process.env`) so tests are deterministic.
 - Throw the typed errors from `errors.ts`; their messages are shown to users, so write them for humans.
 - Multi-step writes → `ctx.db.$transaction(...)`.
@@ -512,7 +776,7 @@ export async function createThingAction(_prev: ActionState, formData: FormData):
 - `params` / `searchParams` are Promises: `export default async function Page({ params }: PageProps<"/manage/tasks/[id]">) { const { id } = await params; }`. Use `notFound()` for missing/forbidden items the user shouldn't know exist.
 - Set `export const metadata = { title: "..." }` on pages (title template adds " · Huskyteers Portal").
 - Forms: client components with `useActionState(action, initialActionState)`, `<SubmitButton>` (pending state), `<FormMessage state={state} />`, per-field errors via `<Field error={state?.fieldErrors?.title}>`, and `defaultValue={state?.values?.title ?? initial}` so input survives validation errors.
-- Use the UI kit: `Button/ButtonLink/buttonClasses` (size `icon` = 40px square icon button; `cn` only joins classes, so an override only wins if the kit leaves that property out — padding is left out when you pass your own `p-*`/`px-*`), `SubmitButton` (supports `confirm="Are you sure?"`), `Field/Input/Textarea/Select/CheckboxField`, `Card/CardHeader/CardBody`, `Badge/CountBubble`, `Alert`, `FormMessage`, `EmptyState`, `PageHeader`, `Avatar`, `ProgressBar`, `StatCard`, `LinkTabs`, `Pagination/parsePage`, `RichText` (user text; never `dangerouslySetInnerHTML`).
+- Use the UI kit: `Button/ButtonLink/buttonClasses` (size `icon` = 40px square icon button; `cn` only joins classes, so an override only wins if the kit leaves that property out — padding is left out when you pass your own `p-*`/`px-*`), `SubmitButton` (supports `confirm="Are you sure?"`), `Field/Input/Textarea/Select/CheckboxField`, `AutoSubmitSelect` (a filter menu in a GET form that applies on change), `Card/CardHeader/CardBody`, `Badge/CountBubble`, `Alert`, `FormMessage`, `EmptyState`, `PageHeader`, `Avatar`, `ProgressBar`, `StatCard`, `LinkTabs`, `Pagination/parsePage`, `RichText` (user text; never `dangerouslySetInnerHTML`).
   Domain badges: `RoleBadge`, `SubteamBadge` (null = "Whole team"), `AccountStatusBadge`, `AssignmentStatusBadge`, `QuestionStatusBadge`, `PriorityBadge`, `DueBadge`; `UserChip`, `describeRole`.
 - Icons: `lucide-react` (v1 names, e.g. `MessageCircleQuestionMark`, `CircleCheck`, `LoaderCircle`).
 - **Mobile first**: most members use phones. Tap targets ≥ 40px, no horizontal page scroll at 375px wide (tables → stacked cards on small screens or `overflow-x-auto` wrappers), bottom tab bar occupies ~64px. A sticky bar at the bottom of the page (like Select mode's Remove bar) carries `data-sticky-action-bar`: `globals.css` then adds scroll padding so keyboard focus isn't hidden under it.
@@ -559,6 +823,7 @@ Production sends run in `after()` so user actions never wait on SMTP.
 | `resource.reviewed` | resources | the member who shared it (`emailOnReview`) |
 
 `question.asked` / `question.replied` are also posted, in full, to a leaders-only Discord channel when `DISCORD_WEBHOOK_URL` is set (`src/server/notifications/discord.ts`; one-way, logged in EmailLog as `to = "Discord"`, `allowed_mentions` empty so user text can't ping anyone).
+`attendance.no_shows` (attendance, when a runner closes a session while people who said they'd come aren't on the list — never the person who started it) is **Discord-only** (no email): "Regular attendance · Tue, Sep 29" linking to the session, "3 said they'd come but didn't check in: A, B, C" (names escaped; people put on the list since it closed are left out; nothing when nobody's left). Delivery never throws (`postToDiscord`), so closing never breaks.
 
 ## Tests
 

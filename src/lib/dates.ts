@@ -93,3 +93,8 @@ export function timeAgo(value: Date, now: Date = new Date(), timeZone: string = 
   if (d < 7) return `${d} d ago`;
   return new Intl.DateTimeFormat("en-US", { timeZone, month: "short", day: "numeric" }).format(value);
 }
+
+/** When someone last used the app: `timeAgo`, or "Never" for an account that never signed in (People lists). */
+export function lastSeenLabel(value: Date | null, now: Date = new Date(), timeZone: string = DEFAULT_TEAM_TIMEZONE): string {
+  return value ? timeAgo(value, now, timeZone) : "Never";
+}

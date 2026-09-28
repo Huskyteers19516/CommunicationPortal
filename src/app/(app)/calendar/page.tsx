@@ -72,6 +72,7 @@ const KIND_NOUNS: Record<CalendarEventKind, string> = {
   ILT: "league tournaments",
   SCRIMMAGE: "league scrimmages",
   COMPETITION: "competitions",
+  MEETING: "extra meetings",
   OUTREACH: "outreach events",
   TEAM: "team events",
   DEADLINE: "deadlines",

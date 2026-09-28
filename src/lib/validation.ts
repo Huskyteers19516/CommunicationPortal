@@ -29,20 +29,29 @@ export const dateOnlySchema = z
   .trim()
   .refine(isDateOnly, "Pick a valid date.");
 
-/** Required text with a max length. */
+/**
+ * CRLF / lone CR line breaks -> "\n". Browsers send a textarea's line breaks as CRLF, but its `maxLength` counts
+ * each as one character, so text typed up to the box's limit only fits once they're one character again.
+ */
+export function normalizeLineBreaks(value: string): string {
+  return value.replace(/\r\n?/g, "\n");
+}
+
+/** Required text with a max length. Line breaks are saved as "\n" (and counted as one character). */
 export function text(label: string, max: number, min = 1) {
   return z
     .string({ error: `${label} is required.` })
+    .overwrite(normalizeLineBreaks)
     .trim()
     .min(min, min <= 1 ? `${label} is required.` : `${label} must be at least ${min} characters.`)
     .max(max, `${label} must be at most ${max} characters.`);
 }
 
-/** Optional text: "" / missing -> undefined. */
+/** Optional text: "" / missing -> undefined. Line breaks are saved as "\n" (and counted as one character). */
 export function optionalText(label: string, max: number) {
   return z.preprocess(
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-    z.string().trim().max(max, `${label} must be at most ${max} characters.`).optional(),
+    z.string().overwrite(normalizeLineBreaks).trim().max(max, `${label} must be at most ${max} characters.`).optional(),
   );
 }
 

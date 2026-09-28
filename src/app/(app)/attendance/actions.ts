@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { ATTENDANCE_KIND_LABELS, RSVP_LABELS } from "@/lib/attendance";
+import { ATTENDANCE_KIND_LABELS, type CreditOption, creditOption, NO_CREDIT, RSVP_LABELS } from "@/lib/attendance";
 import type { ActionState } from "@/lib/action-state";
 import { todayInTimezone } from "@/lib/dates";
 import { formDataToObject, runAction } from "@/server/action";
@@ -20,7 +20,9 @@ import {
   deleteSession,
   openSession,
   removePerson,
+  setCredit,
   setDayPlan,
+  setMyCredit,
   setRsvp,
   setSessionNote,
   updateSettings,
@@ -30,7 +32,10 @@ import {
 
 function checkedInMessage(result: CheckInResult): string {
   if (result.already) return `${ALREADY_CHECKED_IN.replace(/\.$/, "")} ✓`;
-  return `You're checked in for ${ATTENDANCE_KIND_LABELS[result.kind]} ✓`;
+  const done = `You're checked in for ${ATTENDANCE_KIND_LABELS[result.kind]} ✓`;
+  // On the list by hand, changed by an admin since: it's a scan now, but what it counts as is still theirs.
+  if (result.kept) return `${done} It counts as ${result.kept.label}${result.kept.by ? ` (${result.kept.by} set it)` : ""}.`;
+  return done;
 }
 
 /**
@@ -67,7 +72,11 @@ export async function startAttendanceAction(_prev: ActionState, formData: FormDa
 }
 
 export async function closeSessionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return inline(formData, closeSession, ({ kind }) => `${ATTENDANCE_KIND_LABELS[kind]} attendance is closed.`);
+  return inline(formData, closeSession, ({ kind, noShows }) => {
+    const closed = `${ATTENDANCE_KIND_LABELS[kind]} attendance is closed.`;
+    if (noShows === 0) return closed;
+    return `${closed} ${noShows} ${noShows === 1 ? "person" : "people"} said they'd come and didn't check in.`;
+  });
 }
 
 /** Reopen today's closed session from its live screen (the page stays put; old codes stop working). */
@@ -88,12 +97,31 @@ export async function deleteSessionAction(_prev: ActionState, formData: FormData
   });
 }
 
-export async function addPersonAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return inline(formData, addPerson, ({ name }) => `Added ${name}.`);
+function optionLabel(id: string): string {
+  return (creditOption(id) as CreditOption).label;
 }
 
+/** An admin adds someone by hand (partial credit, EC, or No credit): the search, or the no-show quick actions. */
+export async function addPersonAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return inline(formData, addPerson, ({ name, option }) =>
+    option === NO_CREDIT ? `${name}: No credit (not here).` : `Added ${name} (${optionLabel(option)}).`,
+  );
+}
+
+/** At Flex, "How long are you at Flex?" right after checking in (your own, today's sessions only). */
+export async function setMyCreditAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return inline(formData, setMyCredit, ({ option }) => `Saved: ${optionLabel(option)}.`);
+}
+
+/** An admin changes how much someone's check-in counts (a session's page). */
+export async function setCreditAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return inline(formData, setCredit, ({ name, option }) => `${name}: ${optionLabel(option)}.`);
+}
+
+/** Remove someone (the roster), or Undo a no-show quick action (`from` = what it gave: only while it's still that). */
 export async function removePersonAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return inline(formData, removePerson, ({ name }) => `Took ${name} off the list.`);
+  const undo = typeof formData.get("from") === "string";
+  return inline(formData, removePerson, ({ name }) => (undo ? `Undone: ${name} is back on the list.` : `Took ${name} off the list.`));
 }
 
 export async function setSessionNoteAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

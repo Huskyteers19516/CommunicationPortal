@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
-import { monthOf } from "@/lib/calendar";
+import { monthOf, parseCalendarReturn } from "@/lib/calendar";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/server/services/calendar";
@@ -16,7 +16,9 @@ export async function createCalendarEventAction(_prev: ActionState, formData: Fo
       const ctx = await getServiceContext();
       const { id } = await createCalendarEvent(ctx, formDataToObject(formData));
       revalidatePath("/", "layout");
-      redirect(`/calendar/${encodeURIComponent(id)}?added=1`);
+      // Opened from Attendance ("Add an extra meeting"): the new event's page leads back there.
+      const from = parseCalendarReturn(formData.get("from"));
+      redirect(`/calendar/${encodeURIComponent(id)}?added=1${from ? `&from=${from}` : ""}`);
     },
     { formData },
   );

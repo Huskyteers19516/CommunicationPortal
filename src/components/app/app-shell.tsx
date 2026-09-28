@@ -21,13 +21,15 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
         { href: "/tasks", label: "Task dashboard", icon: "dashboard" },
         { href: "/attendance", label: "Attendance", icon: "attendance" },
         { href: "/calendar", label: "Team calendar", icon: "calendar" },
+        { href: "/announcements", label: "Announcements", icon: "announcements", count: counts.unreadAnnouncements },
         { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
+        { href: "/discussion", label: "Discussion", icon: "discussion", count: counts.unreadDiscussions },
       ],
     },
     {
       title: "Team",
       items: [
-        { href: "/updates", label: "Meeting updates", icon: "updates" },
+        { href: "/people", label: "Team members", icon: "people" },
         { href: "/notebook", label: "Team notebook", icon: "notebook" },
         { href: "/strategy", label: "Strategy", icon: "strategy" },
         { href: "/parts", label: "Parts queue", icon: "parts" },

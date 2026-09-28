@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { CalendarCheck } from "lucide-react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import type { CalendarEventKind } from "@/generated/prisma/enums";
 import { useFocusFirstError } from "@/components/auth/use-focus-first-error";
 import { ButtonLink } from "@/components/ui/button";
@@ -43,6 +44,7 @@ export function CalendarEventForm({
   cancelHref,
   minDate,
   maxDate,
+  from,
 }: {
   action: (prev: ActionState, formData: FormData) => Promise<ActionState>;
   initial: CalendarEventFormValues;
@@ -51,6 +53,8 @@ export function CalendarEventForm({
   /** The date fields' range ("YYYY-MM-DD"), matching what the server accepts. */
   minDate: string;
   maxDate: string;
+  /** Adding from Attendance (`?from=plan|schedule`): sent along, so the new event's page leads back there. */
+  from?: string | null;
 }) {
   const [state, formAction] = useActionState(action, initialActionState);
   const formRef = useRef<HTMLFormElement>(null);
@@ -64,6 +68,7 @@ export function CalendarEventForm({
     <form ref={formRef} action={formAction} className="space-y-5" noValidate>
       {initial.id && <input type="hidden" name="eventId" value={initial.id} />}
       {initial.version && <input type="hidden" name="version" value={initial.version} />}
+      {from && <input type="hidden" name="from" value={from} />}
       <EventFields key={state?.nonce ?? 0} state={state} initial={initial} minDate={minDate} maxDate={maxDate} />
       {state && !state.ok && state.message && (
         <div ref={messageRef} tabIndex={-1} className="rounded-lg">
@@ -102,7 +107,8 @@ function EventFields({
     "aria-describedby": errors[key] ? `${key}-error` : undefined,
     defaultValue: value(key),
   });
-  const kind = value("kind");
+  // The kind picked right now (the radios stay uncontrolled): the title's example and the Extra meeting note follow it.
+  const [kind, setKind] = useState(value("kind"));
 
   return (
     <>
@@ -110,7 +116,13 @@ function EventFields({
         <CardHeader title="Event" />
         <CardBody className="space-y-5">
           <Field label="Title" htmlFor="title" error={errors.title}>
-            <Input {...control("title")} required maxLength={LIMITS.calendarTitleMax} placeholder="e.g. League Meet 2" autoComplete="off" />
+            <Input
+              {...control("title")}
+              required
+              maxLength={LIMITS.calendarTitleMax}
+              placeholder={kind === "MEETING" ? "e.g. Extra build day" : "e.g. League Meet 2"}
+              autoComplete="off"
+            />
           </Field>
 
           <fieldset aria-describedby={errors.kind ? "kind-error" : undefined}>
@@ -132,7 +144,8 @@ function EventFields({
                       type="radio"
                       name="kind"
                       value={option}
-                      defaultChecked={kind === option}
+                      defaultChecked={value("kind") === option}
+                      onChange={() => setKind(option)}
                       required
                       // Radios can't take aria-invalid; this marks where focus goes after a "kind" error.
                       data-invalid={errors.kind && i === 0 ? "true" : undefined}
@@ -154,6 +167,17 @@ function EventFields({
               })}
             </div>
             <FieldError id="kind-error">{errors.kind}</FieldError>
+            {/* Said as soon as "Extra meeting" is picked (the region stays, so screen readers hear it). */}
+            <div aria-live="polite">
+              {kind === "MEETING" && (
+                <p className="mt-3 flex items-start gap-2 rounded-lg bg-teal-50 px-3 py-2 text-sm text-teal-900">
+                  <CalendarCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <span className="min-w-0">
+                    An extra team meeting: that day, everyone&apos;s asked “Coming?” in Attendance, and attendance can be taken.
+                  </span>
+                </p>
+              )}
+            </div>
           </fieldset>
         </CardBody>
       </Card>

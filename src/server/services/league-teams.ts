@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import { LIMITS, OUR_TEAM_NUMBER } from "@/lib/constants";
-import { idSchema, optionalText, text } from "@/lib/validation";
+import { idSchema, normalizeLineBreaks, optionalText, text } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors";
@@ -129,7 +129,7 @@ const summaryInput = z.object({
   teamId: idSchema,
   summary: z.preprocess(
     // Browsers send a textarea's line breaks as CRLF; its maxlength counts each as one character, so we do too.
-    (v) => (typeof v === "string" ? v.replace(/\r\n?/g, "\n") : ""),
+    (v) => (typeof v === "string" ? normalizeLineBreaks(v) : ""),
     z.string().trim().max(LIMITS.leagueTeamSummaryMax, `The summary must be at most ${LIMITS.leagueTeamSummaryMax} characters.`),
   ),
   /** The summary's summaryUpdatedAt when the form loaded it (ISO), or "" when it had never been written. */

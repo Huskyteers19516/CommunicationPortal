@@ -835,6 +835,10 @@ describe("admin queries", () => {
       subteam: "BUILD",
       page: 1,
     });
+    // A NUL byte in the link (?q=%00) would make Postgres reject the search; control characters are dropped.
+    expect(parseUserFilters({ q: "\u0000" }).q).toBeUndefined();
+    expect(parseUserFilters({ q: "be\u0000a" }).q).toBe("bea");
+    expect((await listUsers(admin, parseUserFilters({ q: "\u0000" }), t.db)).total).toBeGreaterThan(0);
   });
 
   it("listUsers paginates 50 per page across the pending/other boundary", async () => {

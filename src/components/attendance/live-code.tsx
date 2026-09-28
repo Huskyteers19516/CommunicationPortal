@@ -50,23 +50,25 @@ function QrImage({ code, className }: { code: Extract<LiveCode, { ok: true }>; c
 }
 
 /**
- * The projector view: a big QR code that changes every 30 seconds, the 6-digit code under it, and the live
- * count. "Full screen" covers the app (and asks the browser for full screen), so the whole room can scan it:
- * the rest of the page is inert meanwhile, so focus stays in it. Esc or "Exit full screen" goes back.
+ * The projector view: "Full screen" first (one tap from the top of the page), then a big QR code that changes every
+ * 30 seconds and the 6-digit code under it. "Full screen" covers the app (and asks the browser for full screen), so
+ * the whole room can scan it, with how many scanned in and the latest names: the rest of the page is inert
+ * meanwhile, so focus stays in it. Esc or "Exit full screen" goes back.
  */
 export function LiveCodePanel({
   sessionId,
   title,
-  count,
+  scanned,
   saidYes,
   latest = [],
 }: {
   sessionId: string;
   /** e.g. "Regular · Thu, Sep 24". */
   title: string;
-  count: number;
+  /** How many scanned in or typed the code (people added by hand aren't in the room's count). */
+  scanned: number;
   saidYes: number;
-  /** The last few people who checked in, newest first (so a stranger's name stands out on the projector). */
+  /** The last few people who scanned in, newest first (so a stranger's name stands out on the projector). */
   latest?: string[];
 }) {
   const router = useRouter();
@@ -165,7 +167,7 @@ export function LiveCodePanel({
     }
   }, [full]);
 
-  const countLine = `${count} checked in${saidYes > 0 ? ` · ${saidYes} said they'd come` : ""}`;
+  const countLine = `${scanned} scanned in${saidYes > 0 ? ` · ${saidYes} said they'd come` : ""}`;
 
   const body =
     code === null ? (
@@ -182,6 +184,13 @@ export function LiveCodePanel({
   return (
     <>
       <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <p className="text-sm text-ink-600">Show this on the screen for everyone to scan.</p>
+          <Button ref={fullButtonRef} variant="secondary" onClick={enterFull} disabled={!code?.ok}>
+            <Maximize className="size-4" aria-hidden />
+            Full screen
+          </Button>
+        </div>
         <div className="mx-auto w-full max-w-md">{body ?? (code?.ok && <QrImage code={code} className="rounded-xl border border-ink-200" />)}</div>
         {code?.ok && (
           <div className="text-center">
@@ -192,12 +201,6 @@ export function LiveCodePanel({
             <p className="mt-1 text-xs text-ink-500">The code changes every 30 seconds.</p>
           </div>
         )}
-        <div className="flex justify-center">
-          <Button ref={fullButtonRef} variant="secondary" onClick={enterFull} disabled={!code?.ok}>
-            <Maximize className="size-4" aria-hidden />
-            Full screen
-          </Button>
-        </div>
       </div>
 
       {full &&
@@ -226,7 +229,7 @@ export function LiveCodePanel({
               {countLine}
             </p>
             {latest.length > 0 && (
-              <p className="max-w-3xl text-base text-ink-600 wrap-anywhere sm:text-lg">Just checked in: {latest.join(", ")}</p>
+              <p className="max-w-3xl text-base text-ink-600 wrap-anywhere sm:text-lg">Just scanned in: {latest.join(", ")}</p>
             )}
           </div>,
           document.body,

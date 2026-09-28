@@ -20,13 +20,13 @@ import {
   sheetValue,
 } from "@/lib/sponsorship-import";
 import { type BulkRemoveResult, mentionsPassword, type OwnerOption, SPONSORSHIP_BULK_REMOVE_MAX } from "@/lib/sponsorships";
-import { checkbox, idSchema, optionalText, stringArray } from "@/lib/validation";
+import { checkbox, idSchema, normalizeLineBreaks, optionalText, stringArray } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import type { Db } from "../db";
-import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors";
+import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, ValidationError } from "../errors";
 import { canDeleteSponsorship, canUseSponsorships } from "../permissions";
-import { enforceRateLimit } from "../rate-limit";
+import { consumeRateLimit, enforceRateLimit } from "../rate-limit";
 
 export const SPONSORSHIP_NOT_FOUND = "That sponsor no longer exists.";
 export const SPONSORSHIP_CHANGED = "Someone changed this sponsor since you opened it — reload to see the latest.";
@@ -52,9 +52,13 @@ export function assertCanUseSponsorships(ctx: ServiceContext) {
   }
 }
 
+export const SPONSORSHIP_WRITES_LIMITED = "You've made a lot of changes in Sponsorships in the last hour. Please wait a bit and try again.";
+
 /** The hourly allowance for changes to Sponsorships (shared by sponsors, the info note, and removing files). */
 export async function limitSponsorshipWrites(ctx: ServiceContext) {
-  await enforceRateLimit(ctx.db, `sponsorship:${ctx.actor.id}`, SPONSORSHIP_WRITES_PER_HOUR, HOUR, ctx.now);
+  if (!(await consumeRateLimit(ctx.db, `sponsorship:${ctx.actor.id}`, SPONSORSHIP_WRITES_PER_HOUR, HOUR, ctx.now))) {
+    throw new RateLimitError(SPONSORSHIP_WRITES_LIMITED);
+  }
 }
 
 function today(ctx: ServiceContext): DateOnly {
@@ -307,6 +311,8 @@ export async function updateSponsorshipInfo(ctx: ServiceContext, raw: unknown): 
 const importInput = z.object({
   text: z
     .string({ error: "Paste some rows from your spreadsheet first." })
+    // The box's maxLength counts a line break as one character; the form sends each as CRLF.
+    .overwrite(normalizeLineBreaks)
     .max(
       SPONSORSHIP_IMPORT_TEXT_MAX,
       `That's too much to paste at once. Paste up to ${SPONSORSHIP_IMPORT_MAX_PASTED_ROWS.toLocaleString("en-US")} rows at a time.`,
