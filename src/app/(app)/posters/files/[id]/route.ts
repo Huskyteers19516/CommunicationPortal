@@ -2,6 +2,7 @@
 // Headers (images and PDFs inline, nosniff, CSP) come from fileResponseHeaders(); `?download=1` always downloads.
 // A poster file's address never shows different bytes (a new file gets a new id; a removed one is a 404), so the
 // viewer's browser may keep it for a while (`immutable`): the Posters grid isn't downloaded again on every visit.
+// The bytes come from Postgres or Cloudflare R2 (streamed through here; see src/server/files/respond.ts).
 import type { NextRequest } from "next/server";
 import { getCurrentUser } from "@/server/auth/session";
 import { plainResponse, redirectToLogin, sendStoredFile } from "@/server/files/respond";

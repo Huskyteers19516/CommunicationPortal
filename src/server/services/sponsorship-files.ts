@@ -1,17 +1,27 @@
 // Files attached to a sponsor: e.g. the sponsor's paper application form to print and fill out, or the
 // filled-out (scanned) copy. Everyone who can use Sponsorships can see, add, and download them; removing one is
 // for whoever uploaded it and everyone who can remove the sponsor (canDeleteSponsorshipFile).
-// Stored in Postgres like Resources files, and counted toward the same storage cap (../files/storage.ts).
-// Each person's uploads are capped too (SPONSOR_FILE_BYTES_PER_PERSON), so one account can't fill the storage.
+// Stored like Resources files (Postgres, or Cloudflare R2 when it's set up: ../files/stored.ts), and counted toward the
+// same storage cap (../files/storage.ts). Each person's uploads are capped too (SPONSOR_FILE_BYTES_PER_PERSON, 10×
+// with R2), so one account can't fill the storage.
 import { z } from "zod";
+import type { Prisma } from "@/generated/prisma/client";
 import { LIMITS } from "@/lib/constants";
 import { formatFileSize, sponsorFileTooBigMessage } from "@/lib/files";
 import { idSchema } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ForbiddenError, NotFoundError } from "../errors";
-import { assertFileStorageRoom, lockFileStorage, posterCleanupSentence, storageFullSentence } from "../files/storage";
-import { checkUploadedFile, fileError, readUpload, storedFileData, type UploadMessages } from "../files/upload";
+import {
+  assertFileStorageRoom,
+  checkFileStorageRoom,
+  lockFileStorage,
+  perPersonFileCap,
+  posterCleanupSentence,
+  storageFullSentence,
+} from "../files/storage";
+import { usesObjectStorage, withStoredFiles } from "../files/stored";
+import { checkUploadedFile, fileError, readUpload, type UploadMessages } from "../files/upload";
 import { canDeleteSponsorshipFile, canManageSponsorships } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
 import { assertCanUseSponsorships, limitSponsorshipWrites, SPONSORSHIP_NOT_FOUND } from "./sponsorships";
@@ -24,7 +34,8 @@ export const SPONSORSHIP_FILE_UPLOADS_PER_HOUR = 30;
 
 /**
  * Sponsor files one person can have uploaded (all sponsors together; removing files frees it up again), so one
- * account can't fill the team's storage. The Business leader and all-scope staff aren't limited (canManageSponsorships).
+ * account can't fill the team's storage (10× with Cloudflare R2: perPersonFileCap). The Business leader and
+ * all-scope staff aren't limited (canManageSponsorships).
  */
 export const SPONSOR_FILE_BYTES_PER_PERSON = 50 * 1024 * 1024;
 
@@ -38,6 +49,36 @@ function asRecord(raw: unknown): Record<string, unknown> {
 }
 
 const uploadInput = z.object({ sponsorshipId: idSchema });
+
+/**
+ * Room for one more file on a sponsor: at most LIMITS.sponsorFilesMax files, the uploader's sponsor files under their
+ * allowance (unless they can manage Sponsorships), and every file under the team's cap. `locked`: in the upload's
+ * transaction, after lockFileStorage (the real check); otherwise the quick look before uploading to Cloudflare R2.
+ */
+async function checkSponsorFileRoom(db: Prisma.TransactionClient, ctx: ServiceContext, sponsorshipId: string, adding: number, locked: boolean) {
+  const objectStorage = usesObjectStorage(ctx);
+  const count = await db.sponsorshipFile.count({ where: { sponsorshipId } });
+  if (count >= LIMITS.sponsorFilesMax) {
+    throw fileError(`This sponsor already has ${LIMITS.sponsorFilesMax} files, the most it can have. Remove one you don't need first.`);
+  }
+  if (!canManageSponsorships(ctx.actor)) {
+    const mine = await db.sponsorshipFile.aggregate({ _sum: { size: true }, where: { uploadedById: ctx.actor.id } });
+    const used = mine._sum.size ?? 0;
+    const allowance = perPersonFileCap(SPONSOR_FILE_BYTES_PER_PERSON, objectStorage);
+    if (used + adding > allowance) {
+      throw fileError(
+        `You've uploaded ${formatFileSize(used)} of sponsor files, and each person can have up to ${formatFileSize(allowance)}. Remove ones you don't need, or ask the Business leader to add this one.`,
+      );
+    }
+  }
+  await (locked ? assertFileStorageRoom : checkFileStorageRoom)(
+    db,
+    { adding },
+    (usage) =>
+      `${storageFullSentence(usage)} Remove sponsor files you don't need, or ask the Business leader, captain, or a mentor to clear out old ones. Admins can remove old Resources files.${posterCleanupSentence(usage)}`,
+    objectStorage,
+  );
+}
 
 /**
  * Attach a file to a sponsor (`file` is an UploadedFile, read from the form by the Server Action).
@@ -55,35 +96,25 @@ export async function uploadSponsorshipFile(ctx: ServiceContext, raw: unknown): 
   const upload = checkUploadedFile(picked, UPLOAD_MESSAGES);
   await enforceRateLimit(ctx.db, `sponsorship-file:${ctx.actor.id}`, SPONSORSHIP_FILE_UPLOADS_PER_HOUR, HOUR, ctx.now);
 
-  return ctx.db.$transaction(async (tx) => {
-    await lockFileStorage(tx);
-    // Holds the sponsor until this commits, so it can't be removed between this check and the insert.
-    const sponsor = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Sponsorship" WHERE id = ${sponsorshipId} FOR KEY SHARE`;
-    if (sponsor.length === 0) throw new NotFoundError(SPONSORSHIP_NOT_FOUND);
-    const count = await tx.sponsorshipFile.count({ where: { sponsorshipId } });
-    if (count >= LIMITS.sponsorFilesMax) {
-      throw fileError(`This sponsor already has ${LIMITS.sponsorFilesMax} files, the most it can have. Remove one you don't need first.`);
-    }
-    if (!canManageSponsorships(ctx.actor)) {
-      const mine = await tx.sponsorshipFile.aggregate({ _sum: { size: true }, where: { uploadedById: ctx.actor.id } });
-      const used = mine._sum.size ?? 0;
-      if (used + upload.bytes.byteLength > SPONSOR_FILE_BYTES_PER_PERSON) {
-        throw fileError(
-          `You've uploaded ${formatFileSize(used)} of sponsor files, and each person can have up to ${formatFileSize(SPONSOR_FILE_BYTES_PER_PERSON)}. Remove ones you don't need, or ask the Business leader to add this one.`,
-        );
-      }
-    }
-    await assertFileStorageRoom(
-      tx,
-      { adding: upload.bytes.byteLength },
-      (usage) =>
-        `${storageFullSentence(usage)} Remove sponsor files you don't need, or ask the Business leader, captain, or a mentor to clear out old ones. Admins can remove old Resources files.${posterCleanupSentence(usage)}`,
-    );
-    return tx.sponsorshipFile.create({
-      data: { sponsorshipId, uploadedById: ctx.actor.id, createdAt: ctx.now, ...storedFileData(upload) },
-      select: { id: true, filename: true },
-    });
-  });
+  const adding = upload.bytes.byteLength;
+  return withStoredFiles(
+    ctx,
+    "sponsors",
+    [upload],
+    ([file]) =>
+      ctx.db.$transaction(async (tx) => {
+        await lockFileStorage(tx);
+        // Holds the sponsor until this commits, so it can't be removed between this check and the insert.
+        const sponsor = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Sponsorship" WHERE id = ${sponsorshipId} FOR KEY SHARE`;
+        if (sponsor.length === 0) throw new NotFoundError(SPONSORSHIP_NOT_FOUND);
+        await checkSponsorFileRoom(tx, ctx, sponsorshipId, adding, true);
+        return tx.sponsorshipFile.create({
+          data: { sponsorshipId, uploadedById: ctx.actor.id, createdAt: ctx.now, ...file },
+          select: { id: true, filename: true },
+        });
+      }),
+    { precheck: () => checkSponsorFileRoom(ctx.db, ctx, sponsorshipId, adding, false) },
+  );
 }
 
 const deleteInput = z.object({ fileId: idSchema });

@@ -1,6 +1,7 @@
-// Checks for files people upload (Resources files, files attached to sponsors, and posters). All live in
-// Postgres, so every upload is size-checked, gets a safe name, and runnable Windows files are refused.
-// Serving them safely is src/server/resources/serve.ts; the shared storage cap is ./storage.ts.
+// Checks for files people upload (Resources files, files attached to sponsors, posters, notebook pictures, strategy
+// files): every upload is size-checked, gets a safe name, and runnable Windows files are refused. Where the bytes
+// go (Postgres or Cloudflare R2) is ./stored.ts; serving them safely is src/server/resources/serve.ts and
+// ./respond.ts; the shared storage cap is ./storage.ts.
 import { LIMITS } from "@/lib/constants";
 import { ValidationError } from "../errors";
 import { fileExtension } from "../resources/serve";
@@ -104,11 +105,6 @@ export function checkUploadedFile(upload: UploadedFile, messages: UploadMessages
   const ext = fileExtension(filename);
   if (BLOCKED_EXTENSIONS.has(ext)) throw fileError(messages.blocked(ext));
   return { filename, contentType: cleanContentType(upload.type), bytes: new Uint8Array(upload.bytes) };
-}
-
-/** The columns a stored file row gets from a checked upload. */
-export function storedFileData(upload: CleanUpload) {
-  return { filename: upload.filename, contentType: upload.contentType, size: upload.bytes.byteLength, data: upload.bytes };
 }
 
 /**

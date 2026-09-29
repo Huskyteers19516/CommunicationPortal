@@ -11,11 +11,15 @@ import { formatDateTime, timeAgo } from "@/lib/dates";
 import { requireAdminUser } from "@/server/auth/session";
 import { canManageAccount, grantableRoles } from "@/server/permissions";
 import { env } from "@/server/env";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { getPendingUsers, getRecentDecisions, getSeatUsage } from "@/server/queries/admin";
-import { getFileStorageUsage } from "@/server/queries/files";
+import { getFileStorageOverview } from "@/server/queries/files";
 import { countPendingResources } from "@/server/queries/resources";
 
 export const metadata: Metadata = { title: "Approvals" };
+// The owners' file storage tools (Server Actions on this page) stop starting new work after 25 s, with at most 10 s per
+// R2 request, so a click ends well inside this (src/server/services/file-storage.ts).
+export const maxDuration = 60;
 
 export default async function ApprovalsPage() {
   const actor = await requireAdminUser();
@@ -24,8 +28,10 @@ export default async function ApprovalsPage() {
     getSeatUsage(actor),
     getRecentDecisions(actor, 10),
     countPendingResources(actor),
-    getFileStorageUsage(actor),
+    getFileStorageOverview(actor),
   ]);
+  // An owner looking at the storage card: delete R2 objects of removed files that are still waiting (after the page).
+  if (storage?.owner && storage.location === "r2" && storage.owner.waitingDeletions > 0) scheduleFileCleanup();
   const now = new Date();
   const seatMap: Partial<Record<Role, SeatInfo>> = Object.fromEntries(
     seats.map((s) => [s.role, { filled: s.filled, limit: s.limit }]),
@@ -63,7 +69,7 @@ export default async function ApprovalsPage() {
         <aside className="min-w-0 space-y-6">
           <ResourceApprovalsCard count={pendingResources} />
           <SeatUsageCard seats={seats} />
-          {storage && <FileStorageCard usage={storage} />}
+          {storage && <FileStorageCard overview={storage} />}
           <RecentDecisions decisions={decisions} now={now} timeZone={env.teamTimezone} />
         </aside>
       </div>

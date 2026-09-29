@@ -698,7 +698,7 @@ src/server/                     server-only code
   permissions.ts / scopes.ts    who-can-do-what (functions / Prisma where-clauses)
   domain/assignment.ts          checklist state machine
   errors.ts                     ValidationError, ForbiddenError, NotFoundError, ConflictError, RateLimitError, UnauthorizedError
-  context.ts                    ServiceContext { db, actor, notifier, now, config }, getServiceContext(), getPublicContext()
+  context.ts                    ServiceContext { db, actor, notifier, now, config, objectStore? }, getServiceContext(), getPublicContext()
   action.ts                     runAction(), parseInput(), formDataToObject()
   auth/session.ts               getCurrentUser(), requireActiveUser(), requireStaffUser(), requireAdminUser(), startSession(), endSession(), getCurrentSessionTokenHash()
   auth/password.ts              hashPassword / verifyPassword / getDummyHash
@@ -785,9 +785,9 @@ export async function createThingAction(_prev: ActionState, formData: FormData):
 
 ## Resources (`src/server/services/resources.ts`)
 
-A Resource is a link or a small uploaded file (`ResourceFile`, bytes in Postgres, ≤ `LIMITS.resourceFileMaxBytes` = 4 MB each and
-`LIMITS.resourceStorageMaxBytes` in total; Server Action bodies are capped at 5 MB in `next.config.ts`, and Vercel rejects
-requests over 4.5 MB, so don't raise the file limit).
+A Resource is a link or a small uploaded file (`ResourceFile`, stored in Postgres or Cloudflare R2 — see **File storage**
+below — ≤ `LIMITS.resourceFileMaxBytes` = 4 MB each and the team's storage cap in total; Server Action bodies are capped at
+5 MB in `next.config.ts`, and Vercel rejects requests over 4.5 MB, so don't raise the file limit).
 
 - People with admin access (`canManageResources`) add resources that go live (APPROVED) and can edit/remove/pin anyone's.
 - Everyone else's start PENDING, are only visible to them and reviewers (`canViewResource` / `visibleResourcesWhere`), and are
@@ -798,9 +798,90 @@ requests over 4.5 MB, so don't raise the file limit).
   (only poster files opt into browser caching, `immutable`).
   Windows executables/scripts are refused at upload (`BLOCKED_EXTENSIONS`). Never render uploaded content as HTML.
 - Upload checks (`src/server/files/upload.ts`) and the storage cap (`src/server/files/storage.ts`) are shared with sponsor
-  files and posters; any new kind of stored file must use `assertFileStorageRoom` so every file counts toward the same cap.
+  files and posters; any new kind of stored file must use `assertFileStorageRoom` so every file counts toward the same cap
+  (and `withStoredFiles`, see **File storage**).
   "Full" messages start with `storageFullSentence(usage)` (how much is Resources files vs sponsor files, plus posters when
   there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
+
+## File storage (`src/server/files/`)
+
+Every uploaded file (`ResourceFile`, `SponsorshipFile`, `PosterFile`, `NotebookImage`, `StrategyFile`) keeps its bytes in
+**Postgres** (`data`) or in **Cloudflare R2** (`storageKey`, the object's key; `data` null) — a CHECK constraint makes every
+row have one. R2 is used only when all four of `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` are set
+(`env.r2Status` / `readR2Status`: some missing = `partial`, a bad account id/bucket/endpoint = `invalid`, both mean Postgres;
+`R2_ENDPOINT` only overrides the address for tests, https or a local http address, no path — and with
+`NODE_ENV=production` only an https `….r2.cloudflarestorage.com` address, so a stray value in Vercel can never send files
+elsewhere). Without them everything works as
+before (Postgres, 300 MB), so the code is safe to deploy before the owner adds the keys (README step 9).
+
+- **Client** (`object-store.ts`): our own AWS Signature V4 (node:crypto, region `auto`, service `s3`, path-style
+  `/<bucket>/<key>`, checked against Amazon's worked examples): `putObject`, `getObject` (a stream), `getObjectBytes`,
+  `deleteObject`, with timeouts (20 s to answer; `withTimeout(ms)` gives another). A `getObject` body errors when R2
+  sends nothing for that long while we're waiting on it (never because the reader is slow), so a stalled R2 can't hold a
+  file route open. Objects are always PUT as `application/octet-stream` + `Content-Disposition: attachment` (never the
+  upload's type — we never serve R2's metadata, and a bucket made public by mistake still can't run uploaded HTML/SVG);
+  GETs ask for `Accept-Encoding: identity`, and R2's length is dropped if an answer comes packed anyway.
+  `ObjectStoreError` messages carry R2's error code and a hint, never the keys, the signature, or the endpoint's secret
+  parts; `status` is null when R2 never answered (a timeout, a dropped connection). `getObjectStore()` builds it from the
+  settings (null = Postgres); services get it as `ctx.objectStore` (`getPublicContext`; tests leave it out = Postgres).
+- **Keys** are made by the server only: `newStorageKey(kind)` = `<kind>/<24 random url-safe characters>` (144 bits); the
+  client refuses anything else (`isStorageKey`), so no filename or user input ever reaches R2.
+- **Writing** (`stored.ts`): services store uploads through `withStoredFiles(ctx, kind, uploads, save)`. With R2 it uploads
+  first — never inside a transaction or under the storage lock — then calls `save(columns)`, which creates the rows by
+  spreading each column set (`filename, contentType, size, data, storageKey`: always both of the last two, so a replaced
+  file never keeps an old key or old bytes). Before uploading, the key is *reserved* in `FileDeletion` (due in an hour) and
+  taken off once the row is saved (`confirmStorageKeys`), so an upload whose row never gets saved (a crash, a timeout) is
+  deleted later anyway. An upload R2 refuses → `FILE_UPLOAD_FAILED` on the `file` field (strategies: `files`), no row;
+  what was uploaded is deleted right away, except an upload R2 never answered (`uploadMayStillLand`): it may still be
+  saved after we gave up, so its key is due in 10 minutes (`deferStorageKeys`) and the drain deletes whatever landed
+  (`settleFailedUploads` picks). If `save` throws (a check under the lock, the database), the uploaded objects are
+  deleted right away or queued (`releaseStorageKeys`). All checks (types, sizes, rate limits, caps) stay in the
+  services, unchanged; each service also passes them as `withStoredFiles(…, { precheck })`, run without the lock
+  (`checkFileStorageRoom`, `locked: false`) before uploading to R2, so an upload that would be refused (storage full, a
+  full sponsor/entry/strategy, an allowance) is never sent to R2 and deleted again. The check under the lock stays the
+  real one.
+- **The cap** (`storage.ts`): `fileStorageCapBytes(usesObjectStorage(ctx))` = 300 MB (`LIMITS.resourceStorageMaxBytes`) in
+  Postgres, 8 GB (`OBJECT_STORAGE_CAP_BYTES` = 8 GiB, over 1 GB under R2's free 10 GB however it's counted) with R2; each person's allowance
+  (`POSTER_FILE_BYTES_PER_PERSON`, `SPONSOR_FILE_BYTES_PER_PERSON`, `NOTEBOOK_IMAGE_BYTES_PER_PERSON`,
+  `STRATEGY_FILE_BYTES_PER_PERSON`, `MEMBER_UNAPPROVED_FILE_BYTES`) goes through `perPersonFileCap(base, objectStorage)`
+  (10× with R2) — messages show that number. `assertFileStorageRoom(tx, change, message, objectStorage)` still sums the rows'
+  `size` under the one advisory lock, wherever the bytes are. `formatFileSize` shows GB ("8 GB").
+- **Reading**: file routes select `STORED_FILE_SELECT` and answer with `sendStoredFile(request, row, options)` (`respond.ts`):
+  Postgres bytes as before, an R2 object **streamed through our response** with exactly the same headers (strategy files
+  pass `headers: strategyFileHeaders`). Never redirect to R2, hand out R2 URLs, or make the bucket public. R2 not set up →
+  503, R2 failing → 502, object missing → 404 (plain text, `no-store`). Server-side reads (the Resources text preview —
+  `reason: "unavailable"` when it can't be read — and the notebook's Word export via `loadNotebookImageBytes`) use
+  `readStoredBytes`.
+- **Deleting**: database triggers (migration `20260928090000_object_storage`) put a row's `storageKey` into `FileDeletion`
+  whenever the row is deleted — directly or by any cascade (a sponsor, notebook, page, entry, poster, strategy, league team)
+  — or its key changes. The app only drains that queue: actions that delete or replace files call `scheduleFileCleanup()`
+  (`cleanup.ts`, `after()`: deletes from R2 after the response; never fails the action), the owner's storage card drains
+  what's waiting when it's shown, and it has **Clean up**. `drainFileDeletions(db, { store, limit, budgetMs, includeStuck })`
+  never throws: keys a row still uses are only taken off the list, a failed delete counts an attempt and waits (ones that
+  keep failing go last; after `FILE_DELETION_MAX_AUTO_ATTEMPTS` only the owner's Clean up, `includeStuck`, tries them, and
+  the card counts them apart). The "still in use?" check (`KEY_IN_USE`) locks the row it finds (`FOR KEY SHARE`), so it
+  waits for a delete or key change that hasn't committed yet instead of dropping the queue entry that delete's trigger
+  found already there; `confirmStorageKeys` does one key per statement (never holding one row's lock while waiting for
+  another). `FileDeletion.createdAt` = when it may be deleted (reservations: an hour ahead; unanswered uploads: 10
+  minutes); the column has no time zone, so it's only ever written and compared in SQL with `CURRENT_TIMESTAMP` (never
+  through Prisma with a JS Date).
+- **Owners' tools** (`services/file-storage.ts`, `canManageFileStorage` = owners; Admin → Approvals → File storage, whose
+  page sets `maxDuration = 60`): **Test connection** (`testFileStorage`: save, read back, delete a `connection-test/…`
+  file; says which step failed), **Move N files to R2** (`moveFilesToObjectStorage`: a few rows at a time, each uploaded and
+  then switched with a conditional update — only if the row still has no key and the same bytes, `sha256(data)` — so a
+  file replaced or removed meanwhile is never overwritten; stops starting files after 25 s or 3 R2 errors in a row; click
+  again to continue), **Clean up** (`cleanUpFileStorage`, 25 s). They use R2 with `ADMIN_TOOL_TIMEOUT_MS` (10 s) per
+  request and never send a delete right after an unanswered upload, so a click ends well inside 60 s even with a slow R2.
+  Everyone with admin access sees usage, where new files go, and how many files are where (`getFileStorageOverview`);
+  `owner` (the settings' state, what's waiting, the tools) is null for everyone but owners.
+- **Adding a new kind of stored file**: a migration with the same `data`/`storageKey` columns, CHECK, and trigger; then
+  `FILE_KINDS`, the key pattern, and `KEY_IN_USE` in `object-store.ts`, `FILE_TABLES` and `fileStorageUsage` in
+  `storage.ts`, `withStoredFiles` in its service, `sendStoredFile` in its route, and `scheduleFileCleanup()` in its
+  deleting actions.
+- **Tests**: `tests/helpers/fake-s3.ts` is an in-memory S3 server that verifies each request's signature and can fail,
+  hang, delay, or run a hook; use `{ ...contextFor(db, actor), objectStore: s3.store() }` for R2 mode
+  (`tests/file-storage-r2.test.ts`, `tests/object-store.test.ts`). `tests/setup-env.ts` clears the R2_* settings, so no
+  test ever reaches a real bucket.
 
 ## Notifications (email)
 

@@ -14,6 +14,7 @@ import {
 import { parseHttpUrl } from "@/lib/urls";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
+import { STORED_FILE_SELECT } from "../files/respond";
 import { canDeleteSponsorship, canDeleteSponsorshipFile, canUseSponsorships } from "../permissions";
 import { previewKind } from "../resources/serve";
 import { loadExistingSponsors, SPONSORSHIP_INFO_KEY, sponsorshipPeopleWhere } from "../services/sponsorships";
@@ -269,7 +270,7 @@ export async function getSponsorship(actor: Actor, id: string, db: Db = prisma):
  */
 export async function getSponsorshipFile(actor: Actor, id: string, db: Db = prisma) {
   if (!allowed(actor) || !id || id.length > 64) return null;
-  return db.sponsorshipFile.findUnique({ where: { id }, select: { filename: true, contentType: true, data: true } });
+  return db.sponsorshipFile.findUnique({ where: { id }, select: STORED_FILE_SELECT });
 }
 
 /**

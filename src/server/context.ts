@@ -4,6 +4,7 @@ import { getCurrentUser } from "./auth/session";
 import { type Db, prisma } from "./db";
 import { env } from "./env";
 import { UnauthorizedError } from "./errors";
+import { getObjectStore, type ObjectStore } from "./files/object-store";
 import { appNotifier } from "./notifications";
 import type { Notifier } from "./notifications/events";
 
@@ -12,6 +13,11 @@ export interface PublicContext {
   notifier: Notifier;
   now: Date;
   config: { appUrl: string; teamTimezone: string; adminEmails: string[]; teamJoinCode: string | null };
+  /**
+   * Cloudflare R2 for uploaded files, when the R2_* settings are set (src/server/files/object-store.ts). Missing or
+   * null: files are stored in Postgres (tests leave it out unless they test R2).
+   */
+  objectStore?: ObjectStore | null;
 }
 
 /** Everything a service needs. Tests build these by hand (see tests/helpers). */
@@ -30,6 +36,7 @@ export function getPublicContext(): PublicContext {
       adminEmails: env.adminEmails,
       teamJoinCode: env.teamJoinCode,
     },
+    objectStore: getObjectStore(),
   };
 }
 

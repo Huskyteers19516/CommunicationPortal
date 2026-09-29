@@ -6,8 +6,9 @@
 //   teams, ./league-teams.ts). Which one it is is set when it's added and never changes.
 // - A strategy has up to LIMITS.strategyFilesMax files: Pedro Pathing .pp paths (checked: JSON the planner can
 //   open), pictures (checked: a real picture a phone can draw), PDFs, and anything else that can't run programs.
-//   Up to 4 MB each, in Postgres, counted toward the team's storage cap (../files/storage.ts, under its lock).
-//   Each person's strategy files stay under STRATEGY_FILE_BYTES_PER_PERSON unless they have admin access.
+//   Up to 4 MB each, counted toward the team's storage cap (../files/storage.ts, under its lock).
+//   Each person's strategy files stay under STRATEGY_FILE_BYTES_PER_PERSON (10× with Cloudflare R2) unless they have
+//   admin access. Files are stored like every upload (Postgres, or R2 when it's set up: ../files/stored.ts).
 // Files are served only by src/app/(app)/strategy/files/[id]/route.ts (.pp files always download). No emails.
 import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
@@ -21,8 +22,16 @@ import { checkbox, idSchema, optionalText, stringArray, text } from "@/lib/valid
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors";
-import { assertFileStorageRoom, lockFileStorage, posterCleanupSentence, storageFullSentence } from "../files/storage";
-import { checkUploadedFile, type CleanUpload, cleanFilename, readUpload, storedFileData } from "../files/upload";
+import {
+  assertFileStorageRoom,
+  checkFileStorageRoom,
+  lockFileStorage,
+  perPersonFileCap,
+  posterCleanupSentence,
+  storageFullSentence,
+} from "../files/storage";
+import { usesObjectStorage, withStoredFiles } from "../files/stored";
+import { checkUploadedFile, type CleanUpload, cleanFilename, readUpload } from "../files/upload";
 import { canAdminister, canEditStrategy } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
 import { previewKind } from "../resources/serve";
@@ -45,7 +54,8 @@ export const STRATEGY_RATE_LIMIT = { limit: 30, windowMs: HOUR } as const;
 
 /**
  * Strategy files one person can have (on all the strategies they added; removing files frees it up again), so
- * one account can't fill the team's storage. Everyone with admin access isn't limited.
+ * one account can't fill the team's storage (10× with Cloudflare R2: perPersonFileCap). Everyone with admin access
+ * isn't limited.
  */
 export const STRATEGY_FILE_BYTES_PER_PERSON = 50 * 1024 * 1024;
 
@@ -129,24 +139,29 @@ const bytesOf = (files: { size: number }[] | CleanUpload[]) =>
  * Room for new strategy files (under the storage lock): the person's own strategy files stay under
  * STRATEGY_FILE_BYTES_PER_PERSON (unless they have admin access), and all files together under the team's cap.
  * `freeing` = files this save removes (they no longer count).
+ * `locked: false`: the same checks without the lock, as the quick look before uploading to Cloudflare R2
+ * (withStoredFiles' precheck); saving checks again under the lock.
  */
-async function assertStrategyRoom(tx: Tx, ctx: ServiceContext, change: { adding: number; freeing: number }): Promise<void> {
-  await lockFileStorage(tx);
+async function assertStrategyRoom(tx: Tx, ctx: ServiceContext, change: { adding: number; freeing: number }, locked = true): Promise<void> {
+  if (locked) await lockFileStorage(tx);
+  const objectStorage = usesObjectStorage(ctx);
   if (!canAdminister(ctx.actor)) {
     const mine = await tx.strategyFile.aggregate({ _sum: { size: true }, where: { strategy: { createdById: ctx.actor.id } } });
     const used = Math.max(0, (mine._sum.size ?? 0) - change.freeing);
-    if (used + change.adding > STRATEGY_FILE_BYTES_PER_PERSON) {
+    const allowance = perPersonFileCap(STRATEGY_FILE_BYTES_PER_PERSON, objectStorage);
+    if (used + change.adding > allowance) {
       throw filesError(
-        `Your strategy files use ${formatFileSize(used)}, and each person can have up to ${formatFileSize(STRATEGY_FILE_BYTES_PER_PERSON)}. Remove files you don't need, add a link instead, or ask a leader to add this one.`,
+        `Your strategy files use ${formatFileSize(used)}, and each person can have up to ${formatFileSize(allowance)}. Remove files you don't need, add a link instead, or ask a leader to add this one.`,
       );
     }
   }
   await onFilesField(() =>
-    assertFileStorageRoom(
+    (locked ? assertFileStorageRoom : checkFileStorageRoom)(
       tx,
       change,
       (usage) =>
         `${storageFullSentence(usage)} Remove strategy files you don't need, or add a link instead. Leaders, the captain, mentors, and teachers can clear out old files.${posterCleanupSentence(usage)}`,
+      objectStorage,
     ),
   );
 }
@@ -244,25 +259,35 @@ export async function createStrategy(ctx: ServiceContext, raw: unknown): Promise
   const { data, uploads } = parseStrategyForm(rec);
   await enforceRateLimit(ctx.db, `strategy:${ctx.actor.id}`, STRATEGY_RATE_LIMIT.limit, STRATEGY_RATE_LIMIT.windowMs, ctx.now);
 
-  return ctx.db.$transaction(async (tx) => {
-    if (teamId) {
-      // Holds the team until this commits, so it can't be removed between this check and the insert.
-      const team = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "LeagueTeam" WHERE id = ${teamId} FOR KEY SHARE`;
-      if (team.length === 0) throw new NotFoundError(STRATEGY_TEAM_NOT_FOUND);
-    }
-    if (uploads.length > 0) await assertStrategyRoom(tx, ctx, { adding: bytesOf(uploads), freeing: 0 });
-    return tx.strategy.create({
-      data: {
-        ...data,
-        teamId: teamId ?? null,
-        createdById: ctx.actor.id,
-        createdAt: ctx.now,
-        updatedAt: ctx.now,
-        files: { create: uploads.map((u) => ({ ...storedFileData(u), createdAt: ctx.now })) },
-      },
-      select: { id: true },
-    });
-  });
+  const change = { adding: bytesOf(uploads), freeing: 0 };
+  return onFilesField(() =>
+    withStoredFiles(
+      ctx,
+      "strategy",
+      uploads,
+      (files) =>
+        ctx.db.$transaction(async (tx) => {
+          if (teamId) {
+            // Holds the team until this commits, so it can't be removed between this check and the insert.
+            const team = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "LeagueTeam" WHERE id = ${teamId} FOR KEY SHARE`;
+            if (team.length === 0) throw new NotFoundError(STRATEGY_TEAM_NOT_FOUND);
+          }
+          if (uploads.length > 0) await assertStrategyRoom(tx, ctx, change);
+          return tx.strategy.create({
+            data: {
+              ...data,
+              teamId: teamId ?? null,
+              createdById: ctx.actor.id,
+              createdAt: ctx.now,
+              updatedAt: ctx.now,
+              files: { create: files.map((f) => ({ ...f, createdAt: ctx.now })) },
+            },
+            select: { id: true },
+          });
+        }),
+      { precheck: () => assertStrategyRoom(ctx.db, ctx, change, false) },
+    ),
+  );
 }
 
 const strategyIdInput = z.object({ strategyId: idSchema });
@@ -295,24 +320,42 @@ export async function updateStrategy(ctx: ServiceContext, raw: unknown): Promise
     await enforceRateLimit(ctx.db, `strategy:${ctx.actor.id}`, STRATEGY_RATE_LIMIT.limit, STRATEGY_RATE_LIMIT.windowMs, ctx.now);
   }
 
-  await ctx.db.$transaction(async (tx) => {
-    // Holds the strategy until this commits, so a removal (or another save) can't slip in between.
-    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Strategy" WHERE id = ${strategyId} FOR UPDATE`;
-    if (locked.length === 0) throw new NotFoundError(STRATEGY_NOT_FOUND);
-    const current = await tx.strategyFile.findMany({ where: { strategyId }, select: { id: true, size: true } });
+  /**
+   * The files this save keeps and removes, checked for room: how many a strategy can have, then the allowance and
+   * the cap. `locked`: in the save's transaction (the real check); otherwise the quick look before uploading to R2.
+   */
+  const checkFiles = async (db: Tx, locked: boolean) => {
+    const current = await db.strategyFile.findMany({ where: { strategyId }, select: { id: true, size: true } });
     const removing = current.filter((f) => removeFileIds.includes(f.id));
     const keeping = current.length - removing.length;
     if (keeping + uploads.length > LIMITS.strategyFilesMax) throw filesError(tooManyStrategyFilesMessage(keeping));
-    if (uploads.length > 0) await assertStrategyRoom(tx, ctx, { adding: bytesOf(uploads), freeing: bytesOf(removing) });
+    if (uploads.length > 0) await assertStrategyRoom(db, ctx, { adding: bytesOf(uploads), freeing: bytesOf(removing) }, locked);
+    return removing;
+  };
 
-    await tx.strategy.update({ where: { id: strategyId }, data: { ...data, updatedAt: ctx.now } });
-    if (removing.length > 0) {
-      await tx.strategyFile.deleteMany({ where: { strategyId, id: { in: removing.map((f) => f.id) } } });
-    }
-    if (uploads.length > 0) {
-      await tx.strategyFile.createMany({ data: uploads.map((u) => ({ strategyId, ...storedFileData(u), createdAt: ctx.now })) });
-    }
-  });
+  await onFilesField(() =>
+    withStoredFiles(
+      ctx,
+      "strategy",
+      uploads,
+      (files) =>
+        ctx.db.$transaction(async (tx) => {
+          // Holds the strategy until this commits, so a removal (or another save) can't slip in between.
+          const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Strategy" WHERE id = ${strategyId} FOR UPDATE`;
+          if (locked.length === 0) throw new NotFoundError(STRATEGY_NOT_FOUND);
+          const removing = await checkFiles(tx, true);
+
+          await tx.strategy.update({ where: { id: strategyId }, data: { ...data, updatedAt: ctx.now } });
+          if (removing.length > 0) {
+            await tx.strategyFile.deleteMany({ where: { strategyId, id: { in: removing.map((f) => f.id) } } });
+          }
+          if (files.length > 0) {
+            await tx.strategyFile.createMany({ data: files.map((f) => ({ strategyId, ...f, createdAt: ctx.now })) });
+          }
+        }),
+      { precheck: async () => void (await checkFiles(ctx.db, false)) },
+    ),
+  );
   return { id: strategyId };
 }
 

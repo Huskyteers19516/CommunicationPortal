@@ -2,6 +2,7 @@
 // Sponsorships (the Business team and staff); for everyone else it looks missing (404), so sponsor file
 // ids don't leak. Headers (inline only for safe types, nosniff, CSP, no caching) come from
 // fileResponseHeaders(); `?download=1` always downloads.
+// The bytes come from Postgres or Cloudflare R2 (streamed through here; see src/server/files/respond.ts).
 import type { NextRequest } from "next/server";
 import { getCurrentUser } from "@/server/auth/session";
 import { plainResponse, redirectToLogin, sendStoredFile } from "@/server/files/respond";

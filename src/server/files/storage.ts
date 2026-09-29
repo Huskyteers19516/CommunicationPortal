@@ -1,10 +1,34 @@
 // The team's file storage: every uploaded file (Resources files, files attached to sponsors, posters, team
-// notebook pictures, and strategy files) lives in Postgres, so together they must stay under
-// LIMITS.resourceStorageMaxBytes.
-import type { Prisma } from "@/generated/prisma/client";
+// notebook pictures, and strategy files) counts toward one cap, wherever its bytes live:
+// - in Postgres (the default): LIMITS.resourceStorageMaxBytes (300 MB), because Neon's free plan gives the whole
+//   database 0.5 GB;
+// - in Cloudflare R2 (when the R2_* settings are set, see ./object-store.ts): OBJECT_STORAGE_CAP_BYTES (8 GB, well under
+//   R2's free 10 GB), and each person's allowances are OBJECT_STORAGE_PER_PERSON_FACTOR times bigger.
+// Sizes come from the rows' `size`, so files still in Postgres and files in R2 are counted the same way.
+import { Prisma } from "@/generated/prisma/client";
 import { LIMITS } from "@/lib/constants";
 import { formatFileSize } from "@/lib/files";
+import { FILE_KINDS, type FileKind, objectStorageEnabled } from "./object-store";
 import { fileError } from "./upload";
+
+/**
+ * The cap with Cloudflare R2: 8 GB (8 GiB, shown as "8 GB"), leaving real headroom under R2's free 10 GB however
+ * Cloudflare counts a GB (10^9 or 2^30 bytes). R2 bills the day's peak, and a replaced or removed file still counts
+ * there until its object is deleted (usually right after the response, see cleanup.ts).
+ */
+export const OBJECT_STORAGE_CAP_BYTES = 8 * 1024 * 1024 * 1024;
+/** Each person's allowances (posters, sponsor files, …) are this many times bigger with Cloudflare R2. */
+export const OBJECT_STORAGE_PER_PERSON_FACTOR = 10;
+
+/** The team's file storage cap: 300 MB while files live in Postgres, 8 GB with Cloudflare R2. */
+export function fileStorageCapBytes(objectStorage: boolean): number {
+  return objectStorage ? OBJECT_STORAGE_CAP_BYTES : LIMITS.resourceStorageMaxBytes;
+}
+
+/** A per-person allowance (e.g. POSTER_FILE_BYTES_PER_PERSON) as it applies now: 10× with Cloudflare R2. */
+export function perPersonFileCap(baseBytes: number, objectStorage: boolean): number {
+  return objectStorage ? baseBytes * OBJECT_STORAGE_PER_PERSON_FACTOR : baseBytes;
+}
 
 type Tx = Prisma.TransactionClient;
 
@@ -22,7 +46,7 @@ export interface FileStorageUsage {
   strategy: number;
   /** All of them together. */
   used: number;
-  /** The cap (LIMITS.resourceStorageMaxBytes). */
+  /** The cap (fileStorageCapBytes: 300 MB in Postgres, 8 GB with Cloudflare R2). */
   max: number;
 }
 
@@ -36,10 +60,11 @@ export async function lockFileStorage(tx: Tx): Promise<void> {
 }
 
 /**
- * Bytes used by Resources files, sponsor files, and posters (never reads the bytes themselves). One after the
+ * Bytes used by every kind of uploaded file (from the rows' sizes; never reads the bytes themselves), and the cap
+ * for where new files go (`objectStorage`: Cloudflare R2 is set up; by default from the R2_* settings). One after the
  * other, since `db` may be a transaction.
  */
-export async function fileStorageUsage(db: Tx): Promise<FileStorageUsage> {
+export async function fileStorageUsage(db: Tx, objectStorage: boolean = objectStorageEnabled()): Promise<FileStorageUsage> {
   const resources = await db.resourceFile.aggregate({ _sum: { size: true } });
   const sponsors = await db.sponsorshipFile.aggregate({ _sum: { size: true } });
   const posters = await db.posterFile.aggregate({ _sum: { size: true } });
@@ -57,13 +82,13 @@ export async function fileStorageUsage(db: Tx): Promise<FileStorageUsage> {
     notebook: n,
     strategy: g,
     used: r + s + p + n + g,
-    max: LIMITS.resourceStorageMaxBytes,
+    max: fileStorageCapBytes(objectStorage),
   };
 }
 
 /** Bytes used by every uploaded file together (all the kinds in FileStorageUsage). */
 export async function usedFileStorageBytes(tx: Tx): Promise<number> {
-  return (await fileStorageUsage(tx)).used;
+  return (await fileStorageUsage(tx, false)).used;
 }
 
 /**
@@ -94,13 +119,64 @@ export function posterCleanupSentence(usage: FileStorageUsage): string {
 /**
  * Locks the storage (see lockFileStorage), then throws a ValidationError on the `file` field with
  * `fullMessage(usage)` when adding `adding` bytes (after freeing `freeing`, e.g. a replaced file) would go over the cap.
+ * `objectStorage`: new files go to Cloudflare R2 (services pass `!!ctx.objectStore`), which sets the cap.
  */
 export async function assertFileStorageRoom(
   tx: Tx,
   change: { adding: number; freeing?: number },
   fullMessage: (usage: FileStorageUsage) => string,
+  objectStorage: boolean,
 ): Promise<void> {
   await lockFileStorage(tx);
-  const usage = await fileStorageUsage(tx);
+  await checkFileStorageRoom(tx, change, fullMessage, objectStorage);
+}
+
+/**
+ * The same check as assertFileStorageRoom without the lock: for the quick look before uploading to Cloudflare R2
+ * (withStoredFiles' `precheck`), so an upload that can't fit isn't sent. Never the final word: saving checks again
+ * under the lock.
+ */
+export async function checkFileStorageRoom(
+  db: Tx,
+  change: { adding: number; freeing?: number },
+  fullMessage: (usage: FileStorageUsage) => string,
+  objectStorage: boolean,
+): Promise<void> {
+  const usage = await fileStorageUsage(db, objectStorage);
   if (usage.used - (change.freeing ?? 0) + change.adding > usage.max) throw fileError(fullMessage(usage));
+}
+
+/** The table of each kind of stored file (fixed names, never from input). */
+const FILE_TABLES: Record<FileKind, string> = {
+  resources: "ResourceFile",
+  sponsors: "SponsorshipFile",
+  posters: "PosterFile",
+  notebook: "NotebookImage",
+  strategy: "StrategyFile",
+};
+
+/** A kind's table for raw SQL (a fixed identifier, never from input). */
+export function fileTable(kind: FileKind): Prisma.Sql {
+  return Prisma.raw(`"${FILE_TABLES[kind]}"`);
+}
+
+export interface StoredFileTotals {
+  count: number;
+  bytes: number;
+}
+
+/** How many files (and bytes, from the rows' sizes) are stored in Postgres and in Cloudflare R2, over every kind. */
+export async function storedFileTotals(db: Tx): Promise<{ database: StoredFileTotals; objectStorage: StoredFileTotals }> {
+  const database = { count: 0, bytes: 0 };
+  const objectStorage = { count: 0, bytes: 0 };
+  for (const kind of FILE_KINDS) {
+    const rows = await db.$queryRaw<{ inR2: boolean; n: bigint | number; bytes: bigint | number | null }[]>`
+      SELECT ("storageKey" IS NOT NULL) AS "inR2", count(*) AS n, sum("size") AS bytes FROM ${fileTable(kind)} GROUP BY 1`;
+    for (const r of rows) {
+      const into = r.inR2 ? objectStorage : database;
+      into.count += Number(r.n);
+      into.bytes += Number(r.bytes ?? 0);
+    }
+  }
+  return { database, objectStorage };
 }

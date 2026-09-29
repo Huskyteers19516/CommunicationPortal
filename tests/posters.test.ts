@@ -175,7 +175,7 @@ describe("who can add, change, and remove posters", () => {
       const row = await t.db.poster.findUniqueOrThrow({ where: { id }, include: { file: true } });
       expect(row).toMatchObject({ title: `Flyer from ${a.name}`, createdById: a.id, link: "", event: "", eventDate: null, createdAt: TEST_NOW });
       expect(row.file).toMatchObject({ filename: `${a.name}.png`, contentType: "image/png", size: PNG.byteLength, createdAt: TEST_NOW });
-      expect(Buffer.from(row.file!.data).equals(Buffer.from(PNG))).toBe(true);
+      expect(Buffer.from(row.file!.data!).equals(Buffer.from(PNG))).toBe(true);
     }
   });
 
@@ -865,7 +865,7 @@ describe("the file route", () => {
     for (const a of [maya, ethan, priya, jordan, olivia]) {
       const got = await getPosterFile(a, pngFile.id, t.db);
       expect(got?.filename, a.name).toBe("route.png");
-      expect(Buffer.from(got!.data).equals(Buffer.from(PNG)), a.name).toBe(true);
+      expect(Buffer.from(got!.data!).equals(Buffer.from(PNG)), a.name).toBe(true);
     }
     for (const a of [pending, disabled, rejected]) expect(await getPosterFile(a, pngFile.id, t.db), a.name).toBeNull();
     expect(await getPosterFile(gwen, "missing", t.db)).toBeNull();
@@ -874,7 +874,7 @@ describe("the file route", () => {
     expect(posterFileHref("a b", true)).toBe("/posters/files/a%20b?download=1");
 
     const got = (await getPosterFile(gwen, pngFile.id, t.db))!;
-    const inline = fileResponseHeaders({ filename: got.filename, contentType: got.contentType, byteLength: got.data.byteLength });
+    const inline = fileResponseHeaders({ filename: got.filename, contentType: got.contentType, byteLength: got.data!.byteLength });
     expect(inline).toMatchObject({
       "Content-Type": "image/png",
       "X-Content-Type-Options": "nosniff",
@@ -882,29 +882,29 @@ describe("the file route", () => {
       "Cache-Control": "private, no-store",
     });
     expect(inline["Content-Disposition"]).toMatch(/^inline; filename="route\.png"/);
-    const download = fileResponseHeaders({ filename: got.filename, contentType: got.contentType, byteLength: got.data.byteLength }, { download: true });
+    const download = fileResponseHeaders({ filename: got.filename, contentType: got.contentType, byteLength: got.data!.byteLength }, { download: true });
     expect(download["Content-Type"]).toBe("application/octet-stream");
     expect(download["Content-Disposition"]).toMatch(/^attachment; filename="route\.png"/);
 
     // Poster files never change at their address (a new file gets a new id), so browsers may keep them when shown
     // inline (the grid isn't downloaded again on every visit). Downloads, and every other kind of file, aren't kept.
-    const kept = fileResponseHeaders({ filename: got.filename, contentType: got.contentType, byteLength: got.data.byteLength }, { immutable: true });
+    const kept = fileResponseHeaders({ filename: got.filename, contentType: got.contentType, byteLength: got.data!.byteLength }, { immutable: true });
     expect(kept["Cache-Control"]).toBe(IMMUTABLE_FILE_CACHE);
     expect(IMMUTABLE_FILE_CACHE).toBe("private, max-age=604800, immutable");
     const keptDownload = fileResponseHeaders(
-      { filename: got.filename, contentType: got.contentType, byteLength: got.data.byteLength },
+      { filename: got.filename, contentType: got.contentType, byteLength: got.data!.byteLength },
       { immutable: true, download: true },
     );
     expect(keptDownload["Cache-Control"]).toBe("private, no-store");
-    const sent = sendStoredFile(new NextRequest(`http://localhost/posters/files/${pngFile.id}`), got, { immutable: true });
+    const sent = await sendStoredFile(new NextRequest(`http://localhost/posters/files/${pngFile.id}`), got, { immutable: true });
     expect(sent.headers.get("cache-control")).toBe(IMMUTABLE_FILE_CACHE);
     expect(sent.headers.get("content-type")).toBe("image/png");
-    const sentDownload = sendStoredFile(new NextRequest(`http://localhost/posters/files/${pngFile.id}?download=1`), got, { immutable: true });
+    const sentDownload = await sendStoredFile(new NextRequest(`http://localhost/posters/files/${pngFile.id}?download=1`), got, { immutable: true });
     expect(sentDownload.headers.get("cache-control")).toBe("private, no-store");
-    expect(sendStoredFile(new NextRequest(`http://localhost/resources/files/x`), got).headers.get("cache-control")).toBe("private, no-store");
+    expect((await sendStoredFile(new NextRequest(`http://localhost/resources/files/x`), got)).headers.get("cache-control")).toBe("private, no-store");
 
     const pdfGot = (await getPosterFile(maya, pdfFile.id, t.db))!;
-    expect(fileResponseHeaders({ filename: pdfGot.filename, contentType: pdfGot.contentType, byteLength: pdfGot.data.byteLength })).toMatchObject({
+    expect(fileResponseHeaders({ filename: pdfGot.filename, contentType: pdfGot.contentType, byteLength: pdfGot.data!.byteLength })).toMatchObject({
       "Content-Type": "application/pdf",
       "Content-Security-Policy": PDF_CSP,
     });

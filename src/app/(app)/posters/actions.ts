@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { readFormFile } from "@/server/files/upload";
 import { createPoster, deletePoster, updatePoster } from "@/server/services/posters";
 
@@ -31,6 +32,7 @@ export async function updatePosterAction(_prev: ActionState, formData: FormData)
     async () => {
       const ctx = await getServiceContext();
       const { id } = await updatePoster(ctx, await posterInput(formData));
+      scheduleFileCleanup(); // a replaced or removed file
       revalidatePath("/", "layout");
       redirect(`/posters/${encodeURIComponent(id)}?saved=1`);
     },
@@ -44,6 +46,7 @@ export async function deletePosterAction(_prev: ActionState, formData: FormData)
     async () => {
       const ctx = await getServiceContext();
       await deletePoster(ctx, formDataToObject(formData));
+      scheduleFileCleanup();
       revalidatePath("/", "layout");
       redirect("/posters?removed=1");
     },

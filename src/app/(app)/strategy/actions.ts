@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import type { UploadedFile } from "@/server/files/upload";
 import { createStrategy, deleteStrategy, setStrategyPinned, updateStrategy } from "@/server/services/strategy";
 
@@ -42,6 +43,7 @@ export async function updateStrategyAction(_prev: ActionState, formData: FormDat
     async () => {
       const ctx = await getServiceContext();
       const { id } = await updateStrategy(ctx, await strategyInput(formData));
+      scheduleFileCleanup(); // removed files
       revalidatePath("/", "layout");
       redirect(`/strategy/${encodeURIComponent(id)}?saved=1`);
     },
@@ -58,6 +60,7 @@ export async function deleteStrategyAction(_prev: ActionState, formData: FormDat
     async () => {
       const ctx = await getServiceContext();
       const { teamNumber } = await deleteStrategy(ctx, formDataToObject(formData));
+      scheduleFileCleanup(); // its files went with it
       revalidatePath("/", "layout");
       redirect(teamNumber === null ? "/strategy?removed=1" : `/strategy/teams/${teamNumber}?removed=1`);
     },

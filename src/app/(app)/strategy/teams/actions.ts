@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { getServiceContext } from "@/server/context";
 import {
   createLeagueTeam,
@@ -46,6 +47,7 @@ export async function deleteLeagueTeamAction(_prev: ActionState, formData: FormD
     async () => {
       const ctx = await getServiceContext();
       const { number, name, strategies } = await deleteLeagueTeam(ctx, formDataToObject(formData));
+      scheduleFileCleanup(); // the strategies about them, and their files, went with them
       revalidatePath("/", "layout");
       const sp = new URLSearchParams({ removed: `${number} · ${name}` });
       if (strategies > 0) sp.set("strategies", String(strategies));

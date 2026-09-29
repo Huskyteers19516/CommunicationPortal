@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext, type ServiceContext } from "@/server/context";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { readFormFile } from "@/server/files/upload";
 import {
   addNotebookImage,
@@ -51,6 +52,15 @@ async function inline(
   );
 }
 
+/** A service that deletes pictures (directly or with what they're on): their R2 objects go after the response. */
+function deletesFiles(service: (ctx: ServiceContext, raw: unknown) => Promise<unknown>) {
+  return async (ctx: ServiceContext, raw: unknown) => {
+    const result = await service(ctx, raw);
+    scheduleFileCleanup();
+    return result;
+  };
+}
+
 // ---------- notebooks ----------
 
 export async function createNotebookAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -83,6 +93,7 @@ export async function deleteNotebookAction(_prev: ActionState, formData: FormDat
     async () => {
       const ctx = await getServiceContext();
       await deleteNotebook(ctx, formDataToObject(formData));
+      scheduleFileCleanup(); // its pictures went with it
       revalidatePath("/", "layout");
       redirect("/notebook?removed=1");
     },
@@ -122,7 +133,7 @@ export async function moveNotebookPageAction(_prev: ActionState, formData: FormD
 }
 
 export async function deleteNotebookPageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return inline(formData, deleteNotebookPage, "Page deleted.");
+  return inline(formData, deletesFiles(deleteNotebookPage), "Page deleted.");
 }
 
 // ---------- entries ----------
@@ -157,7 +168,7 @@ export async function updateNotebookEntryAction(_prev: ActionState, formData: Fo
 }
 
 export async function deleteNotebookEntryAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return inline(formData, deleteNotebookEntry, "Entry deleted.");
+  return inline(formData, deletesFiles(deleteNotebookEntry), "Entry deleted.");
 }
 
 /** Take an old version's text out of an entry's history (fields: editId). */
@@ -178,5 +189,5 @@ export async function addNotebookImageAction(_prev: ActionState, formData: FormD
 }
 
 export async function removeNotebookImageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return inline(formData, removeNotebookImage);
+  return inline(formData, deletesFiles(removeNotebookImage));
 }

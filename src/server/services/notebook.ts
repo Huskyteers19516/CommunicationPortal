@@ -10,8 +10,9 @@
 //   The same people can take an old version's text out of the history (clearNotebookEntryVersion), e.g. a phone
 //   number pasted by mistake; who changed it and when stay.
 // - Entries can have pictures (NotebookImage): PNG, JPG, GIF, or WebP only, checked by their contents like posters,
-//   up to 4 MB and LIMITS.notebookImagesPerEntry each, counted toward the team's shared file storage (under its lock),
-//   and each person's pictures stay under NOTEBOOK_IMAGE_BYTES_PER_PERSON unless they manage that notebook's pages.
+//   up to 4 MB and LIMITS.notebookImagesPerEntry each, stored like every upload (Postgres, or Cloudflare R2 when it's
+//   set up: ../files/stored.ts), counted toward the team's shared file storage (under its lock), and each person's
+//   pictures stay under NOTEBOOK_IMAGE_BYTES_PER_PERSON (10× with R2) unless they manage that notebook's pages.
 //   Adding or taking off a picture marks the entry "Edited by" and logs a history row with the text unchanged
 //   ("changed the pictures"), except while its author is still writing it (NOTEBOOK_WRITING_WINDOW_MS after posting
 //   it, before anyone edits it: the editor uploads pictures right after the text).
@@ -37,7 +38,15 @@ import { idSchema, normalizeLineBreaks, optionalText, text } from "@/lib/validat
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ConflictError, ForbiddenError, NotFoundError } from "../errors";
-import { assertFileStorageRoom, lockFileStorage, posterCleanupSentence, storageFullSentence } from "../files/storage";
+import {
+  assertFileStorageRoom,
+  checkFileStorageRoom,
+  lockFileStorage,
+  perPersonFileCap,
+  posterCleanupSentence,
+  storageFullSentence,
+} from "../files/storage";
+import { usesObjectStorage, withStoredFiles } from "../files/stored";
 import { checkUploadedFile, cleanFilename, type CleanUpload, fileError, readUpload, type UploadMessages } from "../files/upload";
 import { canEditNotebookEntry, canManageNotebookPages, canManageNotebooks } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
@@ -70,8 +79,8 @@ export const NOTEBOOK_WRITE_RATE_LIMIT = { limit: 120, windowMs: HOUR } as const
 /** Pictures added per person per hour (each can be up to 4 MB). */
 export const NOTEBOOK_IMAGE_RATE_LIMIT = { limit: 60, windowMs: HOUR } as const;
 /**
- * Notebook pictures one person can have (on the entries they wrote), so one account can't fill the team's storage.
- * People who manage a notebook's pages aren't limited there.
+ * Notebook pictures one person can have (on the entries they wrote), so one account can't fill the team's storage
+ * (10× with Cloudflare R2: perPersonFileCap). People who manage a notebook's pages aren't limited there.
  */
 export const NOTEBOOK_IMAGE_BYTES_PER_PERSON = 25 * 1024 * 1024;
 /** Pictures the author adds or takes off this soon after posting (before anyone edits it) don't mark it edited. */
@@ -566,6 +575,40 @@ const addImageInput = z.object({ entryId: idSchema });
 const imageIdInput = z.object({ imageId: idSchema });
 
 /**
+ * Room for one more picture on an entry: at most LIMITS.notebookImagesPerEntry, the person's pictures under their
+ * allowance (unless they manage this notebook's pages), and every file under the team's cap. `locked`: in the upload's
+ * transaction, after lockFileStorage (the real check); otherwise the quick look before uploading to Cloudflare R2.
+ */
+async function checkNotebookPictureRoom(
+  db: Tx,
+  ctx: ServiceContext,
+  entry: { id: string; page: { notebook: { subteam: Subteam | null } } },
+  adding: number,
+  locked: boolean,
+): Promise<void> {
+  const objectStorage = usesObjectStorage(ctx);
+  const count = await db.notebookImage.count({ where: { entryId: entry.id } });
+  if (count >= LIMITS.notebookImagesPerEntry) throw fileError(notebookPicturesFullMessage());
+  if (!canManageNotebookPages(ctx.actor, entry.page.notebook)) {
+    const mine = await db.notebookImage.aggregate({ _sum: { size: true }, where: { entry: { authorId: ctx.actor.id } } });
+    const used = mine._sum.size ?? 0;
+    const allowance = perPersonFileCap(NOTEBOOK_IMAGE_BYTES_PER_PERSON, objectStorage);
+    if (used + adding > allowance) {
+      throw fileError(
+        `Your notebook pictures use ${formatFileSize(used)}, and each person can have up to ${formatFileSize(allowance)}. Take off pictures you don't need, or ask a leader to add this one.`,
+      );
+    }
+  }
+  await (locked ? assertFileStorageRoom : checkFileStorageRoom)(
+    db,
+    { adding },
+    (usage) =>
+      `${storageFullSentence(usage)} Take off notebook pictures you don't need, or ask a leader to clear out old files.${posterCleanupSentence(usage)}`,
+    objectStorage,
+  );
+}
+
+/**
  * Add a picture to an entry (`file` is an UploadedFile read from the form by the Server Action): whoever can change
  * the entry. At most LIMITS.notebookImagesPerEntry per entry, each person's pictures under
  * NOTEBOOK_IMAGE_BYTES_PER_PERSON (unless they manage this notebook's pages), and all files together under the
@@ -581,44 +624,32 @@ export async function addNotebookImage(ctx: ServiceContext, raw: unknown): Promi
   await enforceRateLimit(ctx.db, `notebook-image:${ctx.actor.id}`, limit, windowMs, ctx.now);
   const adding = picture.bytes.byteLength;
 
-  return ctx.db.$transaction(async (tx) => {
-    await lockFileStorage(tx);
-    const current = await lockEntry(tx, entryId);
-    const count = await tx.notebookImage.count({ where: { entryId } });
-    if (count >= LIMITS.notebookImagesPerEntry) throw fileError(notebookPicturesFullMessage());
-    if (!canManageNotebookPages(ctx.actor, entry.page.notebook)) {
-      const mine = await tx.notebookImage.aggregate({ _sum: { size: true }, where: { entry: { authorId: ctx.actor.id } } });
-      const used = mine._sum.size ?? 0;
-      if (used + adding > NOTEBOOK_IMAGE_BYTES_PER_PERSON) {
-        throw fileError(
-          `Your notebook pictures use ${formatFileSize(used)}, and each person can have up to ${formatFileSize(NOTEBOOK_IMAGE_BYTES_PER_PERSON)}. Take off pictures you don't need, or ask a leader to add this one.`,
-        );
-      }
-    }
-    await assertFileStorageRoom(
-      tx,
-      { adding },
-      (usage) =>
-        `${storageFullSentence(usage)} Take off notebook pictures you don't need, or ask a leader to clear out old files.${posterCleanupSentence(usage)}`,
-    );
-    const last = await tx.notebookImage.aggregate({ where: { entryId }, _max: { position: true } });
-    const image = await tx.notebookImage.create({
-      data: {
-        entryId,
-        filename: picture.filename,
-        contentType: picture.contentType,
-        size: adding,
-        data: picture.bytes,
-        width: picture.width,
-        height: picture.height,
-        position: (last._max.position ?? -1) + 1,
-        createdAt: ctx.now,
-      },
-      select: { id: true, filename: true },
-    });
-    if (!stillWriting(ctx, entry)) await recordPictureChange(tx, ctx, entryId, current);
-    return image;
-  });
+  return withStoredFiles(
+    ctx,
+    "notebook",
+    [picture],
+    ([file]) =>
+      ctx.db.$transaction(async (tx) => {
+        await lockFileStorage(tx);
+        const current = await lockEntry(tx, entryId);
+        await checkNotebookPictureRoom(tx, ctx, entry, adding, true);
+        const last = await tx.notebookImage.aggregate({ where: { entryId }, _max: { position: true } });
+        const image = await tx.notebookImage.create({
+          data: {
+            entryId,
+            ...file,
+            width: picture.width,
+            height: picture.height,
+            position: (last._max.position ?? -1) + 1,
+            createdAt: ctx.now,
+          },
+          select: { id: true, filename: true },
+        });
+        if (!stillWriting(ctx, entry)) await recordPictureChange(tx, ctx, entryId, current);
+        return image;
+      }),
+    { precheck: () => checkNotebookPictureRoom(ctx.db, ctx, entry, adding, false) },
+  );
 }
 
 /** Take a picture off an entry: whoever can change the entry. */

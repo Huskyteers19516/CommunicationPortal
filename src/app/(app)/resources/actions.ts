@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { readFormFile } from "@/server/files/upload";
 import { createResource, deleteResource, reviewDoneMessage, reviewResource, updateResource } from "@/server/services/resources";
 
@@ -30,6 +31,7 @@ export async function updateResourceAction(_prev: ActionState, formData: FormDat
     async () => {
       const ctx = await getServiceContext();
       const { id } = await updateResource(ctx, await resourceInput(formData));
+      scheduleFileCleanup(); // a replaced or removed file
       revalidatePath("/", "layout");
       redirect(`/resources/${encodeURIComponent(id)}`);
     },
@@ -42,6 +44,7 @@ export async function deleteResourceAction(_prev: ActionState, formData: FormDat
     async () => {
       const ctx = await getServiceContext();
       await deleteResource(ctx, formDataToObject(formData));
+      scheduleFileCleanup();
       revalidatePath("/", "layout");
       redirect("/resources");
     },

@@ -1,13 +1,15 @@
 // Client-safe helpers for uploaded files.
 import { LIMITS } from "./constants";
 
-/** "812 bytes", "3.4 KB", "1.2 MB". */
+/** "812 bytes", "3.4 KB", "1.2 MB", "2.5 GB", "9 GB". */
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} ${bytes === 1 ? "byte" : "bytes"}`;
   const kb = bytes / 1024;
   if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
   const mb = kb / 1024;
-  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  if (Math.round(mb) < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  const gb = mb / 1024;
+  return `${gb < 10 ? gb.toFixed(1).replace(/\.0$/, "") : Math.round(gb)} GB`;
 }
 
 /** The upload limit in whole megabytes (for messages), e.g. 4. */

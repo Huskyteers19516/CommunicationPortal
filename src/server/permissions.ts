@@ -122,6 +122,15 @@ export function isOwner(actor: ActorLike): boolean {
 }
 
 /**
+ * Where uploaded files are stored (Admin → Approvals → File storage): testing the Cloudflare R2 connection, moving
+ * files from the database to R2, and cleaning up deleted files. Owners only; everyone else with admin access only
+ * sees how full the storage is.
+ */
+export function canManageFileStorage(actor: ActorLike): boolean {
+  return isOwner(actor);
+}
+
+/**
  * The Admin area: approve sign-ups and member resources, manage people, email log.
  * Owners plus every leader, the captain, mentors, and teachers.
  */

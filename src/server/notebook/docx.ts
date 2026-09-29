@@ -21,6 +21,7 @@ import {
 } from "@/lib/notebook";
 import type { Db } from "../db";
 import { prisma } from "../db";
+import type { ObjectStore } from "../files/object-store";
 import { plainResponse } from "../files/respond";
 import { type NotebookExport, type NotebookExportImage, loadNotebookImageBytes } from "../queries/notebook";
 import { contentDisposition } from "../resources/serve";
@@ -227,11 +228,11 @@ export function notebookDocxFilename(data: NotebookExport, timeZone: string, now
 /**
  * The Word file, at most `maxBytes`: with the pictures that fit NOTEBOOK_EXPORT_IMAGE_BUDGET, then — when the text
  * makes it too big — fewer pictures, then none. Null when even the text alone is too big for one file.
- * Loads only the picture bytes it uses.
+ * Loads only the picture bytes it uses (from Postgres or Cloudflare R2; `store` defaults to the R2_* settings).
  */
 export async function buildNotebookDocxWithin(
   data: NotebookExport,
-  opts: { timeZone: string; now: Date; maxBytes?: number },
+  opts: { timeZone: string; now: Date; maxBytes?: number; store?: ObjectStore | null },
   db: Db = prisma,
 ): Promise<Buffer | null> {
   const maxBytes = opts.maxBytes ?? NOTEBOOK_EXPORT_MAX_BYTES;
@@ -241,7 +242,7 @@ export async function buildNotebookDocxWithin(
   for (let attempt = 0; ; attempt++) {
     const { included, leftOut } = pickExportImages(data, budget);
     const missing = [...included].filter((id) => !loaded.has(id));
-    for (const [id, bytes] of await loadNotebookImageBytes(missing, db)) loaded.set(id, bytes);
+    for (const [id, bytes] of await loadNotebookImageBytes(missing, db, opts.store)) loaded.set(id, bytes);
     const imageBytes = new Map([...included].flatMap((id) => (loaded.has(id) ? [[id, loaded.get(id)!] as const] : [])));
     const buffer = await buildNotebookDocx(data, { timeZone: opts.timeZone, now: opts.now, imageBytes, leftOut });
     if (buffer.byteLength <= maxBytes) return buffer;

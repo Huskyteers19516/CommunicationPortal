@@ -421,7 +421,7 @@ describe("uploaded files", () => {
     const row = await t.db.resource.findUniqueOrThrow({ where: { id }, include: { file: true } });
     expect(row).toMatchObject({ url: "", status: "APPROVED", type: "CODE" });
     expect(row.file).toMatchObject({ filename: "TeleOpMain.java", contentType: "text/x-java", size: new TextEncoder().encode(JAVA).length });
-    expect(new TextDecoder().decode(row.file!.data)).toBe(JAVA);
+    expect(new TextDecoder().decode(row.file!.data!)).toBe(JAVA);
   });
 
   it("cleans file names", () => {
@@ -524,7 +524,7 @@ describe("uploaded files", () => {
     expect((await t.db.resource.findUniqueOrThrow({ where: { id } })).status).toBe("PENDING");
     expect(await getResourceFile(member2, id, t.db)).toBeNull();
     expect((await getResourceFile(member, id, t.db))?.filename).toBe("TeleOpMain.java");
-    expect(new TextDecoder().decode((await getResourceFile(leader, id, t.db))!.data)).toBe(JAVA);
+    expect(new TextDecoder().decode((await getResourceFile(leader, id, t.db))!.data!)).toBe(JAVA);
     await reviewResource(contextFor(t.db, leader), { resourceId: id, decision: "approve" });
     expect((await getResourceFile(member2, id, t.db))?.filename).toBe("TeleOpMain.java");
     expect(await getResourceFile(member2, "missing", t.db)).toBeNull();

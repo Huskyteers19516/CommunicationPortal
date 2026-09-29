@@ -100,7 +100,7 @@ describe("who can add, open, and remove sponsor files", () => {
       const row = await t.db.sponsorshipFile.findUniqueOrThrow({ where: { id } });
       expect(row).toMatchObject({ sponsorshipId: s.id, uploadedById: a.id, contentType: "application/pdf", size: PDF.length });
       expect(row.createdAt).toEqual(TEST_NOW);
-      expect(new TextDecoder().decode(row.data)).toBe(PDF);
+      expect(new TextDecoder().decode(row.data!)).toBe(PDF);
     }
   });
 
@@ -428,14 +428,14 @@ describe("what the pages get", () => {
     const { id } = await upload(ava, s.id, file("sponsor-form.pdf"));
     const got = await getSponsorshipFile(priya, id, t.db);
     expect(got?.filename).toBe("sponsor-form.pdf");
-    expect(new TextDecoder().decode(got!.data)).toBe(PDF);
+    expect(new TextDecoder().decode(got!.data!)).toBe(PDF);
     for (const a of [maya, ethan, pendingBiz, disabledBiz]) expect(await getSponsorshipFile(a, id, t.db), a.name).toBeNull();
     expect(await getSponsorshipFile(ava, "missing", t.db)).toBeNull();
     expect(await getSponsorshipFile(ava, "x".repeat(65), t.db)).toBeNull();
     expect(sponsorshipFileHref("a b", true)).toBe("/sponsors/files/a%20b?download=1");
 
     // PDFs open in the browser (without `sandbox`, which Chrome's viewer refuses); ?download=1 downloads.
-    const inline = fileResponseHeaders({ filename: got!.filename, contentType: got!.contentType, byteLength: got!.data.byteLength });
+    const inline = fileResponseHeaders({ filename: got!.filename, contentType: got!.contentType, byteLength: got!.data!.byteLength });
     expect(inline).toMatchObject({ "Content-Type": "application/pdf", "Content-Security-Policy": PDF_CSP, "X-Content-Type-Options": "nosniff" });
     expect(inline["Content-Disposition"]).toMatch(/^inline; filename="sponsor-form\.pdf"/);
     const download = fileResponseHeaders({ filename: "Signed copy.docx", contentType: "application/msword", byteLength: 2 }, { download: true });

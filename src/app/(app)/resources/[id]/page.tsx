@@ -93,7 +93,9 @@ function FilePreview({ r }: { r: ResourceDetail }) {
       ? "Open the PDF to read it, or download it."
       : p.kind === "none" && p.reason === "too-big"
         ? "This file is too big to preview here. Download it to open it."
-        : "There's no preview for this kind of file. Download it to open it.";
+        : p.kind === "none" && p.reason === "unavailable"
+          ? "The preview couldn't be loaded just now. Download the file to open it, or reload the page in a minute."
+          : "There's no preview for this kind of file. Download it to open it.";
   return (
     <Card>
       <CardBody className="flex items-center gap-3 text-sm text-ink-600">

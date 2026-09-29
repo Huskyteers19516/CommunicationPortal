@@ -843,7 +843,7 @@ describe("pictures", () => {
     // The picture route: any active person, never anyone else.
     const img = await getNotebookImage(maya, rows[0].id, t.db);
     expect(img).toMatchObject({ filename: "cad.png", contentType: "image/png" });
-    expect(Buffer.from(img!.data).equals(Buffer.from(PNG))).toBe(true);
+    expect(Buffer.from(img!.data!).equals(Buffer.from(PNG))).toBe(true);
     expect(await getNotebookImage(pending, rows[0].id, t.db)).toBeNull();
     expect(await getNotebookImage(maya, "gone", t.db)).toBeNull();
   });

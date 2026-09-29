@@ -7,6 +7,7 @@ import { isPedroPathFile } from "@/lib/strategy";
 import { parseHttpUrl } from "@/lib/urls";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
+import { STORED_FILE_SELECT } from "../files/respond";
 import { canAdminister, canEditStrategy } from "../permissions";
 import { fileResponseHeaders, previewKind, type ServedFile } from "../resources/serve";
 
@@ -225,5 +226,5 @@ export async function getStrategyForEdit(actor: Actor, id: string, db: Db = pris
 /** A strategy file with its bytes, for the file route. Any ACTIVE person; null otherwise (or when it's gone). */
 export async function getStrategyFile(actor: Actor, fileId: string, db: Db = prisma) {
   if (actor.status !== "ACTIVE" || !fileId || fileId.length > 64) return null;
-  return db.strategyFile.findUnique({ where: { id: fileId }, select: { filename: true, contentType: true, data: true } });
+  return db.strategyFile.findUnique({ where: { id: fileId }, select: STORED_FILE_SELECT });
 }

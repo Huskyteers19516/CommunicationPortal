@@ -8,6 +8,7 @@ import { bulkRemoveMessage, formatShortDate } from "@/lib/sponsorships";
 import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
 import { ConflictError } from "@/server/errors";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { readFormFile } from "@/server/files/upload";
 import { deleteSponsorshipFile, uploadSponsorshipFile } from "@/server/services/sponsorship-files";
 import {
@@ -52,6 +53,7 @@ export async function deleteSponsorshipAction(_prev: ActionState, formData: Form
     async () => {
       const ctx = await getServiceContext();
       const { name } = await deleteSponsorship(ctx, formDataToObject(formData));
+      scheduleFileCleanup(); // its files went with it
       revalidatePath("/", "layout");
       redirect(`/sponsors?removed=${encodeURIComponent(name)}`);
     },
@@ -67,6 +69,7 @@ export async function deleteSponsorshipsAction(_prev: ActionState, formData: For
   return runAction(async () => {
     const ctx = await getServiceContext();
     const result = await deleteSponsorships(ctx, formDataToObject(formData));
+    scheduleFileCleanup(); // their files went with them
     revalidatePath("/", "layout");
     const message = bulkRemoveMessage(result);
     if (result.removed.length === 0) throw new ConflictError(message);
@@ -144,6 +147,7 @@ export async function deleteSponsorshipFileAction(_prev: ActionState, formData: 
     async () => {
       const ctx = await getServiceContext();
       const { filename } = await deleteSponsorshipFile(ctx, formDataToObject(formData));
+      scheduleFileCleanup();
       revalidatePath("/", "layout");
       return `Removed “${filename}”.`;
     },

@@ -2,6 +2,7 @@
 // approved files for everyone signed in; pending / turned-down ones only for the person who shared
 // them and the reviewers. Headers (inline vs download, nosniff, CSP, no caching) come from
 // fileResponseHeaders(); `?download=1` always downloads.
+// The bytes come from Postgres or Cloudflare R2 (streamed through here; see src/server/files/respond.ts).
 import type { NextRequest } from "next/server";
 import { getCurrentUser } from "@/server/auth/session";
 import { plainResponse, redirectToLogin, sendStoredFile } from "@/server/files/respond";

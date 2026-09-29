@@ -5,6 +5,8 @@ import "server-only";
 import type { Subteam } from "@/generated/prisma/enums";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
+import { getObjectStore, type ObjectStore } from "../files/object-store";
+import { readStoredBytes, STORED_FILE_SELECT } from "../files/respond";
 import { canEditNotebookEntry, canManageNotebookPages, canManageNotebooks } from "../permissions";
 
 /** Entries per screen on a page. */
@@ -341,7 +343,7 @@ export async function getNotebookForEdit(actor: Actor, notebookId: string, db: D
 /** A picture with its bytes, for the picture route. Any ACTIVE person; null otherwise (or when it's gone). */
 export async function getNotebookImage(actor: Actor, imageId: string, db: Db = prisma) {
   if (actor.status !== "ACTIVE" || !validId(imageId)) return null;
-  return db.notebookImage.findUnique({ where: { id: imageId }, select: { filename: true, contentType: true, data: true } });
+  return db.notebookImage.findUnique({ where: { id: imageId }, select: STORED_FILE_SELECT });
 }
 
 // ---------- export (Word and print) ----------
@@ -436,9 +438,25 @@ export async function getNotebookExport(actor: Actor, target: NotebookExportTarg
   };
 }
 
-/** The bytes of these pictures (for the Word export), by id. */
-export async function loadNotebookImageBytes(imageIds: string[], db: Db = prisma): Promise<Map<string, Uint8Array>> {
+/**
+ * The bytes of these pictures (for the Word export), by id, from Postgres or Cloudflare R2 (a few at a time).
+ * A picture that can't be read right now is left out (the export then names it instead).
+ */
+export async function loadNotebookImageBytes(
+  imageIds: string[],
+  db: Db = prisma,
+  store: ObjectStore | null = getObjectStore(),
+): Promise<Map<string, Uint8Array>> {
   if (imageIds.length === 0) return new Map();
-  const rows = await db.notebookImage.findMany({ where: { id: { in: imageIds } }, select: { id: true, data: true } });
-  return new Map(rows.map((r) => [r.id, r.data]));
+  const rows = await db.notebookImage.findMany({ where: { id: { in: imageIds } }, select: { id: true, data: true, storageKey: true } });
+  const out = new Map<string, Uint8Array>();
+  for (let i = 0; i < rows.length; i += 4) {
+    const batch = rows.slice(i, i + 4);
+    const bytes = await Promise.all(batch.map((r) => readStoredBytes(r, store)));
+    batch.forEach((r, j) => {
+      const b = bytes[j];
+      if (b) out.set(r.id, b);
+    });
+  }
+  return out;
 }

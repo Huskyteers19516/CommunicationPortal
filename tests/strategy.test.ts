@@ -485,7 +485,7 @@ describe("the file route", () => {
     const byName = Object.fromEntries(files.map((f) => [f.filename, f]));
     for (const a of [ethan, priya, jordan, olivia]) {
       const got = await getStrategyFile(a, byName["red.pp"].id, t.db);
-      expect(Buffer.from(got!.data).equals(Buffer.from(PP)), a.name).toBe(true);
+      expect(Buffer.from(got!.data!).equals(Buffer.from(PP)), a.name).toBe(true);
     }
     for (const a of [pending, disabled, rejected]) expect(await getStrategyFile(a, byName["red.pp"].id, t.db), a.name).toBeNull();
     expect(await getStrategyFile(maya, "missing", t.db)).toBeNull();

@@ -297,9 +297,12 @@ export const LIMITS = {
   resourceUrlMax: 2000,
   resourceLinksMax: 20,
   resourceLinkLabelMax: 60,
-  /** Uploaded files are stored in Postgres, so keep them small (and under Vercel's 4.5 MB request limit). */
+  /** Each uploaded file (any kind): under Vercel's 4.5 MB request limit, wherever it's stored. */
   resourceFileMaxBytes: 4 * 1024 * 1024,
-  /** Total size of every uploaded file together (protects the database's storage quota). */
+  /**
+   * Total size of every uploaded file together while they're stored in Postgres (protects the database's storage
+   * quota). With Cloudflare R2 set up the cap is OBJECT_STORAGE_CAP_BYTES instead (src/server/files/storage.ts).
+   */
   resourceStorageMaxBytes: 300 * 1024 * 1024,
   resourceFilenameMax: 120,
   categoryNameMax: 40,

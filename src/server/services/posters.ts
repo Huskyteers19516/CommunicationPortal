@@ -3,9 +3,9 @@
 // - A poster is an uploaded picture (PNG, JPG, GIF, WebP) or PDF, a link to the design (Canva, Drive…), or both.
 // - Whoever added one changes or removes it; so does everyone with admin access (canEditPoster).
 //
-// Files live in Postgres like Resources files and count toward the same storage cap (../files/storage.ts,
-// checked under its lock). Each person's poster files stay under POSTER_FILE_BYTES_PER_PERSON unless they
-// have admin access, so one account can't fill the storage. Poster files are checked by their contents, not
+// Files are stored like Resources files (Postgres, or Cloudflare R2 when it's set up: ../files/stored.ts) and count
+// toward the same storage cap (../files/storage.ts, checked under its lock). Each person's poster files stay under
+// POSTER_FILE_BYTES_PER_PERSON (10× with R2) unless they have admin access, so one account can't fill the storage. Poster files are checked by their contents, not
 // just their name: only real images and PDFs get in (never SVG or HTML), and only pictures small enough (in
 // pixels) for a phone to draw, stored with the matching extension and type, so the file route
 // (src/app/(app)/posters/files/[id]/route.ts) can always show them inline.
@@ -29,16 +29,9 @@ import { checkbox, dateOnlySchema, idSchema, optionalText, text } from "@/lib/va
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors";
-import { assertFileStorageRoom, lockFileStorage, storageFullSentence } from "../files/storage";
-import {
-  checkUploadedFile,
-  type CleanUpload,
-  cleanFilename,
-  fileError,
-  readUpload,
-  storedFileData,
-  type UploadMessages,
-} from "../files/upload";
+import { assertFileStorageRoom, checkFileStorageRoom, lockFileStorage, perPersonFileCap, storageFullSentence } from "../files/storage";
+import { usesObjectStorage, withStoredFiles } from "../files/stored";
+import { checkUploadedFile, type CleanUpload, cleanFilename, fileError, readUpload, type UploadMessages } from "../files/upload";
 import { canAdminister, canEditPoster } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
 import { fileExtension } from "../resources/serve";
@@ -61,7 +54,8 @@ export const POSTER_RATE_LIMIT = { limit: 30, windowMs: HOUR } as const;
 
 /**
  * Poster files one person can have (all their posters together; removing old ones frees it up again), so one
- * account can't fill the team's storage. Everyone with admin access isn't limited.
+ * account can't fill the team's storage (10× with Cloudflare R2: perPersonFileCap). Everyone with admin access
+ * isn't limited.
  */
 export const POSTER_FILE_BYTES_PER_PERSON = 50 * 1024 * 1024;
 
@@ -393,30 +387,36 @@ function parsePosterForm(
  * Room for a new poster file (under the storage lock): the person's own poster files stay under
  * POSTER_FILE_BYTES_PER_PERSON (unless they have admin access), and all files together under the team's cap.
  * `replacing` = the poster whose current file this one replaces (its bytes don't count).
+ * `locked: false`: the same checks without the lock, as the quick look before uploading to Cloudflare R2
+ * (withStoredFiles' precheck); saving checks again under the lock.
  */
 async function assertPosterRoom(
   tx: Tx,
   ctx: ServiceContext,
   change: { adding: number; freeing: number; replacing?: string },
+  locked = true,
 ): Promise<void> {
-  await lockFileStorage(tx);
+  if (locked) await lockFileStorage(tx);
+  const objectStorage = usesObjectStorage(ctx);
   if (!canAdminister(ctx.actor)) {
     const mine = await tx.posterFile.aggregate({
       _sum: { size: true },
       where: { poster: { createdById: ctx.actor.id, ...(change.replacing ? { id: { not: change.replacing } } : {}) } },
     });
     const used = mine._sum.size ?? 0;
-    if (used + change.adding > POSTER_FILE_BYTES_PER_PERSON) {
+    const allowance = perPersonFileCap(POSTER_FILE_BYTES_PER_PERSON, objectStorage);
+    if (used + change.adding > allowance) {
       throw fileError(
-        `Your posters use ${formatFileSize(used)}, and each person can have up to ${formatFileSize(POSTER_FILE_BYTES_PER_PERSON)}. Remove old posters you don't need, add a link instead, or ask a leader to add this one.`,
+        `Your posters use ${formatFileSize(used)}, and each person can have up to ${formatFileSize(allowance)}. Remove old posters you don't need, add a link instead, or ask a leader to add this one.`,
       );
     }
   }
-  await assertFileStorageRoom(
+  await (locked ? assertFileStorageRoom : checkFileStorageRoom)(
     tx,
     { adding: change.adding, freeing: change.freeing },
     (usage) =>
       `${storageFullSentence(usage)} Add a link to the design instead, or remove old posters you don't need. Leaders, the captain, mentors, and teachers can clear out old posters and Resources files.`,
+    objectStorage,
   );
 }
 
@@ -429,18 +429,26 @@ export async function createPoster(ctx: ServiceContext, raw: unknown): Promise<{
   const { data, upload } = parsePosterForm(ctx, rec, { keepsFile: (u) => u !== null });
   await enforceRateLimit(ctx.db, `poster:${ctx.actor.id}`, POSTER_RATE_LIMIT.limit, POSTER_RATE_LIMIT.windowMs, ctx.now);
 
-  return ctx.db.$transaction(async (tx) => {
-    if (upload) await assertPosterRoom(tx, ctx, { adding: upload.bytes.byteLength, freeing: 0 });
-    return tx.poster.create({
-      data: {
-        ...data,
-        createdById: ctx.actor.id,
-        createdAt: ctx.now,
-        file: upload ? { create: { ...storedFileData(upload), createdAt: ctx.now } } : undefined,
-      },
-      select: { id: true },
-    });
-  });
+  const adding = upload?.bytes.byteLength ?? 0;
+  return withStoredFiles(
+    ctx,
+    "posters",
+    upload ? [upload] : [],
+    ([file]) =>
+      ctx.db.$transaction(async (tx) => {
+        if (upload) await assertPosterRoom(tx, ctx, { adding, freeing: 0 });
+        return tx.poster.create({
+          data: {
+            ...data,
+            createdById: ctx.actor.id,
+            createdAt: ctx.now,
+            file: file ? { create: { ...file, createdAt: ctx.now } } : undefined,
+          },
+          select: { id: true },
+        });
+      }),
+    { precheck: () => assertPosterRoom(ctx.db, ctx, { adding, freeing: 0 }, false) },
+  );
 }
 
 const posterIdInput = z.object({ posterId: idSchema });
@@ -475,26 +483,32 @@ export async function updatePoster(ctx: ServiceContext, raw: unknown): Promise<{
     await enforceRateLimit(ctx.db, `poster:${ctx.actor.id}`, POSTER_RATE_LIMIT.limit, POSTER_RATE_LIMIT.windowMs, ctx.now);
   }
 
-  await ctx.db.$transaction(async (tx) => {
-    // Holds the poster until this commits, so a removal (or another save) can't slip in between.
-    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Poster" WHERE id = ${posterId} FOR UPDATE`;
-    if (locked.length === 0) throw new NotFoundError(POSTER_NOT_FOUND);
-    const current = await tx.posterFile.findUnique({ where: { posterId }, select: { size: true } });
-    if (!upload && !data.link && (!current || removeFile)) {
-      throw new ValidationError(POSTER_NEEDS_FILE_OR_LINK, { file: POSTER_NEEDS_FILE_OR_LINK });
-    }
-    if (upload) {
-      await assertPosterRoom(tx, ctx, { adding: upload.bytes.byteLength, freeing: current?.size ?? 0, replacing: posterId });
-    }
-    await tx.poster.update({ where: { id: posterId }, data });
-    if (upload) {
-      // A new row (and id), so the file's address changes and nobody sees the old picture from a cache.
-      await tx.posterFile.deleteMany({ where: { posterId } });
-      await tx.posterFile.create({ data: { posterId, ...storedFileData(upload), createdAt: ctx.now } });
-    } else if (removeFile) {
-      await tx.posterFile.deleteMany({ where: { posterId } });
-    }
-  });
+  const adding = upload?.bytes.byteLength ?? 0;
+  await withStoredFiles(
+    ctx,
+    "posters",
+    upload ? [upload] : [],
+    ([file]) =>
+      ctx.db.$transaction(async (tx) => {
+        // Holds the poster until this commits, so a removal (or another save) can't slip in between.
+        const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Poster" WHERE id = ${posterId} FOR UPDATE`;
+        if (locked.length === 0) throw new NotFoundError(POSTER_NOT_FOUND);
+        const current = await tx.posterFile.findUnique({ where: { posterId }, select: { size: true } });
+        if (!upload && !data.link && (!current || removeFile)) {
+          throw new ValidationError(POSTER_NEEDS_FILE_OR_LINK, { file: POSTER_NEEDS_FILE_OR_LINK });
+        }
+        if (upload) await assertPosterRoom(tx, ctx, { adding, freeing: current?.size ?? 0, replacing: posterId });
+        await tx.poster.update({ where: { id: posterId }, data });
+        if (file) {
+          // A new row (and id), so the file's address changes and nobody sees the old picture from a cache.
+          await tx.posterFile.deleteMany({ where: { posterId } });
+          await tx.posterFile.create({ data: { posterId, ...file, createdAt: ctx.now } });
+        } else if (removeFile) {
+          await tx.posterFile.deleteMany({ where: { posterId } });
+        }
+      }),
+    { precheck: () => assertPosterRoom(ctx.db, ctx, { adding, freeing: existing.file?.size ?? 0, replacing: posterId }, false) },
+  );
   return { id: posterId };
 }
 

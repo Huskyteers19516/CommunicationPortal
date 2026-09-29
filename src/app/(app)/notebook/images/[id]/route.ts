@@ -2,6 +2,7 @@
 // Headers (inline image, nosniff, CSP) come from fileResponseHeaders(); `?download=1` always downloads. Pictures are
 // only ever PNG, JPG, GIF, or WebP (checked by their contents on upload), and a picture's address never shows
 // different bytes (a new one gets a new id; a removed one is a 404), so the browser may keep it (`immutable`).
+// The bytes come from Postgres or Cloudflare R2 (streamed through here; see src/server/files/respond.ts).
 import type { NextRequest } from "next/server";
 import { getCurrentUser } from "@/server/auth/session";
 import { plainResponse, redirectToLogin, sendStoredFile } from "@/server/files/respond";

@@ -39,6 +39,13 @@ export default defineConfig({
       SMTP_HOST: "",
       DISCORD_WEBHOOK_URL: "",
       RESEND_API_KEY: "",
+      // Uploaded files stay in the e2e database, even if a local .env has Cloudflare R2 settings (set-but-empty values
+      // win: Next's .env loading never overrides a variable that's already defined).
+      R2_ACCOUNT_ID: "",
+      R2_ACCESS_KEY_ID: "",
+      R2_SECRET_ACCESS_KEY: "",
+      R2_BUCKET: "",
+      R2_ENDPOINT: "",
     },
   },
 });

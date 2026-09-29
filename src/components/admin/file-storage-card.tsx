@@ -1,14 +1,95 @@
+import { Cloud, Database } from "lucide-react";
 import Link from "next/link";
+import { Alert } from "@/components/ui/alert";
 import { Card, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import { formatFileSize } from "@/lib/files";
-import type { FileStorageUsage } from "@/server/files/storage";
+import type { FileStorageOverview, FileStorageOwnerView } from "@/server/queries/files";
+import { FileStorageTools } from "./file-storage-tools";
+
+const files = (n: number) => `${n.toLocaleString("en-US")} ${n === 1 ? "file" : "files"}`;
+
+/** Everyone who sees the card: where new files go, and how many files are in each place. */
+function LocationSection({ overview }: { overview: FileStorageOverview }) {
+  const inR2 = overview.location === "r2";
+  const Icon = inR2 ? Cloud : Database;
+  return (
+    <div className="space-y-3 border-t border-ink-100 px-4 py-3 sm:px-5">
+      <p className="flex items-start gap-2 text-sm text-ink-800">
+        <Icon className="mt-0.5 size-4 shrink-0 text-ink-500" aria-hidden />
+        <span>
+          New files go to <span className="font-semibold">{inR2 ? "Cloudflare R2" : "the database"}</span>
+          {inR2 ? "." : " (Neon Postgres)."}
+        </span>
+      </p>
+      <ul className="space-y-1 text-xs text-ink-600">
+        <li className="flex justify-between gap-3">
+          <span>In Cloudflare R2</span>
+          <span className="tabular-nums">
+            {files(overview.inObjectStorage.count)} · {formatFileSize(overview.inObjectStorage.bytes)}
+          </span>
+        </li>
+        <li className="flex justify-between gap-3">
+          <span>In the database</span>
+          <span className="tabular-nums">
+            {files(overview.inDatabase.count)} · {formatFileSize(overview.inDatabase.bytes)}
+          </span>
+        </li>
+      </ul>
+      {overview.owner ? (
+        <OwnerSection overview={overview} owner={overview.owner} />
+      ) : (
+        <p className="text-xs text-ink-500">
+          Only owners can set up Cloudflare R2 and move files there (it needs the team&apos;s Cloudflare and Vercel
+          accounts). Ask an owner if the storage is getting full.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Owners only: the settings' state and the tools. */
+function OwnerSection({ overview, owner }: { overview: FileStorageOverview; owner: FileStorageOwnerView }) {
+  const inR2 = overview.location === "r2";
+  const inObjectStorage = overview.inObjectStorage.count;
+  const waiting = owner.waitingDeletions + owner.stuckDeletions;
+  return (
+    <>
+      {owner.r2Problem && <Alert tone="warning">{owner.r2Problem}</Alert>}
+      {!inR2 && inObjectStorage > 0 && (
+        <Alert tone="error">
+          {`${files(inObjectStorage)} ${inObjectStorage === 1 ? "is" : "are"} in Cloudflare R2, but R2 isn't set up on this site, so ${inObjectStorage === 1 ? "it" : "they"} can't be opened. Put the R2 settings back in Vercel and redeploy.`}
+        </Alert>
+      )}
+      {!inR2 && owner.r2 === "off" && (
+        <p className="text-xs text-ink-500">
+          Need more room? Set up Cloudflare R2 (free up to 10 GB): see “More room for files” in the README (Put it online, step 9).
+        </p>
+      )}
+      {inR2 && owner.stuckDeletions > 0 && (
+        <p className="text-xs text-amber-800">
+          {`${files(owner.stuckDeletions)} couldn't be deleted from Cloudflare R2 after many tries, so ${owner.stuckDeletions === 1 ? "it's" : "they're"} only tried again when you press Clean up.`}
+        </p>
+      )}
+      {inR2 && (
+        <FileStorageTools
+          canMove={overview.inDatabase.count > 0}
+          moveLabel={`Move ${files(overview.inDatabase.count)} (${formatFileSize(overview.inDatabase.bytes)}) to R2`}
+          waiting={waiting}
+        />
+      )}
+    </>
+  );
+}
 
 /**
  * How much of the team's file storage is used, and by what: uploads stop when it's full, so this says where
  * the space is going and who can free it (Resources, sponsor files, posters, notebook pictures, strategy files).
+ * Everyone who sees it also sees where new files go; owners also get the settings' state and the Cloudflare R2 tools
+ * (`overview.owner`).
  */
-export function FileStorageCard({ usage }: { usage: FileStorageUsage }) {
+export function FileStorageCard({ overview }: { overview: FileStorageOverview }) {
+  const { usage } = overview;
   const pct = (n: number) => (usage.max > 0 ? Math.min(100, (n / usage.max) * 100) : 0);
   const level = usage.used >= usage.max * 0.9 ? "high" : "ok";
   const parts = [
@@ -94,6 +175,7 @@ export function FileStorageCard({ usage }: { usage: FileStorageUsage }) {
           ))}
         </ul>
       </div>
+      <LocationSection overview={overview} />
     </Card>
   );
 }

@@ -13,7 +13,8 @@ import { checkbox, idSchema, optionalText, text } from "@/lib/validation";
 import { parseInput } from "../action";
 import type { ServiceContext } from "../context";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors";
-import { assertFileStorageRoom, posterCleanupSentence, storageFullSentence } from "../files/storage";
+import { assertFileStorageRoom, checkFileStorageRoom, perPersonFileCap, posterCleanupSentence, storageFullSentence } from "../files/storage";
+import { usesObjectStorage, withStoredFiles } from "../files/stored";
 import {
   BLOCKED_EXTENSIONS,
   checkUploadedFile,
@@ -21,7 +22,6 @@ import {
   cleanFilename,
   fileError,
   readUpload,
-  storedFileData,
   type UploadedFile,
   type UploadMessages,
 } from "../files/upload";
@@ -127,27 +127,33 @@ function checkUpload(value: unknown, hasCurrentFile: boolean): CleanUpload | nul
   return checkUploadedFile(upload, RESOURCE_UPLOAD_MESSAGES);
 }
 
-/** Files one member can have waiting for approval (or turned down) at once, so one account can't fill the storage. */
+/**
+ * Files one member can have waiting for approval (or turned down) at once, so one account can't fill the storage
+ * (10× with Cloudflare R2: perPersonFileCap).
+ */
 export const MEMBER_UNAPPROVED_FILE_BYTES = 20 * 1024 * 1024;
 
 type Tx = Prisma.TransactionClient;
 
 /**
- * Every uploaded file together (Resources and sponsor files) must stay under LIMITS.resourceStorageMaxBytes
- * (they live in Postgres), and a member's files that aren't approved yet under MEMBER_UNAPPROVED_FILE_BYTES.
- * Takes the storage lock first (assertFileStorageRoom), so two uploads at the same moment can't both squeeze
- * into the last bit of room.
+ * Every uploaded file together must stay under the team's storage cap (fileStorageCapBytes), and a member's files
+ * that aren't approved yet under MEMBER_UNAPPROVED_FILE_BYTES (perPersonFileCap). Takes the storage lock first
+ * (assertFileStorageRoom), so two uploads at the same moment can't both squeeze into the last bit of room.
+ * `locked: false`: the same checks without the lock, as the quick look before uploading to Cloudflare R2
+ * (withStoredFiles' precheck); saving checks again under the lock.
  */
 async function assertStorageRoom(
   tx: Tx,
   ctx: ServiceContext,
   change: { adding: number; freeing: number; resourceId?: string },
+  locked = true,
 ): Promise<void> {
-  await assertFileStorageRoom(
+  await (locked ? assertFileStorageRoom : checkFileStorageRoom)(
     tx,
     change,
     (usage) =>
       `${storageFullSentence(usage)} Share a link instead, or ask an admin to remove old Resources files. The Business leader, captain, mentors, and teachers can clear out sponsor files.${posterCleanupSentence(usage)}`,
+    usesObjectStorage(ctx),
   );
   if (canManageResources(ctx.actor)) return;
   const mine = await tx.resourceFile.aggregate({
@@ -160,7 +166,7 @@ async function assertStorageRoom(
       },
     },
   });
-  if ((mine._sum.size ?? 0) + change.adding > MEMBER_UNAPPROVED_FILE_BYTES) {
+  if ((mine._sum.size ?? 0) + change.adding > perPersonFileCap(MEMBER_UNAPPROVED_FILE_BYTES, usesObjectStorage(ctx))) {
     throw fileError(
       `You have ${formatFileSize(mine._sum.size ?? 0)} of files waiting for approval. Wait until a leader reviews them, or remove some.`,
     );
@@ -272,19 +278,27 @@ export async function createResource(ctx: ServiceContext, raw: unknown): Promise
   await enforceRateLimit(ctx.db, `resource:${ctx.actor.id}`, manager ? RATE_LIMITS.manager : RATE_LIMITS.member, HOUR, ctx.now);
 
   const upload = input.upload;
-  const created = await ctx.db.$transaction(async (tx) => {
-    if (upload) await assertStorageRoom(tx, ctx, { adding: upload.bytes.byteLength, freeing: 0 });
-    return tx.resource.create({
-      data: {
-        ...input.data,
-        pinned: manager && input.pinned,
-        status: manager ? "APPROVED" : "PENDING",
-        createdById: ctx.actor.id,
-        file: upload ? { create: storedFileData(upload) } : undefined,
-      },
-      select: { id: true },
-    });
-  });
+  const adding = upload?.bytes.byteLength ?? 0;
+  const created = await withStoredFiles(
+    ctx,
+    "resources",
+    upload ? [upload] : [],
+    ([file]) =>
+      ctx.db.$transaction(async (tx) => {
+        if (upload) await assertStorageRoom(tx, ctx, { adding, freeing: 0 });
+        return tx.resource.create({
+          data: {
+            ...input.data,
+            pinned: manager && input.pinned,
+            status: manager ? "APPROVED" : "PENDING",
+            createdById: ctx.actor.id,
+            file: file ? { create: file } : undefined,
+          },
+          select: { id: true },
+        });
+      }),
+    { precheck: () => assertStorageRoom(ctx.db, ctx, { adding, freeing: 0 }, false) },
+  );
   if (!manager) ctx.notifier.notify({ type: "resource.submitted", resourceId: created.id });
   return created;
 }
@@ -325,23 +339,30 @@ export async function updateResource(ctx: ServiceContext, raw: unknown): Promise
   };
 
   const upload = input.upload;
-  await ctx.db.$transaction(async (tx) => {
-    if (upload) {
-      await assertStorageRoom(tx, ctx, { adding: upload.bytes.byteLength, freeing: existing.file?.size ?? 0, resourceId });
-    }
-    const { count } = await tx.resource.updateMany({ where, data });
-    if (count === 0) {
-      throw manager
-        ? new NotFoundError(RESOURCE_NOT_FOUND)
-        : new ConflictError("This resource was just reviewed or removed. Reload the page to see what changed.");
-    }
-    if (input.kind === "link") {
-      await tx.resourceFile.deleteMany({ where: { resourceId } });
-    } else if (input.upload) {
-      const file = storedFileData(input.upload);
-      await tx.resourceFile.upsert({ where: { resourceId }, create: { resourceId, ...file }, update: { ...file, createdAt: ctx.now } });
-    }
-  });
+  const change = { adding: upload?.bytes.byteLength ?? 0, freeing: existing.file?.size ?? 0, resourceId };
+  await withStoredFiles(
+    ctx,
+    "resources",
+    upload ? [upload] : [],
+    ([file]) =>
+      ctx.db.$transaction(async (tx) => {
+        if (upload) await assertStorageRoom(tx, ctx, change);
+        const { count } = await tx.resource.updateMany({ where, data });
+        if (count === 0) {
+          throw manager
+            ? new NotFoundError(RESOURCE_NOT_FOUND)
+            : new ConflictError("This resource was just reviewed or removed. Reload the page to see what changed.");
+        }
+        if (input.kind === "link") {
+          await tx.resourceFile.deleteMany({ where: { resourceId } });
+        } else if (file) {
+          // Replacing sets both data and storageKey, so a file moving between Postgres and R2 never keeps the old one
+          // (an old R2 object is queued for deletion by the database when its key changes).
+          await tx.resourceFile.upsert({ where: { resourceId }, create: { resourceId, ...file }, update: { ...file, createdAt: ctx.now } });
+        }
+      }),
+    { precheck: () => assertStorageRoom(ctx.db, ctx, change, false) },
+  );
   // Re-sent after being turned down: tell the reviewers. Edits while it's still waiting don't email
   // again (the reviewers already know; the review buttons check they approve the latest version).
   if (!manager && existing.status === "REJECTED") ctx.notifier.notify({ type: "resource.submitted", resourceId });

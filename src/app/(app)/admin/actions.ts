@@ -16,6 +16,14 @@ import { getServiceContext } from "@/server/context";
 import { getTransport } from "@/server/email/transport";
 import { ConflictError } from "@/server/errors";
 import {
+  cleanUpFileStorage,
+  cleanUpMessage,
+  connectionTestMessage,
+  moveFilesToObjectStorage,
+  moveResultMessage,
+  testFileStorage,
+} from "@/server/services/file-storage";
+import {
   approveUser,
   deleteUser,
   rejectUser,
@@ -127,6 +135,58 @@ export async function sendDiscordTestAction(_prev: ActionState, formData: FormDa
       revalidatePath("/", "layout");
       if (status === "FAILED") throw new ConflictError(DISCORD_TEST_MESSAGES.FAILED);
       return DISCORD_TEST_MESSAGES[status];
+    },
+    { formData },
+  );
+}
+
+// ---------- File storage (owners; Admin → Approvals → File storage) ----------
+
+/** Saves, reads back, and deletes a tiny file in Cloudflare R2. */
+export async function testFileStorageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      const result = await testFileStorage(ctx);
+      const message = connectionTestMessage(result);
+      if (!result.ok) throw new ConflictError(message);
+      return message;
+    },
+    { formData },
+  );
+}
+
+/** Moves a batch of files from the database to Cloudflare R2 (click again to continue). */
+export async function moveFilesToObjectStorageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      try {
+        const result = await moveFilesToObjectStorage(ctx);
+        const message = moveResultMessage(result);
+        if (result.moved === 0 && result.error) throw new ConflictError(message);
+        return message;
+      } finally {
+        revalidatePath("/admin");
+      }
+    },
+    { formData },
+  );
+}
+
+/** Deletes waiting R2 objects of removed files. */
+export async function cleanUpFileStorageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      try {
+        const result = await cleanUpFileStorage(ctx);
+        const message = cleanUpMessage(result);
+        if (result.deleted + result.kept === 0 && result.error) throw new ConflictError(message);
+        return message;
+      } finally {
+        revalidatePath("/admin");
+      }
     },
     { formData },
   );

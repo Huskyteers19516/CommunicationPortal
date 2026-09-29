@@ -648,8 +648,8 @@ describe("demo seed", () => {
     }
     const code = resources.find((r) => r.file);
     expect(code).toMatchObject({ status: "APPROVED", type: "CODE", file: { filename: "TeleOpMain.java" } });
-    expect(new TextDecoder().decode(code!.file!.data)).toContain("public class TeleOpMain");
-    expect(code!.file!.size).toBe(code!.file!.data.byteLength);
+    expect(new TextDecoder().decode(code!.file!.data!)).toContain("public class TeleOpMain");
+    expect(code!.file!.size).toBe(code!.file!.data!.byteLength);
 
     // Parts queue: every process, a clear order (positions 0..n-1), two being made by active members, two done.
     const parts = await db.part.findMany({ include: { category: true }, orderBy: { position: "asc" } });
@@ -733,9 +733,9 @@ describe("demo seed", () => {
       expect(p.createdAt.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
       if (p.link) expect(p.link).toMatch(/^https:\/\/design\.example\.com\//);
       if (!p.file) continue;
-      expect(p.file).toMatchObject({ contentType: "image/png", size: p.file.data.byteLength });
+      expect(p.file).toMatchObject({ contentType: "image/png", size: p.file.data!.byteLength });
       expect(p.file.filename).toMatch(/^[A-Za-z0-9 ]+\.png$/);
-      expect(Array.from(p.file.data.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      expect(Array.from(p.file.data!.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     }
   });
 
@@ -748,8 +748,8 @@ describe("demo seed", () => {
     const auto = strategies.find((x) => x.kind === "AUTO")!;
     expect(auto.pinned).toBe(true);
     expect(auto.files).toHaveLength(1);
-    expect(auto.files[0]).toMatchObject({ filename: "red-audience-auto.pp", contentType: "application/json", size: auto.files[0].data.byteLength });
-    expect(isPedroPathProject(JSON.parse(Buffer.from(auto.files[0].data).toString("utf8")))).toBe(true);
+    expect(auto.files[0]).toMatchObject({ filename: "red-audience-auto.pp", contentType: "application/json", size: auto.files[0].data!.byteLength });
+    expect(isPedroPathProject(JSON.parse(Buffer.from(auto.files[0].data!).toString("utf8")))).toBe(true);
     expect(strategies.find((x) => x.kind === "MATCH")!.link).toMatch(/^https:\/\/docs\.example\.com\//);
     for (const x of strategies) {
       expect(users.get(x.createdById!)?.status, x.title).toBe("ACTIVE");
@@ -768,9 +768,9 @@ describe("demo seed", () => {
     expect(team.summaryUpdatedAt!.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
     const about = await db.strategy.findMany({ where: { teamId: team.id }, include: { files: true } });
     expect(about).toHaveLength(1);
-    expect(about[0].files[0]).toMatchObject({ contentType: "application/json", size: about[0].files[0].data.byteLength });
+    expect(about[0].files[0]).toMatchObject({ contentType: "application/json", size: about[0].files[0].data!.byteLength });
     expect(about[0].files[0].filename).toMatch(/\.pp$/);
-    expect(isPedroPathProject(JSON.parse(Buffer.from(about[0].files[0].data).toString("utf8")))).toBe(true);
+    expect(isPedroPathProject(JSON.parse(Buffer.from(about[0].files[0].data!).toString("utf8")))).toBe(true);
   });
 
   it("has a demo order list: every status, ordered and added by active people, status changes recorded", async () => {
@@ -814,8 +814,8 @@ describe("demo seed", () => {
         expect(e.lastEditedAt).toEqual(edit.editedAt);
       }
       for (const img of e.images) {
-        expect(img).toMatchObject({ contentType: "image/png", size: img.data.byteLength });
-        expect(Array.from(img.data.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        expect(img).toMatchObject({ contentType: "image/png", size: img.data!.byteLength });
+        expect(Array.from(img.data!.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       }
     }
     expect(entries.filter((e) => e.edits.length > 0)).toHaveLength(1);

@@ -3,6 +3,8 @@ import type { Prisma } from "@/generated/prisma/client";
 import type { ResourceStatus, ResourceType } from "@/generated/prisma/enums";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
+import { getObjectStore, type ObjectStore } from "../files/object-store";
+import { readStoredBytes, STORED_FILE_SELECT } from "../files/respond";
 import {
   canDeleteResource,
   canEditResource,
@@ -242,7 +244,7 @@ export type ResourcePreview =
   | { kind: "image" }
   | { kind: "pdf" }
   /** No preview: "type" = not a previewable kind, "too-big" = text over the limit, "binary" = not clean UTF-8. */
-  | { kind: "none"; reason: "type" | "too-big" | "binary" };
+  | { kind: "none"; reason: "type" | "too-big" | "binary" | "unavailable" };
 
 export interface ResourceDetail extends ResourceItem {
   reviewedByName: string | null;
@@ -265,7 +267,12 @@ export interface ResourceDetail extends ResourceItem {
  * The /resources/[id] page, or null when the actor may not see it (someone else's pending or
  * turned-down resource) or it doesn't exist. Small text files come with their text for the preview.
  */
-export async function getResourceDetail(actor: Actor, id: string, db: Db = prisma): Promise<ResourceDetail | null> {
+export async function getResourceDetail(
+  actor: Actor,
+  id: string,
+  db: Db = prisma,
+  store: ObjectStore | null = getObjectStore(),
+): Promise<ResourceDetail | null> {
   const r = await db.resource.findUnique({
     where: { id },
     select: {
@@ -291,9 +298,11 @@ export async function getResourceDetail(actor: Actor, id: string, db: Db = prism
     else if (kind === "other") preview = { kind: "none", reason: "type" };
     else if (item.file.size > TEXT_PREVIEW_MAX_BYTES) preview = { kind: "none", reason: "too-big" };
     else {
-      const data = await db.resourceFile.findUnique({ where: { resourceId: r.id }, select: { data: true } });
-      const text = data ? decodeTextPreview(data.data) : null;
-      preview = text === null ? { kind: "none", reason: "binary" } : { kind: "text", text, lineCount: countLines(text) };
+      const row = await db.resourceFile.findUnique({ where: { resourceId: r.id }, select: { data: true, storageKey: true } });
+      const bytes = row ? await readStoredBytes(row, store) : null;
+      const text = bytes ? decodeTextPreview(bytes) : null;
+      if (row && !bytes) preview = { kind: "none", reason: "unavailable" };
+      else preview = text === null ? { kind: "none", reason: "binary" } : { kind: "text", text, lineCount: countLines(text) };
     }
   }
 
@@ -319,7 +328,7 @@ export async function getResourceFile(actor: Actor, id: string, db: Db = prisma)
     select: {
       status: true,
       createdById: true,
-      file: { select: { filename: true, contentType: true, data: true } },
+      file: { select: STORED_FILE_SELECT },
     },
   });
   if (!r || !r.file || !canViewResource(actor, r)) return null;

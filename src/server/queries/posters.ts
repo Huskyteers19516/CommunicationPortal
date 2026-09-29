@@ -6,6 +6,7 @@ import { type DateOnly, dateOnlyToDb, dbToDateOnly } from "@/lib/dates";
 import { parseHttpUrl } from "@/lib/urls";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
+import { STORED_FILE_SELECT } from "../files/respond";
 import { canEditPoster } from "../permissions";
 import { previewKind } from "../resources/serve";
 
@@ -214,5 +215,5 @@ export async function getPosterForEdit(actor: Actor, id: string, db: Db = prisma
 /** A poster's file with its bytes, for the file route. Any ACTIVE person; null otherwise (or when it's gone). */
 export async function getPosterFile(actor: Actor, fileId: string, db: Db = prisma) {
   if (actor.status !== "ACTIVE" || !fileId || fileId.length > 64) return null;
-  return db.posterFile.findUnique({ where: { id: fileId }, select: { filename: true, contentType: true, data: true } });
+  return db.posterFile.findUnique({ where: { id: fileId }, select: STORED_FILE_SELECT });
 }

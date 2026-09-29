@@ -374,7 +374,10 @@ model ResourceFile {
   /// Type reported by the browser. Only used to pick a safe way to serve it.
   contentType String
   size        Int
-  data        Bytes
+  /// The file's bytes when it is stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data        Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there (src/server/files/object-store.ts). Null = in Postgres.
+  storageKey  String?  @unique
   createdAt   DateTime @default(now())
 }
 
@@ -433,7 +436,10 @@ model SponsorshipFile {
   /// Type reported by the browser. Only used to pick a safe way to serve it.
   contentType   String
   size          Int
-  data          Bytes
+  /// The file's bytes when it is stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data          Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there (src/server/files/object-store.ts). Null = in Postgres.
+  storageKey    String?     @unique
   uploadedById  String?
   uploadedBy    User?       @relation("SponsorshipFileUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
   createdAt     DateTime    @default(now())
@@ -530,7 +536,10 @@ model PosterFile {
   filename    String
   contentType String
   size        Int
-  data        Bytes
+  /// The file's bytes when it is stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data        Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there (src/server/files/object-store.ts). Null = in Postgres.
+  storageKey  String?  @unique
   createdAt   DateTime @default(now())
 }
 
@@ -780,7 +789,10 @@ model NotebookImage {
   filename    String
   contentType String
   size        Int
-  data        Bytes
+  /// The file's bytes when it is stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data        Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there (src/server/files/object-store.ts). Null = in Postgres.
+  storageKey  String?       @unique
   width       Int?
   height      Int?
   position    Int           @default(0)
@@ -853,7 +865,10 @@ model StrategyFile {
   filename    String
   contentType String
   size        Int
-  data        Bytes
+  /// The file's bytes when it is stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data        Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there (src/server/files/object-store.ts). Null = in Postgres.
+  storageKey  String?  @unique
   createdAt   DateTime @default(now())
 
   @@index([strategyId, createdAt])
@@ -1063,4 +1078,12 @@ model AttendanceChange {
   @@index([sessionId])
   @@index([userId, createdAt])
   @@index([changedById, createdAt])
+}
+
+/// Objects to delete from Cloudflare R2. Filled by database triggers whenever a file row that lives in R2 is
+/// deleted (including cascades), then emptied by the app (src/server/files/object-store.ts), so nothing is left behind.
+model FileDeletion {
+  storageKey String   @id
+  createdAt  DateTime @default(now())
+  attempts   Int      @default(0)
 }
