@@ -2,8 +2,8 @@ import { Download, ExternalLink, FileText, Paperclip, Route } from "lucide-react
 import Link from "next/link";
 import { buttonClasses } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
-import { PEDRO_VISUALIZER_URL } from "@/lib/constants";
 import { formatFileSize } from "@/lib/files";
+import { PLANNER_URL } from "@/lib/planner-paths";
 import type { StrategyFileInfo } from "@/server/queries/strategy";
 
 const hintLink = "font-medium text-brand-700 underline underline-offset-2 hover:text-brand-800";
@@ -79,7 +79,7 @@ function FileRow({ file, planner }: { file: StrategyFileInfo; planner: PlannerLi
             {planner.where}
           </Link>{" "}
           (or{" "}
-          <a href={PEDRO_VISUALIZER_URL} target="_blank" rel="noopener noreferrer" className={hintLink}>
+          <a href={PLANNER_URL} target="_blank" rel="noopener" className={hintLink}>
             in a new tab
           </a>
           ) → Load (the ↑ arrow at the top) → pick this file.

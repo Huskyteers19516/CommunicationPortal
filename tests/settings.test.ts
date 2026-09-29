@@ -773,6 +773,26 @@ describe("demo seed", () => {
     expect(isPedroPathProject(JSON.parse(Buffer.from(about[0].files[0].data!).toString("utf8")))).toBe(true);
   });
 
+  it("has demo saved paths (Strategy → Paths): ours and one traced for 9040, each one the planner can open", async () => {
+    const { isPedroPathProject } = await import("@/lib/strategy");
+    const db = s.db;
+    const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
+    const paths = await db.plannerPath.findMany({ include: { team: true } });
+    expect(paths).toHaveLength(3);
+    expect(paths.filter((p) => p.team === null)).toHaveLength(2);
+    expect(paths.filter((p) => p.team?.number === 9040)).toHaveLength(1);
+    for (const p of paths) {
+      expect(isPedroPathProject(JSON.parse(p.data)), p.name).toBe(true);
+      expect(p.size, p.name).toBe(Buffer.byteLength(p.data, "utf8"));
+      expect(users.get(p.createdById!)?.status, p.name).toBe("ACTIVE");
+      expect(users.get(p.updatedById!)?.status, p.name).toBe("ACTIVE");
+      expect(p.createdAt.getTime()).toBeLessThanOrEqual(p.updatedAt.getTime());
+      expect(p.updatedAt.getTime()).toBeLessThanOrEqual(TEST_NOW.getTime());
+    }
+    // One was changed by someone else after it was saved.
+    expect(paths.some((p) => p.updatedById !== p.createdById && p.updatedAt > p.createdAt)).toBe(true);
+  });
+
   it("has a demo order list: every status, ordered and added by active people, status changes recorded", async () => {
     const db = s.db;
     const users = new Map((await db.user.findMany()).map((u) => [u.id, u]));
@@ -1012,6 +1032,7 @@ describe("demo seed", () => {
     const checkInsBefore = await s.db.attendanceRecord.count();
     const attendanceChangesBefore = await s.db.attendanceChange.count();
     const ourStrategiesBefore = await s.db.strategy.count({ where: { teamId: null } });
+    const plannerPathsBefore = await s.db.plannerPath.count();
     const notebookEntriesBefore = await s.db.notebookEntry.count();
     const discussionRepliesBefore = await s.db.discussionReply.count();
     await s.db.discussionThread.create({ data: { title: "Leftover discussion", body: "Old", authorId: someone.id, replies: { create: { body: "Old reply" } } } });
@@ -1020,6 +1041,7 @@ describe("demo seed", () => {
     const seasonEventsBefore = await s.db.calendarEvent.count({ where: { sourceKey: { not: null } } });
 
     await s.db.announcement.create({ data: { title: "Leftover", body: "Old news", authorId: someone.id } });
+    await s.db.plannerPath.create({ data: { name: "Leftover path", data: "{}", size: 2, createdById: someone.id } });
     await s.db.attendanceChange.create({
       data: { sessionDate: TEST_NOW, sessionKind: "REGULAR", userName: "Extra", changedById: someone.id, action: "REMOVED" },
     });
@@ -1034,6 +1056,10 @@ describe("demo seed", () => {
     // Strategies (and their files, which cascade) are replaced, not duplicated.
     expect(await s.db.strategy.count({ where: { teamId: null } })).toBe(ourStrategiesBefore);
     expect(ourStrategiesBefore).toBe(3);
+    // Saved paths too (they'd outlive their accounts otherwise).
+    expect(await s.db.plannerPath.count()).toBe(plannerPathsBefore);
+    expect(plannerPathsBefore).toBe(3);
+    expect(await s.db.plannerPath.count({ where: { name: "Leftover path" } })).toBe(0);
     expect(await s.db.part.count()).toBe(partsBefore);
     expect(partsBefore).toBeGreaterThan(0);
     expect(await s.db.sponsorship.count()).toBe(sponsorshipsBefore);

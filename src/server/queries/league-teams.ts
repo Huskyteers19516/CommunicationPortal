@@ -69,11 +69,21 @@ export async function listLeagueTeams(actor: Actor, opts: { q?: string } = {}, d
   };
 }
 
-/** The Strategy tabs' counts: our own strategies, and the other teams. Null for accounts that aren't active. */
-export async function getStrategyTabCounts(actor: Actor, db: Db = prisma): Promise<{ ours: number; teams: number } | null> {
+/**
+ * The Strategy tabs' counts: our own strategies, the other teams, and the saved paths (all of them). Null for
+ * accounts that aren't active.
+ */
+export async function getStrategyTabCounts(
+  actor: Actor,
+  db: Db = prisma,
+): Promise<{ ours: number; teams: number; paths: number } | null> {
   if (actor.status !== "ACTIVE") return null;
-  const [ours, teams] = await Promise.all([db.strategy.count({ where: { teamId: null } }), db.leagueTeam.count()]);
-  return { ours, teams };
+  const [ours, teams, paths] = await Promise.all([
+    db.strategy.count({ where: { teamId: null } }),
+    db.leagueTeam.count(),
+    db.plannerPath.count(),
+  ]);
+  return { ours, teams, paths };
 }
 
 export interface LeagueTeamDetail {
@@ -89,6 +99,8 @@ export interface LeagueTeamDetail {
   strategyCount: number;
   /** Files on the strategies about them (they go when the team is removed). */
   fileCount: number;
+  /** Paths saved for them in the team library (they go when the team is removed too). */
+  pathCount: number;
   canManage: boolean;
 }
 
@@ -111,7 +123,7 @@ export async function getLeagueTeam(actor: Actor, number: number | null, db: Db 
       summary: true,
       summaryUpdatedAt: true,
       summaryUpdatedBy: { select: { name: true } },
-      _count: { select: { strategies: true } },
+      _count: { select: { strategies: true, paths: true } },
     },
   });
   if (!t) return null;
@@ -127,6 +139,7 @@ export async function getLeagueTeam(actor: Actor, number: number | null, db: Db 
     summaryVersion: t.summaryUpdatedAt ? t.summaryUpdatedAt.toISOString() : "",
     strategyCount: t._count.strategies,
     fileCount,
+    pathCount: t._count.paths,
     canManage: canManageLeagueTeams(actor),
   };
 }

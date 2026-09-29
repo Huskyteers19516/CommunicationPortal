@@ -222,7 +222,10 @@ export const DISCUSSION_CATEGORY_LABELS: Record<DiscussionCategory, string> = {
 /** Our FTC team number (left out of Strategy → Other teams). */
 export const OUR_TEAM_NUMBER = 19516;
 
-/** The team's Pedro Pathing visualizer (BIOBUZZ edition), shown on the Strategy page. */
+/**
+ * The team's Pedro Pathing visualizer (BIOBUZZ edition) on GitHub Pages. The Strategy page shows this site's own copy
+ * (PLANNER_URL in ./planner-paths.ts, with the team library); this one is the fallback link.
+ */
 export const PEDRO_VISUALIZER_URL = "https://martinmax0711.github.io/PedroPathingBiobuzz/";
 
 export const ROLES = Object.values(Role) as Role[];
@@ -363,4 +366,8 @@ export const LIMITS = {
   discussionReplyMax: 5000,
   announcementTitleMax: 160,
   announcementBodyMax: 10000,
+  plannerPathNameMax: 80,
+  plannerPathNotesMax: 2000,
+  /** A saved planner path's .pp JSON, in bytes. Real paths are a few KB. */
+  plannerPathDataMaxBytes: 256 * 1024,
 } as const;

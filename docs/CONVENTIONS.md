@@ -167,21 +167,55 @@ saving again replaces it. Totals leave out cancelled fundraisers. No emails.
 
 ## Strategy (`src/server/services/strategy.ts`, `/strategy`)
 
-The top of the page is the **Path planner**: the owner's Pedro Pathing visualizer (BIOBUZZ edition, a Svelte app on
-GitHub Pages, `PEDRO_VISUALIZER_URL`; don't change that repo from here) in an iframe (`components/strategy/path-planner.tsx`):
+The top of the page is the **Path planner**: the owner's Pedro Pathing visualizer (BIOBUZZ edition, a Svelte app,
+Apache-2.0 — keep its `LICENSE`, `NOTICE` and `THIRD-PARTY-LICENSES.txt` next to it) **served by this site** from `public/planner/` (a static build
+copied from the PedroPathingBiobuzz repo by `npm run planner:sync`; don't edit those files here, and don't lint them) at
+`PLANNER_URL` = `/planner/index.html` (`src/lib/planner-paths.ts`: the build links its files relative to the page, so
+never link to `/planner` — Next.js sends `/planner/` there and `next.config.ts` redirects that on to `index.html`, query
+kept). The GitHub Pages copy (`PEDRO_VISUALIZER_URL`) keeps working as before and is only a fallback link in the hint
+("copy on GitHub Pages", no team library there). It's in an iframe (`components/strategy/path-planner.tsx`):
 `sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals"`
-(its own storage for saved paths, Save As/export downloads, `alert`/`confirm`, help links in new tabs — never
-`allow-top-navigation`), `allow="fullscreen; clipboard-write"`, `loading="lazy"`. The planner needs about twice its height
+(this site's origin for the sign-in cookie its team library needs and its own storage, Save As/export downloads,
+`alert`/`confirm`, help links in new tabs — never `allow-top-navigation`; with scripts + same origin the sandbox is a
+guard against mistakes, not a wall, so only ever frame our own planner build), `allow="fullscreen; clipboard-write"`,
+`loading="lazy"`. The planner needs about twice its height
 in width, so from 85rem (1360px) wide it shows right away, breaks out of the page column (`min(100vw - 18rem, 90rem)`,
 centered) at 2:1 (≤ 75vh tall); below that it's folded away with a "Works best on a computer" (phones) / "in full screen
 or a new tab" note and **Show it here** (the frame is only created once it's wanted, then kept, so hiding it or resizing
 doesn't lose a path being drawn). **Full screen** (secondary button) only where `document.fullscreenEnabled` and from
 768px (not iPhones); it unfolds the frame first. **Open in a new tab** is a plain link and always works, even when the
 frame can't load (the hint ends with the same link). On `/strategy` a **Skip the planner** link (visible on focus) jumps
-to the list. `next.config.ts` only sends `X-Frame-Options` for *our* pages being framed — never add a
-`frame-src`/`default-src` CSP that would block github.io. The planner keeps paths in its own (partitioned) browser
-storage — its **Save** only stores there — so sharing one means its Save menu (disk icon) → **Save As** → Confirm (that
-downloads a `.pp` file) → a strategy.
+to the list. `next.config.ts` sends `X-Frame-Options: DENY` for every page except `/planner/*`, which gets `SAMEORIGIN`,
+`Permissions-Policy: camera=(), …` (no camera; our pages keep `camera=(self)` for the attendance scanner) and a
+**Content-Security-Policy** (`PLANNER_CSP`: `default-src 'self'; script-src 'self'` — no inline scripts, no eval — `style-src
+'self' 'unsafe-inline'` (Svelte transitions, style attributes), `img-src 'self' data: blob:`, `connect-src 'self'
+https://fpa.pedropathing.com` (the path optimizer), `worker-src 'self' blob:` (GIF export), `object-src 'none'`,
+`base-uri`/`form-action 'self'`, `frame-ancestors 'self'`): the planner runs on our origin with the signed-in person's
+session and opens other members' `.pp` files, so keep that policy tight (the planner keeps its early theme code in
+`theme.js` for it; `tests/planner-static.test.ts` checks the headers and the build). Its `LICENSE` and `NOTICE` (no
+extension) are sent as `text/plain`. The proxy lets the planner's files (scripts, styles, fonts, icons, its service worker
+and manifest — browsers fetch some without cookies) load without signing in, like on GitHub Pages; only its page
+(`/planner/index.html`, however it's spelled: case, %-escapes, extra slashes) bounces signed-out people to `/login?next=…`
+and back (so a shared "Open in planner" link works) — a convenience, not access control (the page is public on GitHub
+Pages anyway; the API checks the session). On a team's page the planner opens at `plannerTeamHref` (`?team=<number>`), so
+its **Save to team library** starts with that team as whose path it is. Sharing a path: the planner's **Save to team
+library** (Strategy → **Paths**, below); its own **Save** keeps a path in this browser only, and **Save As** downloads a
+`.pp` file to attach to a strategy. Browser storage belongs to the origin, not the account: the planner's "This browser"
+files (`biobuzz_pp_files`, `biobuzz_pp_settings`, up to a few MB with pictures) now share this site's `localStorage` with
+the notebook's unsaved drafts (every write there is wrapped in try/catch), stay after signing out (anyone on a shared
+laptop sees them), and paths saved on the GitHub Pages copy stay *there* — the hint (and the planner's This browser tab)
+says how to move one: open that copy, Save As, Load it here, Save to team library.
+
+**Updating the planner**: change it in its own repo (its tests: `npm run check`, `npm test`) and **commit it there**, then
+here run `npm run planner:sync` (`scripts/sync-planner.mjs`: refuses a planner with uncommitted changes unless
+`-- --allow-dirty` (local tries only — never commit such a build), runs `npm run build` in `../PedroPathingBiobuzz` —
+another folder with `npm run planner:sync -- <dir>` or `PLANNER_DIR`; `-- --skip-build` copies its existing `dist/` — refuses a
+build whose page links files from the site root or has inline `<script>`s (the CSP would block them) or has no
+`THIRD-PARTY-LICENSES.txt` (the planner's build lists every bundled package's license there), then empties
+`public/planner/` and copies in `dist/` plus `LICENSE` and `NOTICE`, and writes `BUILD.txt` with the planner commit it
+was built from). Check `/planner/index.html` signed in (its Save menu then has a **Team library** section) and commit
+`public/planner/` with the change. The planner's team library turns on only when its page path starts with `/planner/` and
+`GET /api/planner/session` answers 200 — on GitHub Pages it never calls us.
 
 **Our strategies** below it: title, kind (`STRATEGY_KINDS`: Autonomous, TeleOp, Endgame, Match plan, Scouting, Other),
 description (shown with `RichText`), an optional http(s) link, and up to `LIMITS.strategyFilesMax` files
@@ -202,23 +236,66 @@ at most 4 MB of new files (`STRATEGY_SAVE_MAX_BYTES`, the request limit — add 
 **Download path** with "the planner → Load (the ↑ arrow at the top) → pick this file" (for a strategy about another
 team, "the planner" links to that team's page). Descriptions (via `optionalText`) and team summaries turn CRLF line breaks into `\n`
 before the length check, so text typed up to the textarea's `maxLength` fits. Deleting a strategy deletes its files. No
-emails. Both tabs show both counts (`getStrategyTabCounts`: our strategies, other teams).
+emails. All three tabs show all three counts (`getStrategyTabCounts`: our strategies, other teams, saved paths).
 
 **Other teams** (`/strategy/teams`, tab next to **Our strategies**; `services/league-teams.ts`, `queries/league-teams.ts`):
 the other teams in our league (`LeagueTeam`, 17 seeded by the migration, ids `leagueteam<number>`), sorted by number,
 searched server-side (`?q=`: a number or its start, or part of the name/city). Adding, renaming, and removing teams is
 `canManageLeagueTeams` (= admin access): numbers are unique (friendly error, the unique index backs it up) and never
-`OUR_TEAM_NUMBER` (19516; searching it says so). Removing a team cascades to the strategies about it and their files
-(the confirm says how many: `leagueTeamRemoveQuestion`; the list then says what went: `leagueTeamRemovedNotice`). A team's page (`/strategy/teams/[number]`) has **Their strategy at a glance** — a
+`OUR_TEAM_NUMBER` (19516; searching it says so). Removing a team cascades to the strategies about it and their files,
+and to its saved paths (the confirm says how many: `leagueTeamRemoveQuestion`; the list then says what went: `leagueTeamRemovedNotice`). A team's page (`/strategy/teams/[number]`) has **Their strategy at a glance** — a
 summary anyone ACTIVE writes (`saveLeagueTeamSummary`; the form sends `version` = the `summaryUpdatedAt` it saw, "" for
 never, and the save is a conditional `updateMany`, so a save based on an older version is a `ConflictError`; the action
 refreshes the page either way, so the editor then shows their version next to the kept text, and saving again replaces
 it; Cancel keeps theirs: reopening starts from the current summary, without the old warning) — the strategies about them (`Strategy.teamId`; the same form, cards, files, and permissions as ours, added from
 `/strategy/new?team=<number>`; the team is set when it's added and never changes; `listStrategies` only ever lists ours
-(`teamId` null) or one team's), and the planner (**Trace their path**) folded away behind **Open the planner**
-(`PathPlanner open="asked"`), with the hint to Save As the traced `.pp` and attach it to a strategy about them (that link
-opens a new tab, so an undownloaded trace isn't lost). A team strategy's page links back to the
+(`teamId` null) or one team's), **Saved paths for {name}** (`#paths`: that team's paths from the team library, the Paths tab's cards without the team
+badge, the newest `PLANNER_PATHS_LIST_MAX` with a link to the rest; `?pathSaved=1` / `?pathRemoved=1` notices), and the
+planner (**Trace their path**) folded away behind **Open the planner** (`PathPlanner open="asked"`, `src` =
+`plannerTeamHref(number)`, so they're already picked as whose path it is), with the hint to **Save to team library** —
+or Save As the `.pp` and attach it to a strategy about them (that link opens a new tab, so an unsaved trace isn't lost). A team strategy's page links back to the
 team, and removing it goes back there. Their files count toward the same storage cap and per-person allowance.
+
+**Paths** (`/strategy/paths`, the third tab; `services/planner-paths.ts`, `queries/planner-paths.ts`, client-safe helpers
+in `src/lib/planner-paths.ts`): the **team library** — paths saved from the planner (`PlannerPath`: name ≤
+`LIMITS.plannerPathNameMax`, one line, control characters dropped; notes ≤ `LIMITS.plannerPathNotesMax`; `data` = the
+`.pp` JSON text, ≤ `LIMITS.plannerPathDataMaxBytes` (256 KB) as UTF-8, a leading BOM dropped, and a path the planner can
+open — the same `pedroPathProblem` as a `.pp` attached to a strategy; `size` = its UTF-8 bytes; `teamId` null = ours,
+otherwise another team **by number**: never 19516, and it must be on the Other teams list, locked `FOR KEY SHARE` while
+saving). Everyone ACTIVE sees and opens every path and saves new ones; changing, renaming, and removing one is
+`canEditPlannerPath` (whoever saved it first, and admin access). Every save sends `version` (the `updatedAt` it loaded,
+ISO) and is a conditional write: a save based on an older version is a `PlannerPathConflictError` (409 with
+`current: { version, updatedByName }`; the edit form's action refreshes the page, so saving again replaces it), and each
+save moves `updatedAt` at least 1 ms past the version it replaces, so versions never repeat. Rate limits per person:
+`PLANNER_PATH_CREATE_LIMIT` (60 new paths an hour) and `PLANNER_PATH_WRITE_LIMIT` (300 changes and removals an hour).
+The tab lists the newest 200 (`listPlannerPaths`: `updatedAt` desc; `?team=all|ours|<number>` —
+`parsePlannerPathTeamFilter`, anything else is "all" on the page and a 400 in the API; `?q=` searches name and notes with
+`cleanSearchText` + `escapeLike`), a "N paths · … matching “q” · showing the 200 newest" status line, cards with whose
+it is (Ours, or "9040 · STEAMpunks Alpha" linking to their page), notes, "You / X · saved|updated by Y · 3 h ago · size",
+**Open in planner** (`/planner/index.html?path=<id>`, a new tab), **Download .pp** (`/strategy/paths/[id]/download`:
+any ACTIVE user, `fileResponseHeaders` with `download`, named after the path without `<>:"/\|?*`), and for `canEdit`
+**Edit** (`/strategy/paths/[id]/edit`, `?from=team` goes back to the team's page: name, whose, notes — the path itself
+is changed in the planner) and **Remove** (confirm; back to the list with its filters, `?removed=1`). No emails.
+
+**The planner's JSON API** (`src/app/api/planner/**`, helpers in `src/server/planner-api.ts`; the planner's side is
+`src/utils/portalLibrary.ts` in its repo — change both together): `GET /api/planner/session` →
+`{ user: { name, canManageAll }, teams: [{ number, name }] }`; `GET /api/planner/paths?team=&q=` → `{ paths: [{ id,
+name, notes, team, size, updatedAt, updatedByName, createdByName, canEdit }] }`; `GET /api/planner/paths/:id` → `{ id,
+name, notes, team, data, version, canEdit }`; `POST /api/planner/paths` `{ name, notes?, teamNumber?, data }` → 201 `{ id,
+version }`; `PUT /api/planner/paths/:id` `{ name?, notes?, teamNumber?, data?, version }` (only what's sent changes) →
+`{ version, name, notes, team }` (the path as it is now: an overwrite that only sends the data keeps someone else's
+rename, and the planner shows it instead of its old name) or 409; `DELETE` → 204. Errors are `{ error, fieldErrors? }`
+with 400 / 401 / 403 / 404 / 409 / 413 / 429. An id that isn't `PLANNER_PATH_ID` (`/^[A-Za-z0-9_-]{1,64}$/`, like the
+planner's `?path=` check) is a 404 before the database is asked (a NUL byte used to be a 500), here and on the Paths
+tab's download and edit pages.
+Rules: JSON only, `Cache-Control: no-store`, `nosniff`; ACTIVE people only — everyone else a JSON 401, never a redirect
+(the proxy answers `/api/*` without a session cookie with that 401 itself); every POST/PUT/DELETE needs
+`Content-Type: application/json` **and** `X-Planner: 1`, and when present `Origin` must be this site
+(`request.nextUrl.origin`, `APP_URL`, or the forwarded host) and `Sec-Fetch-Site` must be `same-origin` — otherwise 403
+before anything is read; bodies are read up to `PLANNER_API_BODY_MAX_BYTES` (300 KB, 413 past it, by `Content-Length`
+or while reading) before parsing; data over 256 KB is 413 too. Every request a signed-in person makes counts toward
+`PLANNER_API_REQUEST_LIMIT` (1,200 an hour, all methods, refused ones too — checked before a body is read; 429 past
+it), on top of the save limits above. Never add CORS headers to these routes.
 
 ## Order list (`src/server/services/orders.ts`, `/orders`)
 

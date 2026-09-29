@@ -88,12 +88,20 @@ export function strategyRemoveQuestion(title: string, fileCount: number): string
   return `Remove “${title}” and its ${fileCount === 1 ? "file" : `${fileCount} files`}?`;
 }
 
-/** Remove team's question: "Remove 9040 · STEAMpunks Alpha from Other teams? The 3 strategies about them and their 2 files will be removed too." */
-export function leagueTeamRemoveQuestion(label: string, strategies: number, files: number): string {
-  if (strategies === 0) return `Remove ${label} from Other teams?`;
+/**
+ * Remove team's question: "Remove 9040 · STEAMpunks Alpha from Other teams? The 3 strategies about them and their 2
+ * files will be removed too." `paths`: their saved paths (Strategy → Paths), which go too.
+ */
+export function leagueTeamRemoveQuestion(label: string, strategies: number, files: number, paths = 0): string {
+  const savedPaths = paths === 1 ? "the saved path for them" : `the ${paths} saved paths for them`;
+  if (strategies === 0) {
+    if (!(paths > 0)) return `Remove ${label} from Other teams?`;
+    return `Remove ${label} from Other teams? ${savedPaths[0].toUpperCase()}${savedPaths.slice(1)} will be removed too.`;
+  }
   const what = strategies === 1 ? "The strategy about them" : `The ${strategies} strategies about them`;
   const their = strategies === 1 ? "its" : "their";
   const withFiles = files === 0 ? "" : ` and ${their} ${files === 1 ? "file" : `${files} files`}`;
+  if (paths > 0) return `Remove ${label} from Other teams? ${what}${withFiles}, and ${savedPaths}, will be removed too.`;
   return `Remove ${label} from Other teams? ${what}${withFiles} will be removed too.`;
 }
 

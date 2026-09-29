@@ -2,11 +2,13 @@ import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import { expectNoHorizontalScroll, PEOPLE, signIn, sql, uniq } from "./helpers";
 
-// Strategy: the team's Pedro Pathing planner (the owner's BIOBUZZ visualizer on GitHub Pages) embedded in a
-// frame, and the team's strategies below it. Everyone adds strategies; whoever added one (and admin access) can
+// Strategy: the team's Pedro Pathing planner (the owner's BIOBUZZ visualizer, served by this site at /planner/)
+// embedded in a frame, and the team's strategies below it. Everyone adds strategies; whoever added one (and admin access) can
 // change it; admin access pins. .pp path files always download, ready for the planner's Load button.
 
-const PLANNER_URL = "https://martinmax0711.github.io/PedroPathingBiobuzz/";
+/** The planner on this site (public/planner/): its own page, same origin. */
+const PLANNER_URL = "/planner/index.html";
+const GITHUB_PAGES_URL = "https://martinmax0711.github.io/PedroPathingBiobuzz/";
 const FRAME = 'iframe[title="Pedro Pathing visualizer (BIOBUZZ)"]';
 
 /** A small path the planner can open (the shape its Save writes). */
@@ -34,6 +36,18 @@ test.describe("strategy", () => {
     const newTab = page.getByRole("link", { name: "Open in a new tab" });
     await expect(newTab).toHaveAttribute("href", PLANNER_URL);
     await expect(newTab).toHaveAttribute("target", "_blank");
+    // The copy on GitHub Pages stays as a fallback link.
+    await expect(page.getByRole("link", { name: "copy on GitHub Pages" })).toHaveAttribute("href", GITHUB_PAGES_URL);
+    // Our own planner page may be framed by our pages (and only by them).
+    const plannerPage = await page.request.get(PLANNER_URL, { maxRedirects: 0 });
+    if (plannerPage.status() === 200) {
+      expect(plannerPage.headers()["x-frame-options"]).toBe("SAMEORIGIN");
+      expect(plannerPage.headers()["content-security-policy"]).toMatch(/frame-ancestors 'self'/);
+      // It runs with the signed-in person's session: its own scripts only.
+      expect(plannerPage.headers()["content-security-policy"]).toMatch(/script-src 'self'(;|$)/);
+    }
+    // Its Apache-2.0 notices are shown as text, not downloaded.
+    expect((await page.request.get("/planner/NOTICE")).headers()["content-type"]).toMatch(/^text\/plain/);
 
     const show = page.getByRole("button", { name: "Show it here" });
     if (await show.isVisible()) {

@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The Pedro Pathing planner's static build (npm run planner:sync), not our code.
+    "public/planner/**",
   ]),
 ]);
 

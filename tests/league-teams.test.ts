@@ -240,7 +240,7 @@ describe("other teams in the league", () => {
     expect(before.teams).toBe((await listLeagueTeams(maya, {}, t.db))!.total);
     const theirs = await create(maya, { title: "About 9040", teamId: "leagueteam9040" });
     const ours = await create(maya, { title: "Ours", teamId: "" });
-    expect(await getStrategyTabCounts(ethan, t.db)).toEqual({ ours: before.ours + 1, teams: before.teams });
+    expect(await getStrategyTabCounts(ethan, t.db)).toEqual({ ours: before.ours + 1, teams: before.teams, paths: before.paths });
     await deleteStrategy(ctx(maya), { strategyId: theirs.id });
     await deleteStrategy(ctx(maya), { strategyId: ours.id });
     for (const a of [pending, disabled, rejected]) expect(await getStrategyTabCounts(a, t.db), a.name).toBeNull();

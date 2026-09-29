@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Pedro Pathing Visualizer · BIOBUZZ Edition</title>
+  <defs>
+    <linearGradient id="honey" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd54a"/>
+      <stop offset="1" stop-color="#f5a400"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#171717"/>
+  <!-- HIVE cell: honey hexagon with softened corners -->
+  <path d="M256 78 L410 167 L410 345 L256 434 L102 345 L102 167 Z"
+        fill="url(#honey)" stroke="url(#honey)" stroke-width="28" stroke-linejoin="round"/>
+  <path d="M256 106 L386 181 L386 331 L256 406 L126 331 L126 181 Z"
+        fill="none" stroke="#fff6d6" stroke-opacity="0.5" stroke-width="6" stroke-linejoin="round"/>
+  <!-- Pedro path: start pose ring and a Bezier trajectory -->
+  <path d="M164 340 C 170 250, 300 312, 312 228"
+        fill="none" stroke="#171717" stroke-width="20" stroke-linecap="round"/>
+  <circle cx="164" cy="340" r="23" fill="#ffd54a" stroke="#171717" stroke-width="13"/>
+  <!-- the bee flying the path, aligned with its end tangent -->
+  <g transform="translate(320 170) rotate(8)">
+    <ellipse cx="-27" cy="-6" rx="21" ry="12" fill="#ffffff" stroke="#171717" stroke-width="7" transform="rotate(35 -27 -6)"/>
+    <ellipse cx="27" cy="-6" rx="21" ry="12" fill="#ffffff" stroke="#171717" stroke-width="7" transform="rotate(-35 27 -6)"/>
+    <ellipse cx="0" cy="8" rx="22" ry="30" fill="#171717"/>
+    <circle cx="0" cy="-28" r="13" fill="#171717"/>
+    <path d="M-20 4 H20 M-17 22 H17" stroke="#ffd54a" stroke-width="7" stroke-linecap="round"/>
+  </g>
+</svg>

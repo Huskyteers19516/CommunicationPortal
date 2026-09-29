@@ -408,7 +408,7 @@ function StrategyFilesPicker({
       </div>
       <FieldError id={errorId}>{error}</FieldError>
       <p id={hintId} className="text-xs text-ink-500">
-        {`Paths from the planner (.pp: its Save menu → Save As), field drawings, pictures, PDFs… Up to ${RESOURCE_FILE_MAX_MB} MB each and ${LIMITS.strategyFilesMax} per strategy.`}
+        {`Paths from the planner (.pp: its Save menu → Save As, or Download .pp under Strategy → Paths), field drawings, pictures, PDFs… Up to ${RESOURCE_FILE_MAX_MB} MB each and ${LIMITS.strategyFilesMax} per strategy.`}
       </p>
       {/* Always rendered, so screen readers announce what changes in it. */}
       <p role="status" className="sr-only">

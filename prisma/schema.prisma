@@ -159,6 +159,8 @@ model User {
   creditsChanged         AttendanceRecord[]    @relation("AttendanceCreditEditor")
   attendanceChangesAbout AttendanceChange[]    @relation("AttendanceChangeSubject")
   attendanceChangesMade  AttendanceChange[]    @relation("AttendanceChangeActor")
+  plannerPathsCreated    PlannerPath[]         @relation("PlannerPathCreator")
+  plannerPathsEdited     PlannerPath[]         @relation("PlannerPathEditor")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -855,6 +857,7 @@ model LeagueTeam {
   updatedAt          DateTime  @updatedAt
 
   strategies Strategy[]
+  paths      PlannerPath[]
 }
 
 /// A file on a strategy: a Pedro Pathing .pp path, a field diagram, a PDF… Stored in Postgres (same storage cap).
@@ -1086,4 +1089,28 @@ model FileDeletion {
   storageKey String   @id
   createdAt  DateTime @default(now())
   attempts   Int      @default(0)
+}
+
+/// A path saved from the Pedro Pathing planner (Strategy → Paths): the planner's .pp contents, shared with the whole team.
+model PlannerPath {
+  id          String      @id @default(cuid())
+  name        String
+  notes       String      @default("")
+  /// The planner's .pp file (JSON text).
+  data        String
+  /// Length of data in bytes (UTF-8).
+  size        Int
+  /// Another team in the league whose path this traces. Null = one of ours.
+  teamId      String?
+  team        LeagueTeam? @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdById String?
+  createdBy   User?       @relation("PlannerPathCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById String?
+  updatedBy   User?       @relation("PlannerPathEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([updatedAt])
+  @@index([teamId, updatedAt])
+  @@index([createdById])
 }

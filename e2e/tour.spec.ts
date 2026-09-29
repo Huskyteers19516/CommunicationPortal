@@ -72,6 +72,8 @@ test("member", async ({ page }, info) => {
   await shoot(page, p, "16q2-member-other-teams", "/strategy/teams");
   await shoot(page, p, "16q3-member-other-team", "/strategy/teams/9040");
   await shoot(page, p, "16q4-member-add-strategy-about-team", "/strategy/new?team=9040");
+  await shoot(page, p, "16q5-member-saved-paths", "/strategy/paths");
+  await shoot(page, p, "16q6-member-edit-saved-path", "/strategy/paths/demo-path-park/edit");
   await shoot(page, p, "16t1-member-calendar", "/calendar?month=2026-11");
   await shoot(page, p, "16t2-member-calendar-list", "/calendar?view=list");
   await shoot(page, p, "16t3-member-calendar-event", "/calendar/season2627scrimmage0");

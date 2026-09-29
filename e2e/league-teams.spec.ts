@@ -6,7 +6,8 @@ import { expectNoHorizontalScroll, PEOPLE, signIn, sql, uniq } from "./helpers";
 // planner, as a .pp file), and can trace their path in the embedded planner. People with admin access add, edit,
 // and remove teams.
 
-const PLANNER_URL = "https://martinmax0711.github.io/PedroPathingBiobuzz/";
+/** The planner on this site (public/planner/). */
+const PLANNER_URL = "/planner/index.html";
 const FRAME = 'iframe[title="Pedro Pathing visualizer (BIOBUZZ)"]';
 
 /** A small path the planner can open (the shape its Save writes). */
@@ -85,13 +86,15 @@ test.describe("other teams", () => {
     await expect(page.getByText(summary)).toBeVisible();
     await expect(page.getByText(/Updated by Maya Patel/)).toBeVisible();
 
-    // Trace their path: the planner unfolds right here (and a new tab always works).
+    // Trace their path: the planner unfolds right here (and a new tab always works), with this team as the default
+    // "Whose path?" for Save to team library (?team=).
     const trace = page.locator("#trace");
-    await expect(trace.getByRole("link", { name: "Open in a new tab" })).toHaveAttribute("href", PLANNER_URL);
+    const teamPlanner = `${PLANNER_URL}?team=${TEAM.number}`;
+    await expect(trace.getByRole("link", { name: "Open in a new tab" })).toHaveAttribute("href", teamPlanner);
     await expect(trace.locator(FRAME)).toHaveCount(0);
     await trace.getByRole("button", { name: "Open the planner" }).click();
     await expect(trace.locator(FRAME)).toBeVisible();
-    await expect(trace.locator(FRAME)).toHaveAttribute("src", PLANNER_URL);
+    await expect(trace.locator(FRAME)).toHaveAttribute("src", teamPlanner);
     await expectNoHorizontalScroll(page);
 
     // Add a strategy about this team, with the traced .pp.

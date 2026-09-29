@@ -272,6 +272,11 @@ test.describe("layout", () => {
       "/strategy/teams?q=steam",
       "/strategy/teams/9040",
       "/strategy/new?team=9040",
+      "/strategy/paths",
+      "/strategy/paths?team=ours",
+      "/strategy/paths?team=9040&q=auto",
+      // Her own saved path.
+      "/strategy/paths/demo-path-park/edit",
       "/calendar",
       "/calendar?view=list",
       "/calendar?view=past",
@@ -321,6 +326,9 @@ test.describe("layout", () => {
       "/strategy/teams",
       "/strategy/teams/new",
       "/strategy/teams/9040/edit",
+      "/strategy/paths",
+      // Admin access edits anyone's saved path.
+      "/strategy/paths/demo-path-9040-rear/edit?from=team",
       "/orders",
       "/orders?filter=done&for=BUILD",
       "/orders/new",

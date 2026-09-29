@@ -6,7 +6,7 @@ import { flushSync } from "react-dom";
 import { Button, buttonClasses } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
-import { PEDRO_VISUALIZER_URL } from "@/lib/constants";
+import { PLANNER_GITHUB_PAGES_URL, PLANNER_URL } from "@/lib/planner-paths";
 
 /**
  * Where the planner fits in the page: next to the sidebar, its frame is then about 1,080 px wide or more (it needs
@@ -24,9 +24,11 @@ function subscribeRoomy(onChange: () => void) {
 const noSubscription = () => () => {};
 
 /**
- * What the planner (the team's own Svelte app on GitHub Pages) needs inside the frame: its scripts and its own
- * storage (saved paths, settings), downloads (Save As, code and GIF export), alert/confirm (its messages), and new
- * tabs for its help links (opened without the sandbox). Nothing more: it can't navigate this page.
+ * What the planner (the team's own Svelte app, served by this site from public/planner/) needs inside the frame:
+ * its scripts, this site's origin (the sign-in cookie for its team library, /api/planner/*, and its own storage for
+ * settings and paths kept in the browser), downloads (Save As, code and GIF export), alert/confirm (its messages),
+ * and new tabs for its help links (opened without the sandbox). It can't navigate this page. (Scripts plus the same
+ * origin means our own page could lift the sandbox: it's a guard against mistakes, not against the planner.)
  */
 export const PLANNER_SANDBOX =
   "allow-scripts allow-same-origin allow-downloads allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals";
@@ -48,13 +50,16 @@ const BREAKOUT =
 const hintLink = "font-medium text-brand-700 underline underline-offset-2 hover:text-brand-800";
 
 /**
- * The Pedro Pathing visualizer (BIOBUZZ edition) in a frame, with "Open in a new tab" always there (it works even
- * when the frame can't load) and Full screen where the browser can do it.
+ * The Pedro Pathing visualizer (BIOBUZZ edition, served by this site at PLANNER_URL) in a frame, with "Open in a new
+ * tab" always there (it works even when the frame can't load) and Full screen where the browser can do it.
  * - `open` "wide" (the Strategy page): shown right away on big screens (wider than the page's column); on
  *   tablets, small laptops, and phones it's folded away behind "Show it here" (it needs a mouse and a big screen).
  * - `open` "asked" (a team's page: "Open the planner"): folded away everywhere until asked for.
  * The frame is only created once it's wanted, and then kept: hiding it again, or resizing the window, doesn't
  * throw away a path being drawn. `skipTo` adds a "skip the planner" link for keyboard users (only while it shows).
+ * `src`: where the frame and "Open in a new tab" go (default PLANNER_URL; a team's page passes plannerTeamHref, so
+ * the planner's Save to team library starts with that team). The hint always ends with how to bring paths over from
+ * the GitHub Pages copy (its browser storage is its own).
  */
 export function PathPlanner({
   id = "planner",
@@ -64,17 +69,20 @@ export function PathPlanner({
   open = "wide",
   showLabel,
   skipTo,
+  src = PLANNER_URL,
 }: {
   id?: string;
   title?: string;
   description?: string;
-  /** How to share a path (the planner's Save menu → Save As downloads a .pp file). "Not loading? …" is added. */
+  /** How to share a path ("Save to team library" in the planner). "Not loading? …" is added. */
   hint: ReactNode;
   open?: "wide" | "asked";
   /** The unfold button's words when `open` is "asked" (default "Show the planner"). */
   showLabel?: string;
   /** Where the skip link jumps to ("#strategies") and what it says. */
   skipTo?: { href: string; label: string };
+  /** The planner's address on this site (PLANNER_URL, or with `?team=` on a team's page). */
+  src?: string;
 }) {
   const roomy = useSyncExternalStore(
     subscribeRoomy,
@@ -133,7 +141,7 @@ export function PathPlanner({
                   Full screen
                 </Button>
               )}
-              <a href={PEDRO_VISUALIZER_URL} target="_blank" rel="noopener noreferrer" className={buttonClasses("secondary", "md")}>
+              <a href={src} target="_blank" rel="noopener" className={buttonClasses("secondary", "md")}>
                 <ExternalLink className="size-4" aria-hidden />
                 Open in a new tab
               </a>
@@ -175,7 +183,7 @@ export function PathPlanner({
           {created ? (
             <iframe
               ref={frameRef}
-              src={PEDRO_VISUALIZER_URL}
+              src={src}
               title="Pedro Pathing visualizer (BIOBUZZ)"
               loading="lazy"
               allowFullScreen
@@ -192,10 +200,16 @@ export function PathPlanner({
 
         <p id={hintId} className="border-t border-ink-100 px-4 py-3 text-xs text-ink-500 sm:px-5">
           {hint} Not loading?{" "}
-          <a href={PEDRO_VISUALIZER_URL} target="_blank" rel="noopener noreferrer" className={hintLink}>
+          <a href={src} target="_blank" rel="noopener" className={hintLink}>
             Open it in a new tab
           </a>
-          .
+          , or use the{" "}
+          <a href={PLANNER_GITHUB_PAGES_URL} target="_blank" rel="noopener noreferrer" className={hintLink}>
+            copy on GitHub Pages
+          </a>{" "}
+          (no team library there). Paths you saved in the browser on the GitHub Pages copy stay there: open that copy,
+          use Save As to download the .pp, then load it here and use Save to team library. Paths the planner keeps in
+          this browser belong to the browser, not your account.
         </p>
       </Card>
     </section>

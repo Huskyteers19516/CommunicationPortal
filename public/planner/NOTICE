@@ -1,0 +1,51 @@
+This repository has significant portions of a fork of this repository created by Matthew Allen, which is licensed under the Apache License 2.0.
+
+Pedro Pathing Visualizer - BIOBUZZ Edition
+Copyright 2026 MartinMax0711
+
+This edition is based on Pedro Pathing Visualizer
+(https://github.com/Pedro-Pathing/Visualizer) at upstream commit f54357e
+(f54357e9bcd20d28fd0ee32df8e89573a8f9c12c), licensed under the Apache License
+2.0, and is distributed under the same license (see LICENSE). It adapts the
+upstream sources for the FIRST Tech Challenge 2026-2027 BIOBUZZ season: a
+BIOBUZZ field model and field artwork, fixed field obstacles, starting-pose
+presets and legality checks, alliance rotation, collision warnings, Pedro
+Pathing 2.x code export fixes, GitHub Pages deployment, a team library mode
+used when the Huskyteers Portal serves the planner at /planner/, and related
+user-interface changes.
+
+Modified files: each source file taken from upstream and changed for this
+edition carries a short "Modified for the BIOBUZZ Edition" comment at the top.
+Changed upstream files that cannot hold a comment are package.json,
+package-lock.json and public/favicon.ico. README.md and this NOTICE were
+rewritten for this edition.
+
+Added files (new in this edition, not part of upstream):
+
+  .github/workflows/deploy.yml
+  public/fields/biobuzz.svg
+  public/icons/* (apple-touch-icon.png, icon.svg, icon-192.png,
+    icon-512.png, icon-maskable-512.png)
+  public/manifest.webmanifest
+  public/theme.js (the saved theme before first paint, formerly inline in
+    index.html)
+  scripts/generate-biobuzz-field.ts
+  scripts/third-party-licenses.mjs, third-party-licenses.d.mts (writes
+    THIRD-PARTY-LICENSES.txt into each build)
+  src/biobuzz/* (field model, start-pose rules, alliance rotation, collision
+    sweep)
+  src/lib/components/BiobuzzOverlay.svelte
+  src/lib/components/LibraryBrowser.svelte, LibraryConflictDialog.svelte,
+    LibraryNotice.svelte, LibrarySaveDialog.svelte (team library UI)
+  src/utils/assets.ts
+  src/utils/portalLibrary.ts, portalMode.ts, teamLibrary.ts,
+    libraryFormat.ts, toast.ts (team library)
+  tests: src/biobuzz/__tests__/*, src/utils/__tests__/*
+
+Third-party software bundled into the built app (d3, Svelte, lodash, two.js,
+gif.js, html2canvas, highlight.js, hotkeys-js, prettier, prettier-plugin-java,
+chevrotain and others) is listed, with each package's license and notice
+files, in THIRD-PARTY-LICENSES.txt next to index.html in every build.
+
+FIRST and FIRST Tech Challenge are trademarks of FIRST. This project is not
+affiliated with or endorsed by FIRST.

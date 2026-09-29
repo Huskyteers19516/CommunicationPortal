@@ -443,6 +443,14 @@ export function canEditDiscussionPost(actor: ActorLike, post: { authorId: string
   return post.authorId !== null && post.authorId === actor.id;
 }
 
+// ── Planner paths (Strategy → Paths) ─────────────────────────────────────────
+// Everyone ACTIVE sees and opens every saved path, and saves new ones.
+
+/** Change, rename, or remove a saved path: whoever saved it first, and everyone with admin access. */
+export function canEditPlannerPath(actor: ActorLike, path: { createdById: string | null }): boolean {
+  return canAdminister(actor) || (path.createdById !== null && path.createdById === actor.id);
+}
+
 // ── Order list ────────────────────────────────────────────────────────────────
 
 /**

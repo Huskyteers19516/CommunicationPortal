@@ -1,5 +1,6 @@
 import { Plus, SearchX, Swords } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { FocusAlert } from "@/components/sponsors/focus-alert";
 import { PathPlanner } from "@/components/strategy/path-planner";
 import { StrategyList } from "@/components/strategy/strategy-list";
@@ -91,7 +92,17 @@ export default async function StrategyPage({ searchParams }: PageProps<"/strateg
 
       <PathPlanner
         skipTo={{ href: "#strategies", label: "Skip the planner" }}
-        hint="Paths saved inside the planner stay in this browser, and only here (not in a new tab). To share one: in the planner, open the Save menu (the disk icon, top right) → Save As → Confirm. That downloads a .pp file: add it to a strategy below."
+        hint={
+          <>
+            To share a path with the team, use <span className="font-medium text-ink-700">Save to team library</span> in the
+            planner: everyone finds it under{" "}
+            <Link href="/strategy/paths" className="font-medium text-brand-700 underline underline-offset-2 hover:text-brand-800">
+              Paths
+            </Link>{" "}
+            and can open it from there. The planner&apos;s own Save keeps a path in this browser only; Save As downloads a
+            .pp file you can add to a strategy below.
+          </>
+        }
       />
 
       <section id="strategies" aria-labelledby="strategies-title" className="mt-8 scroll-mt-4">

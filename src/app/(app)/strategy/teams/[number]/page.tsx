@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { cache } from "react";
 import { FocusAlert } from "@/components/sponsors/focus-alert";
 import { PathPlanner } from "@/components/strategy/path-planner";
+import { PlannerPathList } from "@/components/strategy/planner-path-list";
 import { StrategyList } from "@/components/strategy/strategy-list";
 import { TeamSummary } from "@/components/strategy/team-summary";
 import { ActionForm } from "@/components/tasks/action-form";
@@ -14,10 +15,12 @@ import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Pagination, parsePage } from "@/components/ui/pagination";
 import { timeAgo } from "@/lib/dates";
+import { plannerTeamHref } from "@/lib/planner-paths";
 import { leagueTeamRemoveQuestion } from "@/lib/strategy";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { getLeagueTeam, parseTeamNumber } from "@/server/queries/league-teams";
+import { listPlannerPaths } from "@/server/queries/planner-paths";
 import { listStrategies } from "@/server/queries/strategy";
 import { deleteLeagueTeamAction } from "../actions";
 
@@ -48,7 +51,10 @@ export default async function LeagueTeamPage({ params, searchParams }: PageProps
   const sp = await searchParams;
   const { actor, team } = await loadTeam(number);
   if (!team) notFound();
-  const strategies = await listStrategies(actor, { mine: false, teamId: team.id, page: parsePage(sp.page) });
+  const [strategies, paths] = await Promise.all([
+    listStrategies(actor, { mine: false, teamId: team.id, page: parsePage(sp.page) }),
+    listPlannerPaths(actor, { team: team.number }),
+  ]);
   const now = requestTime();
   const timeZone = env.teamTimezone;
   const label = `${team.number} · ${team.name}`;
@@ -61,6 +67,7 @@ export default async function LeagueTeamPage({ params, searchParams }: PageProps
           ? "Strategy removed."
           : null;
   const addHref = `/strategy/new?team=${team.number}`;
+  const pathNotice = first(sp.pathSaved) === "1" ? "Changes saved." : first(sp.pathRemoved) === "1" ? "Path removed." : null;
 
   return (
     <div className="min-w-0 space-y-6">
@@ -90,7 +97,7 @@ export default async function LeagueTeamPage({ params, searchParams }: PageProps
                 action={deleteLeagueTeamAction}
                 fields={{ teamId: team.id }}
                 variant="ghost"
-                confirm={leagueTeamRemoveQuestion(label, team.strategyCount, team.fileCount)}
+                confirm={leagueTeamRemoveQuestion(label, team.strategyCount, team.fileCount, team.pathCount)}
                 pendingText="Removing…"
                 aria-label={`Remove team ${label}`}
               >
@@ -130,7 +137,7 @@ export default async function LeagueTeamPage({ params, searchParams }: PageProps
             <EmptyState
               icon={Route}
               title="No strategies about them yet"
-              description="Trace their auto in the planner below, download it as a .pp file (Save menu → Save As), and add it here."
+              description="Write down how they play, or add their traced auto as a .pp file (the planner's Save As downloads it)."
             />
           </Card>
         ) : (
@@ -145,17 +152,56 @@ export default async function LeagueTeamPage({ params, searchParams }: PageProps
         )}
       </section>
 
+      <section id="paths" aria-labelledby="team-paths-title" className="scroll-mt-4 space-y-3">
+        <div className="min-w-0">
+          <h2 id="team-paths-title" className="text-lg font-semibold text-ink-900 wrap-anywhere">
+            Saved paths for {team.name}
+          </h2>
+          <p className="text-sm text-ink-500">Their autos, traced in the planner (below) and saved to the team library.</p>
+        </div>
+        {/* Takes focus, so keyboard and screen-reader users hear it (instead of landing on <body>). */}
+        {pathNotice && <FocusAlert tone="success">{pathNotice}</FocusAlert>}
+        {!paths || paths.paths.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon={Route}
+              title="No saved paths for them yet"
+              description={`Trace their auto in the planner below, then use Save to team library: ${label} is already picked as whose path it is.`}
+            />
+          </Card>
+        ) : (
+          <>
+            <PlannerPathList paths={paths.paths} now={now} timeZone={timeZone} from={{ page: "team" }} showTeam={false} />
+            {paths.paths.length < paths.total && (
+              <p className="text-sm text-ink-500">
+                Showing the {paths.paths.length} newest of {paths.total}.{" "}
+                <Link
+                  href={`/strategy/paths?team=${team.number}`}
+                  className="font-medium text-brand-700 underline underline-offset-2 hover:text-brand-800"
+                >
+                  Search them all under Paths
+                </Link>
+                .
+              </p>
+            )}
+          </>
+        )}
+      </section>
+
       <PathPlanner
         id="trace"
+        src={plannerTeamHref(team.number)}
         title="Trace their path"
         description="Watch their match, then redraw their auto in the Pedro Pathing planner."
         open="asked"
         showLabel="Open the planner"
         hint={
           <>
-            Trace their auto, then in the planner open the Save menu (the disk icon, top right) → Save As → Confirm to
-            download the .pp file. Once it has downloaded,{" "}
-            {/* A new tab, so a trace that isn't downloaded yet isn't lost. */}
+            Trace their auto, then use <span className="font-medium text-ink-700">Save to team library</span> in the
+            planner ({label} is already picked as whose path it is): it shows up under Saved paths above (reload this
+            page). To attach
+            it to a strategy instead, Save As downloads the .pp file; then{" "}
+            {/* A new tab, so a trace that isn't saved yet isn't lost. */}
             <Link
               href={addHref}
               target="_blank"
@@ -165,7 +211,7 @@ export default async function LeagueTeamPage({ params, searchParams }: PageProps
               add it to a strategy about this team
               <span className="sr-only"> (opens in a new tab)</span>
             </Link>
-            . Paths saved inside the planner stay in this browser, and only here (not in a new tab).
+            .
           </>
         }
       />

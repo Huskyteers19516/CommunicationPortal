@@ -1084,7 +1084,9 @@ const FUNDRAISING_SEASON_START_DAYS = -60;
 
 /**
  * A tiny path the Pedro Pathing planner (BIOBUZZ edition) opens with Load: start against the audience wall by the
- * HIVE (the planner's default red start for a 16 in robot), drive out, wait to score, then curve over to park.
+ * HIVE (the planner's default red start for a 16 in robot), drive out, wait to score, then curve over to park. The
+ * park stays clear of the red HIVE's frame and audience-side leg for robots up to 18 in (the planner's collision
+ * check: keep it that way if you move it — the first demo path anyone opens shouldn't show a warning).
  */
 const DEMO_PATH = {
   startPoint: { x: 61.75, y: 8, heading: "linear", startDeg: 90, endDeg: 90, locked: false },
@@ -1100,8 +1102,8 @@ const DEMO_PATH = {
     {
       id: "line-park",
       name: "Park",
-      endPoint: { x: 36, y: 44, heading: "constant", degrees: 135 },
-      controlPoints: [{ x: 58, y: 44 }],
+      endPoint: { x: 36, y: 36, heading: "constant", degrees: 135 },
+      controlPoints: [{ x: 58, y: 36 }],
       color: "#60a5fa",
       locked: false,
     },
@@ -1198,6 +1200,71 @@ const LEAGUE_TEAM_STRATEGIES: { teamNumber: number; title: string; description: 
     },
     creator: "aiden",
     addedHoursAgo: 18,
+  },
+];
+
+// ── Strategy → Paths (the planner's team library) ────────────────────────────
+
+/** A path saved from the planner with "Save to team library": ours (no teamNumber) or another team's auto. */
+interface PlannerPathSpec {
+  /** A fixed id, so links to them (tests, the tour) keep working after a reseed. */
+  id: string;
+  name: string;
+  notes: string;
+  /** The planner's .pp contents. */
+  data: unknown;
+  teamNumber?: number;
+  creator: PersonKey;
+  savedHoursAgo: number;
+  /** Changed later (by someone else): who, and when. */
+  updated?: { by: PersonKey; hoursAgo: number };
+}
+
+/** A straight drive from the audience wall to park (the blue side of the demo auto). */
+const DEMO_PARK_PATH = {
+  startPoint: { x: 82.25, y: 8, heading: "linear", startDeg: 90, endDeg: 90, locked: false },
+  lines: [
+    {
+      id: "line-park-straight",
+      name: "Park",
+      endPoint: { x: 82.25, y: 36, heading: "linear", startDeg: 90, endDeg: 90 },
+      controlPoints: [],
+      color: "#ffc516",
+      locked: false,
+    },
+  ],
+  shapes: [],
+  sequence: [{ kind: "path", lineId: "line-park-straight" }],
+  version: "1.2.1",
+};
+
+/** Demo saved paths: our audience auto (changed once since), a simple park, and 9040's traced auto. */
+const PLANNER_PATHS: PlannerPathSpec[] = [
+  {
+    id: "demo-path-red-audience",
+    name: "Red audience auto: preload + park",
+    notes: "Start against the audience wall next to the HIVE. 0.8 s wait to score the preload, then curve over and park.",
+    data: DEMO_PATH,
+    creator: "aiden",
+    savedHoursAgo: 28,
+    updated: { by: "priya", hoursAgo: 5 },
+  },
+  {
+    id: "demo-path-park",
+    name: "Park only (backup auto)",
+    notes: "If the preload isn't loaded or the partner needs the audience side: drive straight out and park.",
+    data: DEMO_PARK_PATH,
+    creator: "maya",
+    savedHoursAgo: 50,
+  },
+  {
+    id: "demo-path-9040-rear",
+    name: "9040 rear-side auto (traced)",
+    notes: "Traced from their qualification match video. They're done by about 22 s.",
+    data: LEAGUE_TEAM_STRATEGIES[0].path.data,
+    teamNumber: 9040,
+    creator: "grace",
+    savedHoursAgo: 17,
   },
 ];
 
@@ -1884,6 +1951,7 @@ async function wipeAppData(tx: Tx): Promise<void> {
   await tx.fundraiser.deleteMany(); // helper lists cascade
   await tx.poster.deleteMany(); // poster files cascade
   await tx.strategy.deleteMany(); // strategy files cascade
+  await tx.plannerPath.deleteMany(); // the planner's saved paths (they'd outlive their accounts otherwise)
   await tx.notebook.deleteMany(); // pages, entries, history, and pictures cascade
   // The league's teams come from a migration and stay; only what people wrote about them goes.
   await tx.leagueTeam.updateMany({ data: { summary: "", summaryUpdatedAt: null, summaryUpdatedById: null } });
@@ -2222,6 +2290,28 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
             createdAt,
             updatedAt: createdAt,
             files: { create: { filename: s.path.filename, contentType: "application/json", size: bytes.byteLength, data: bytes, createdAt } },
+          },
+          select: { id: true },
+        });
+      }
+
+      // Strategy → Paths: paths saved from the planner, ours and one traced for a league team (skipped if it isn't on the list).
+      for (const p of PLANNER_PATHS) {
+        const team = p.teamNumber ? await tx.leagueTeam.findUnique({ where: { number: p.teamNumber }, select: { id: true } }) : null;
+        if (p.teamNumber && !team) continue;
+        const data = JSON.stringify(p.data, null, 2);
+        await tx.plannerPath.create({
+          data: {
+            id: p.id,
+            name: p.name,
+            notes: p.notes,
+            data,
+            size: new TextEncoder().encode(data).byteLength,
+            teamId: team?.id ?? null,
+            createdById: uid(p.creator),
+            updatedById: uid(p.updated?.by ?? p.creator),
+            createdAt: ago(p.savedHoursAgo),
+            updatedAt: ago(p.updated?.hoursAgo ?? p.savedHoursAgo),
           },
           select: { id: true },
         });
