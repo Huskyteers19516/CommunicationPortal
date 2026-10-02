@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { AssignmentStatus } from "@/generated/prisma/enums";
 import { addDays } from "@/lib/dates";
 import type { Actor } from "@/server/actor";
 import type { Db } from "@/server/db";
@@ -15,12 +16,16 @@ import {
   approveMany,
   createTask,
   deleteTask,
+  finishTask,
+  NEW_CATEGORY,
   removeAssignment,
   reopenAssignment,
+  reopenTask,
   reviewAssignment,
   setSignupOpen,
   updateTask,
 } from "@/server/services/tasks";
+import { submitAssignment } from "@/server/services/checklist";
 import { leaveTask, signUpForTask } from "@/server/services/signups";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeTask, makeUser, TEST_NOW, TEST_TODAY } from "./helpers/factories";
@@ -157,6 +162,20 @@ describe("createTask", () => {
     );
     await expect(createTask(ctxFor(p.buildLead1), taskInput({ subteam: "" }))).rejects.toThrow(ForbiddenError);
     await expect(createTask(ctxFor(p.swLead), taskInput())).rejects.toThrow(ForbiddenError);
+  });
+
+  it("lets the Business leader create Business tasks for Business members (and only them)", async () => {
+    const ctx = ctxFor(p.bizLead);
+    const { id } = await createTask(ctx, taskInput({ subteam: "BUSINESS", assigneeIds: [p.bizMember.id] }));
+    const task = await t.db.task.findUniqueOrThrow({ where: { id }, include: { assignments: true } });
+    expect(task).toMatchObject({ subteam: "BUSINESS", createdById: p.bizLead.id });
+    expect(task.assignments.map((a) => a.userId)).toEqual([p.bizMember.id]);
+    expect(ctx.notifier.events).toEqual([{ type: "task.assigned", taskId: id, userIds: [p.bizMember.id], actorId: p.bizLead.id }]);
+    // A Business task is still for Business people only.
+    const err = await createTask(ctx, taskInput({ subteam: "BUSINESS", assigneeIds: [p.buildMember.id] })).catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).fieldErrors.assigneeIds).toContain("Brook Member");
+    await expect(createTask(ctx, taskInput({ subteam: "BUILD", assigneeIds: [p.buildMember.id] }))).rejects.toThrow(ForbiddenError);
   });
 
   it("forbids members (even with a valid-looking payload)", async () => {
@@ -783,11 +802,34 @@ describe("queries", () => {
     await fresh?.drop();
   });
 
-  it("getTaskFormOptions offers whole team only to all-scope staff", () => {
+  it("getTaskFormOptions offers whole team to all-scope staff and the Business leader (who can't add whole-team categories)", () => {
+    expect(getTaskFormOptions(q.bizLead)).toEqual({
+      subteams: [
+        { value: "BUSINESS", label: "Business" },
+        { value: "", label: "Whole team" },
+      ],
+      defaultSubteam: "BUSINESS",
+      newCategorySubteams: ["BUSINESS"],
+    });
+    expect(getTaskFormOptions(q.swLead).subteams.map((s) => s.value)).toEqual(["SOFTWARE"]);
     expect(getTaskFormOptions(q.captain).subteams.map((s) => s.value)).toEqual(["", "SOFTWARE", "BUILD", "BUSINESS"]);
     expect(getTaskFormOptions(q.captain).defaultSubteam).toBe("");
-    expect(getTaskFormOptions(q.buildLead)).toEqual({ subteams: [{ value: "BUILD", label: "Build" }], defaultSubteam: "BUILD" });
+    expect(getTaskFormOptions(q.buildLead)).toEqual({
+      subteams: [{ value: "BUILD", label: "Build" }],
+      defaultSubteam: "BUILD",
+      newCategorySubteams: ["BUILD"],
+    });
+    expect(getTaskFormOptions(q.captain).newCategorySubteams).toEqual(["", "SOFTWARE", "BUILD", "BUSINESS"]);
     expect(getTaskFormOptions(q.buildMember).subteams).toEqual([]);
+  });
+
+  it("getTaskFormOptions for the edit form offers only subteams the actor would still manage the task in", () => {
+    const values = (actor: Actor, createdById: string) => getTaskFormOptions(actor, { createdById }).subteams.map((s) => s.value);
+    // The Business leader's own task can go whole-team; the captain's Business task can't (they'd lose it).
+    expect(values(q.bizLead, q.bizLead.id)).toEqual(["BUSINESS", ""]);
+    expect(values(q.bizLead, q.captain.id)).toEqual(["BUSINESS"]);
+    expect(values(q.captain, q.bizLead.id)).toEqual(["", "SOFTWARE", "BUILD", "BUSINESS"]);
+    expect(values(q.buildLead, q.captain.id)).toEqual(["BUILD"]);
   });
 
   it("getAssignableUsers groups ACTIVE people by subteam within scope", async () => {
@@ -802,6 +844,21 @@ describe("queries", () => {
     expect(captainGroups.flatMap((g) => g.people).some((u) => u.name === "Gone Kid")).toBe(false);
 
     expect(await getAssignableUsers(q.buildMember, fresh.db)).toEqual([]);
+  });
+
+  it("getAssignableUsers gives the Business leader everyone, marking who fits only whole-team tasks", async () => {
+    const groups = await getAssignableUsers(q.bizLead, fresh.db);
+    expect(groups.map((g) => g.key)).toEqual(["SOFTWARE", "BUILD", "BUSINESS", "STAFF"]);
+    const everyone = groups.flatMap((g) => g.people);
+    expect(everyone.some((u) => u.name === "Gone Kid")).toBe(false);
+    expect(everyone.filter((u) => !u.wholeTeamOnly).map((u) => u.name).sort()).toEqual(["Biz Kid", "Biz Lead"]);
+    expect(everyone.find((u) => u.name === "Build Kid")?.wholeTeamOnly).toBe(true);
+    expect(everyone.find((u) => u.name === "Cap")?.wholeTeamOnly).toBe(true);
+    // Nobody else gets the mark.
+    for (const who of [q.captain, q.buildLead, q.swLead]) {
+      const people = (await getAssignableUsers(who, fresh.db)).flatMap((g) => g.people);
+      expect(people.some((u) => u.wholeTeamOnly), who.name).toBe(false);
+    }
   });
 
   it("listManagedTasks scopes leaders to their subteam plus their own tasks", async () => {
@@ -825,10 +882,10 @@ describe("queries", () => {
     expect(past.tasks.map((x) => x.title)).toEqual(["Build past"]);
 
     const build = upcoming.tasks.find((x) => x.id === ids.build)!;
-    expect(build.counts).toEqual({ total: 3, todo: 0, submitted: 2, approved: 1, rejected: 0 });
+    expect(build.counts).toEqual({ total: 3, todo: 0, submitted: 2, approved: 1, rejected: 0, closed: 0 });
     expect(build.createdByName).toBe("Build Lead");
     expect(build.dueDate).toBe(addDays(TEST_TODAY, 2));
-    expect(upcoming.tasks.find((x) => x.id === ids.team)!.counts).toEqual({ total: 3, todo: 3, submitted: 0, approved: 0, rejected: 0 });
+    expect(upcoming.tasks.find((x) => x.id === ids.team)!.counts).toEqual({ total: 3, todo: 3, submitted: 0, approved: 0, rejected: 0, closed: 0 });
     expect(upcoming.tasks.find((x) => x.id === ids.moved)!.counts.total).toBe(0);
 
     const team = await listManagedTasks(q.captain, { view: "all", subteam: "TEAM", today: TEST_TODAY }, fresh.db);
@@ -850,7 +907,7 @@ describe("queries", () => {
     const detail = await getManagedTaskDetail(q.buildLead, ids.build, fresh.db);
     expect(detail).not.toBeNull();
     expect(detail!.createdBy.name).toBe("Build Lead");
-    expect(detail!.counts).toEqual({ total: 3, todo: 0, submitted: 2, approved: 1, rejected: 0 });
+    expect(detail!.counts).toEqual({ total: 3, todo: 0, submitted: 2, approved: 1, rejected: 0, closed: 0 });
     expect(detail!.assignments.map((a) => a.user.name)).toEqual(["Build Kid", "Build Lead", "Build Lead Two"]);
     const self = detail!.assignments.find((a) => a.id === ids.blSelf)!;
     expect(self.canReview).toBe(false); // own submission
@@ -1223,5 +1280,532 @@ describe("queries: category and sign-up details", () => {
     // Closed with sign-ups still reads as a sign-up task.
     await setSignupOpen(ctxFor(lead), { taskId: id, open: false });
     expect((await getManagedTaskDetail(lead, id, t.db))?.assignMode).toBe("signup");
+  });
+});
+
+// ---------- "Mark task finished" ----------
+
+/** Put one person's item into a state (with the review fields a real review leaves). */
+async function setItem(
+  taskId: string,
+  user: Actor,
+  status: AssignmentStatus,
+  extra: { reviewer?: Actor; reviewNote?: string | null; submissionNote?: string | null } = {},
+) {
+  const reviewed = status === "APPROVED" || status === "REJECTED";
+  return t.db.taskAssignment.update({
+    where: { taskId_userId: { taskId, userId: user.id } },
+    data: {
+      status,
+      submittedAt: status === "TODO" ? null : new Date(TEST_NOW.getTime() - 7_200_000),
+      submissionNote: extra.submissionNote ?? null,
+      reviewedById: reviewed ? (extra.reviewer ?? p.buildLead2).id : null,
+      reviewedAt: reviewed ? new Date(TEST_NOW.getTime() - 3_600_000) : null,
+      reviewNote: extra.reviewNote ?? null,
+    },
+  });
+}
+
+describe("finishTask / reopenTask", () => {
+  let grant: Actor;
+  let paige: Actor;
+  let sam: Actor;
+  let riley: Actor;
+
+  beforeAll(async () => {
+    grant = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD", name: "Grant Gears" });
+    paige = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD", name: "Paige Pinion" });
+    sam = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD", name: "Sam Sprocket" });
+    riley = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD", name: "Riley Rivet" });
+  });
+
+  /** The leader's example: a Build task, Paige approved one by one, Grant still to do. */
+  async function drivetrain(more: Actor[] = []) {
+    const task = await makeTask(t.db, p.buildLead1, {
+      title: "Drivetrain construction",
+      subteam: "BUILD",
+      assigneeIds: [grant.id, paige.id, ...more.map((u) => u.id)],
+    });
+    await setItem(task.id, paige, "APPROVED", { reviewNote: "Looks great" });
+    return task.id;
+  }
+
+  it("counts it as done for everyone still on it: to do, checked off, and sent back become approved", async () => {
+    const taskId = await drivetrain([sam, riley]);
+    await setItem(taskId, sam, "SUBMITTED", { submissionNote: "Wheels on", reviewNote: "Earlier: tighten the bolts" });
+    await setItem(taskId, riley, "REJECTED", { reviewNote: "Redo the chain" });
+
+    const ctx = ctxFor(p.buildLead1);
+    expect(await finishTask(ctx, { taskId, credit: "everyone" })).toEqual({ credited: 3, closed: 0 });
+    expect(ctx.notifier.events).toEqual([]); // nobody is emailed
+
+    expect(await t.db.task.findUniqueOrThrow({ where: { id: taskId } })).toMatchObject({
+      completedAt: TEST_NOW,
+      completedById: p.buildLead1.id,
+    });
+    const counted = { status: "APPROVED", finishedWithTask: true, reviewedById: p.buildLead1.id, reviewedAt: TEST_NOW };
+    expect(await assignmentOf(taskId, grant.id)).toMatchObject({ ...counted, statusBeforeFinish: "TODO", reviewNote: null });
+    expect(await assignmentOf(taskId, sam.id)).toMatchObject({
+      ...counted,
+      statusBeforeFinish: "SUBMITTED",
+      submissionNote: "Wheels on",
+      reviewNote: "Earlier: tighten the bolts",
+    });
+    expect(await assignmentOf(taskId, riley.id)).toMatchObject({ ...counted, statusBeforeFinish: "REJECTED", reviewNote: "Redo the chain" });
+    // Paige was approved one by one: untouched.
+    expect(await assignmentOf(taskId, paige.id)).toMatchObject({
+      status: "APPROVED",
+      finishedWithTask: false,
+      statusBeforeFinish: null,
+      reviewedById: p.buildLead2.id,
+      reviewNote: "Looks great",
+    });
+
+    const detail = (await getManagedTaskDetail(p.buildLead1, taskId, t.db))!;
+    expect(detail.counts).toEqual({ total: 4, todo: 0, submitted: 0, approved: 4, rejected: 0, closed: 0 });
+    expect(detail.completedAt).toEqual(TEST_NOW);
+    expect(detail.completedBy).toEqual({ id: p.buildLead1.id, name: "Blake Build" });
+    expect(detail.assignments.filter((a) => a.finishedWithTask).map((a) => a.user.name)).toEqual([
+      "Grant Gears",
+      "Riley Rivet",
+      "Sam Sprocket",
+    ]);
+    expect(detail.assignments.some((a) => a.closed)).toBe(false);
+  });
+
+  it("reopening puts back exactly what finishing changed", async () => {
+    const taskId = await drivetrain([sam, riley]);
+    await setItem(taskId, sam, "SUBMITTED", { submissionNote: "Wheels on" });
+    await setItem(taskId, riley, "REJECTED", { reviewNote: "Redo the chain" });
+    const before = await t.db.taskAssignment.findMany({ where: { taskId }, orderBy: { userId: "asc" } });
+
+    await finishTask(ctxFor(p.buildLead1), { taskId, credit: "everyone" });
+    const ctx = ctxFor(p.buildLead2);
+    expect(await reopenTask(ctx, { taskId })).toEqual({ restored: 3 });
+    expect(ctx.notifier.events).toEqual([]);
+
+    expect(await t.db.task.findUniqueOrThrow({ where: { id: taskId } })).toMatchObject({ completedAt: null, completedById: null });
+    const after = await t.db.taskAssignment.findMany({ where: { taskId }, orderBy: { userId: "asc" } });
+    const byUser = new Map(after.map((a) => [a.userId, a]));
+    expect(byUser.get(grant.id)).toMatchObject({ status: "TODO", reviewedById: null, reviewedAt: null, finishedWithTask: false, statusBeforeFinish: null });
+    expect(byUser.get(sam.id)).toMatchObject({ status: "SUBMITTED", submissionNote: "Wheels on", finishedWithTask: false, statusBeforeFinish: null });
+    expect(byUser.get(sam.id)!.submittedAt).toEqual(before.find((a) => a.userId === sam.id)!.submittedAt);
+    // Sent back keeps its feedback (the review fields finishing set are cleared).
+    expect(byUser.get(riley.id)).toMatchObject({ status: "REJECTED", reviewNote: "Redo the chain", reviewedById: null, reviewedAt: null });
+    // Approved one by one: as it was.
+    const paigeBefore = before.find((a) => a.userId === paige.id)!;
+    expect(byUser.get(paige.id)).toMatchObject({
+      status: "APPROVED",
+      reviewedById: paigeBefore.reviewedById,
+      reviewedAt: paigeBefore.reviewedAt,
+      reviewNote: "Looks great",
+    });
+  });
+
+  it("'Just close it' leaves every item as it is: not approved means closed, no credit", async () => {
+    const taskId = await drivetrain([sam]);
+    await setItem(taskId, sam, "SUBMITTED");
+    expect(await finishTask(ctxFor(p.buildLead1), { taskId, credit: "none" })).toEqual({ credited: 0, closed: 2 });
+
+    expect((await assignmentOf(taskId, grant.id)).status).toBe("TODO");
+    expect((await assignmentOf(taskId, sam.id)).status).toBe("SUBMITTED");
+    const all = await t.db.taskAssignment.findMany({ where: { taskId } });
+    expect(all.every((a) => !a.finishedWithTask && a.statusBeforeFinish === null)).toBe(true);
+
+    const detail = (await getManagedTaskDetail(p.buildLead1, taskId, t.db))!;
+    expect(detail.counts).toEqual({ total: 3, todo: 0, submitted: 0, approved: 1, rejected: 0, closed: 2 });
+    expect(detail.assignments.filter((a) => a.closed).map((a) => a.user.name)).toEqual(["Grant Gears", "Sam Sprocket"]);
+    // Out of the review queue — a manager can still approve it on the task page.
+    expect((await getReviewQueue(p.buildLead1, {}, t.db)).groups.some((g) => g.task.id === taskId)).toBe(false);
+    const samItem = await assignmentOf(taskId, sam.id);
+    expect(await approveMany(ctxFor(p.buildLead1), { assignmentIds: [samItem.id] })).toEqual({ approved: 0, skipped: 1 });
+
+    expect(await reopenTask(ctxFor(p.buildLead1), { taskId })).toEqual({ restored: 0 });
+    const reopened = (await getManagedTaskDetail(p.buildLead1, taskId, t.db))!;
+    expect(reopened.counts).toEqual({ total: 3, todo: 1, submitted: 1, approved: 1, rejected: 0, closed: 0 });
+    expect((await getReviewQueue(p.buildLead1, {}, t.db)).groups.some((g) => g.task.id === taskId)).toBe(true);
+  });
+
+  it("finishing twice is a conflict that says who did it; so is reopening an open task", async () => {
+    const taskId = await drivetrain();
+    await finishTask(ctxFor(p.buildLead1), { taskId, credit: "none" });
+    const err = await finishTask(ctxFor(p.buildLead2), { taskId, credit: "everyone" }).catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect((err as ConflictError).message).toMatch(/^Blake Build already marked this task finished/);
+    // Nothing was counted by the refused second try.
+    expect((await assignmentOf(taskId, grant.id)).status).toBe("TODO");
+
+    await reopenTask(ctxFor(p.buildLead1), { taskId });
+    await expect(reopenTask(ctxFor(p.buildLead1), { taskId })).rejects.toThrow(ConflictError);
+  });
+
+  it("two leaders finishing at once: exactly one wins", async () => {
+    const taskId = await drivetrain();
+    const results = await Promise.allSettled([
+      finishTask(ctxFor(p.buildLead1), { taskId, credit: "everyone" }),
+      finishTask(ctxFor(p.buildLead2), { taskId, credit: "none" }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(ConflictError);
+  });
+
+  it("a check-off racing the finish never lands on the finished task", async () => {
+    for (let i = 0; i < 5; i++) {
+      const taskId = await drivetrain();
+      const item = await assignmentOf(taskId, grant.id);
+      const [submitted, finished] = await Promise.allSettled([
+        submitAssignment(contextFor(t.db, grant), { assignmentId: item.id }),
+        finishTask(ctxFor(p.buildLead1), { taskId, credit: "everyone" }),
+      ]);
+      expect(finished.status).toBe("fulfilled");
+      const after = await assignmentOf(taskId, grant.id);
+      expect(after).toMatchObject({ status: "APPROVED", finishedWithTask: true });
+      if (submitted.status === "fulfilled") expect(after.statusBeforeFinish).toBe("SUBMITTED");
+      else {
+        expect(submitted.reason).toBeInstanceOf(ConflictError);
+        expect(after.statusBeforeFinish).toBe("TODO");
+      }
+    }
+  });
+
+  it("a subteam leader's own item isn't counted for everyone (like reviewing); all-scope staff's is", async () => {
+    const task = await makeTask(t.db, p.buildLead1, { subteam: "BUILD", assigneeIds: [grant.id, p.buildLead1.id] });
+    expect(await finishTask(ctxFor(p.buildLead1), { taskId: task.id, credit: "everyone" })).toEqual({ credited: 1, closed: 1 });
+    expect((await assignmentOf(task.id, grant.id)).status).toBe("APPROVED");
+    expect(await assignmentOf(task.id, p.buildLead1.id)).toMatchObject({ status: "TODO", finishedWithTask: false });
+
+    const team = await makeTask(t.db, p.captain, { subteam: null, assigneeIds: [grant.id, p.captain.id] });
+    expect(await finishTask(ctxFor(p.captain), { taskId: team.id, credit: "everyone" })).toEqual({ credited: 2, closed: 0 });
+    expect((await assignmentOf(team.id, p.captain.id)).status).toBe("APPROVED");
+  });
+
+  it("a subteam leader's own checked-off item: 'count for everyone' is refused until someone else approves it", async () => {
+    const task = await makeTask(t.db, p.buildLead1, { subteam: "BUILD", assigneeIds: [grant.id, p.buildLead1.id] });
+    const own = await setItem(task.id, p.buildLead1, "SUBMITTED");
+    const err = await finishTask(ctxFor(p.buildLead1), { taskId: task.id, credit: "everyone" }).catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect((err as ConflictError).message).toBe(
+      "Your own item is waiting for review. Ask another leader or the captain to approve it first, or choose “Just close it”.",
+    );
+    // Nothing changed: still open, Grant not counted, and the leader's item is still in the other leader's queue.
+    expect((await t.db.task.findUniqueOrThrow({ where: { id: task.id } })).completedAt).toBeNull();
+    expect((await assignmentOf(task.id, grant.id)).status).toBe("TODO");
+    expect((await getReviewQueue(p.buildLead2, {}, t.db)).groups.find((g) => g.task.id === task.id)?.items.map((i) => i.id)).toEqual([
+      own.id,
+    ]);
+
+    // Once another leader approves it, counting for everyone works.
+    await reviewAssignment(ctxFor(p.buildLead2), { assignmentId: own.id, decision: "approve" });
+    expect(await finishTask(ctxFor(p.buildLead1), { taskId: task.id, credit: "everyone" })).toEqual({ credited: 1, closed: 0 });
+  });
+
+  it("a subteam leader may still just close a task with their own item waiting; all-scope staff's own item counts", async () => {
+    const task = await makeTask(t.db, p.buildLead1, { subteam: "BUILD", assigneeIds: [grant.id, p.buildLead1.id] });
+    await setItem(task.id, p.buildLead1, "SUBMITTED");
+    expect(await finishTask(ctxFor(p.buildLead1), { taskId: task.id, credit: "none" })).toEqual({ credited: 0, closed: 2 });
+
+    const team = await makeTask(t.db, p.captain, { subteam: null, assigneeIds: [grant.id, p.captain.id] });
+    await setItem(team.id, p.captain, "SUBMITTED");
+    expect(await finishTask(ctxFor(p.captain), { taskId: team.id, credit: "everyone" })).toEqual({ credited: 2, closed: 0 });
+    expect(await assignmentOf(team.id, p.captain.id)).toMatchObject({ status: "APPROVED", statusBeforeFinish: "SUBMITTED" });
+  });
+
+  it("finishing it again from a stale tab says 'You' to whoever finished it", async () => {
+    const taskId = await drivetrain();
+    await finishTask(ctxFor(p.buildLead1), { taskId, credit: "none" });
+    await expect(finishTask(ctxFor(p.buildLead1), { taskId, credit: "everyone" })).rejects.toThrow(
+      "You already marked this task finished. Refresh to see the latest.",
+    );
+  });
+
+  it("only people who manage the task finish or reopen it", async () => {
+    const task = await makeTask(t.db, p.captain, { subteam: "BUILD", assigneeIds: [grant.id] });
+    for (const who of [p.swLead, p.bizLead]) {
+      await expect(finishTask(ctxFor(who), { taskId: task.id, credit: "none" }), who.name).rejects.toThrow(NotFoundError);
+    }
+    for (const who of [p.buildMember, grant]) {
+      await expect(finishTask(ctxFor(who), { taskId: task.id, credit: "none" }), who.name).rejects.toThrow(ForbiddenError);
+    }
+    // Another Build leader manages it.
+    await finishTask(ctxFor(p.buildLead2), { taskId: task.id, credit: "none" });
+    await expect(reopenTask(ctxFor(p.swLead), { taskId: task.id })).rejects.toThrow(NotFoundError);
+    await expect(reopenTask(ctxFor(grant), { taskId: task.id })).rejects.toThrow(ForbiddenError);
+    await reopenTask(ctxFor(p.mentor), { taskId: task.id });
+
+    const fieldErrors = async (input: Record<string, unknown>) => {
+      const err = await finishTask(ctxFor(p.captain), input).catch((e) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      return (err as ValidationError).fieldErrors;
+    };
+    expect((await fieldErrors({ taskId: task.id })).credit).toBe("Choose whether it counts as done for everyone.");
+    expect((await fieldErrors({ taskId: task.id, credit: "some" })).credit).toBe("Choose whether it counts as done for everyone.");
+    expect((await fieldErrors({ credit: "none" })).taskId).toBeDefined();
+    await expect(finishTask(ctxFor(p.captain), { taskId: "missing", credit: "none" })).rejects.toThrow(NotFoundError);
+    expect((await t.db.task.findUniqueOrThrow({ where: { id: task.id } })).completedAt).toBeNull();
+  });
+
+  it("on a finished task an item still waiting can be approved (then it counts) but not sent back", async () => {
+    const taskId = await drivetrain([sam]);
+    await setItem(taskId, sam, "SUBMITTED");
+    await finishTask(ctxFor(p.buildLead1), { taskId, credit: "none" });
+    const item = await assignmentOf(taskId, sam.id);
+
+    await expect(reviewAssignment(ctxFor(p.buildLead1), { assignmentId: item.id, decision: "reject", note: "More" })).rejects.toThrow(
+      /can't be sent back/,
+    );
+    const ctx = ctxFor(p.buildLead1);
+    await reviewAssignment(ctx, { assignmentId: item.id, decision: "approve" });
+    expect(await assignmentOf(taskId, sam.id)).toMatchObject({ status: "APPROVED", finishedWithTask: false, reviewedById: p.buildLead1.id });
+    expect(ctx.notifier.events).toEqual([{ type: "task.reviewed", assignmentId: item.id }]);
+    // Reopening the task leaves an item approved one by one alone.
+    expect(await reopenTask(ctxFor(p.buildLead1), { taskId })).toEqual({ restored: 0 });
+    expect((await assignmentOf(taskId, sam.id)).status).toBe("APPROVED");
+  });
+
+  it("a send-back racing the finish is refused instead of landing on the finished task", async () => {
+    const taskId = await drivetrain([sam]);
+    await setItem(taskId, sam, "SUBMITTED");
+    const item = await assignmentOf(taskId, sam.id);
+    // The task gets marked finished right between the checks and the write.
+    const racing = new Proxy(t.db, {
+      get(target, prop) {
+        if (prop === "taskAssignment") {
+          return new Proxy(target.taskAssignment, {
+            get(delegate, key) {
+              if (key === "updateMany") {
+                return async (args: Parameters<Db["taskAssignment"]["updateMany"]>[0]) => {
+                  await target.task.update({ where: { id: taskId }, data: { completedAt: TEST_NOW, completedById: p.buildLead2.id } });
+                  return delegate.updateMany(args);
+                };
+              }
+              const value = Reflect.get(delegate, key);
+              return typeof value === "function" ? value.bind(delegate) : value;
+            },
+          });
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const ctx = { ...ctxFor(p.buildLead1), db: racing };
+    await expect(reviewAssignment(ctx, { assignmentId: item.id, decision: "reject", note: "More" })).rejects.toThrow(/can't be sent back/);
+    expect((await assignmentOf(taskId, sam.id)).status).toBe("SUBMITTED");
+    expect(ctx.notifier.events).toEqual([]);
+  });
+
+  it("reopening one counted item takes its credit back for good (it stays closed while the task is finished)", async () => {
+    const taskId = await drivetrain();
+    await finishTask(ctxFor(p.buildLead1), { taskId, credit: "everyone" });
+    const item = await assignmentOf(taskId, grant.id);
+    expect(await reopenAssignment(ctxFor(p.buildLead2), { assignmentId: item.id })).toEqual({ taskFinished: true });
+    expect(await assignmentOf(taskId, grant.id)).toMatchObject({
+      status: "TODO",
+      finishedWithTask: false,
+      statusBeforeFinish: null,
+      reviewedById: null,
+    });
+    const detail = (await getManagedTaskDetail(p.buildLead1, taskId, t.db))!;
+    expect(detail.counts).toMatchObject({ approved: 1, closed: 1, todo: 0 });
+
+    expect(await reopenTask(ctxFor(p.buildLead1), { taskId })).toEqual({ restored: 0 });
+    expect((await assignmentOf(taskId, grant.id)).status).toBe("TODO");
+    // On an open task, reopening an item says it's back on their list.
+    await setItem(taskId, grant, "APPROVED");
+    expect(await reopenAssignment(ctxFor(p.buildLead2), { assignmentId: item.id })).toEqual({ taskFinished: false });
+  });
+
+  it("a finished task can still be edited, but nobody new can be added and sign-ups can't be opened", async () => {
+    const { id } = await createTask(ctxFor(p.buildLead1), taskInput({ assignMode: "signup", assigneeIds: [p.buildMember.id] }));
+    await finishTask(ctxFor(p.buildLead1), { taskId: id, credit: "none" });
+
+    const ctx = ctxFor(p.buildLead1);
+    await updateTask(ctx, taskInput({ taskId: id, title: "Renamed after finishing", assignMode: "signup", assigneeIds: [p.buildMember.id] }));
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ title: "Renamed after finishing", completedAt: TEST_NOW });
+
+    const err = await updateTask(
+      ctx,
+      taskInput({ taskId: id, assignMode: "signup", assigneeIds: [p.buildMember.id, p.buildMember2.id] }),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).fieldErrors.assigneeIds).toMatch(/marked finished, so nobody new can be added/);
+    expect(await t.db.taskAssignment.count({ where: { taskId: id } })).toBe(1);
+    expect(ctx.notifier.events).toEqual([]);
+
+    // Taking someone off is fine.
+    await updateTask(ctx, taskInput({ taskId: id, assignMode: "signup", assigneeIds: [] }));
+    expect(await t.db.taskAssignment.count({ where: { taskId: id } })).toBe(0);
+
+    await setSignupOpen(ctx, { taskId: id, open: false });
+    await expect(setSignupOpen(ctx, { taskId: id, open: true })).rejects.toThrow(/Reopen the task to open sign-ups/);
+    await reopenTask(ctx, { taskId: id });
+    await setSignupOpen(ctx, { taskId: id, open: true });
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).signupOpen).toBe(true);
+  });
+
+  it("duplicating a finished task makes an open one; deleting a finished task works", async () => {
+    const taskId = await drivetrain();
+    await finishTask(ctxFor(p.buildLead1), { taskId, credit: "everyone" });
+    const copy = (await getTaskDuplicate(p.buildLead1, taskId, { today: TEST_TODAY }, t.db))!;
+    expect(copy.assigneeIds.sort()).toEqual([grant.id, paige.id].sort());
+    const { id } = await createTask(ctxFor(p.buildLead1), { ...copy, subteam: copy.subteam, signupLimit: "" });
+    expect(await t.db.task.findUniqueOrThrow({ where: { id } })).toMatchObject({ completedAt: null, completedById: null });
+    expect(await t.db.taskAssignment.findMany({ where: { taskId: id } })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ status: "TODO", finishedWithTask: false })]),
+    );
+
+    await deleteTask(ctxFor(p.buildLead1), { taskId });
+    expect(await t.db.task.count({ where: { id: taskId } })).toBe(0);
+  });
+
+  it("the manage list: finished tasks are past (even when due later) and say so", async () => {
+    const lead = await makeUser(t.db, { role: "BUILD_LEADER", name: "List Lead" });
+    const later = await makeTask(t.db, lead, { title: "Finished early", subteam: "BUILD", dueDate: addDays(TEST_TODAY, 5), assigneeIds: [grant.id] });
+    await makeTask(t.db, lead, { title: "Still going", subteam: "BUILD", dueDate: addDays(TEST_TODAY, 5), assigneeIds: [grant.id] });
+    await finishTask(ctxFor(lead), { taskId: later.id, credit: "none" });
+
+    const upcoming = await listManagedTasks(lead, { view: "upcoming", mine: true, today: TEST_TODAY }, t.db);
+    expect(upcoming.tasks.map((x) => x.title)).toEqual(["Still going"]);
+    const past = await listManagedTasks(lead, { view: "past", mine: true, today: TEST_TODAY }, t.db);
+    expect(past.tasks.map((x) => [x.title, x.finished])).toEqual([["Finished early", true]]);
+    expect(past.tasks[0].counts).toEqual({ total: 1, todo: 0, submitted: 0, approved: 0, rejected: 0, closed: 1 });
+  });
+});
+
+// ---------- The Business leader's whole-team tasks ----------
+
+describe("the Business leader's whole-team tasks", () => {
+  it("creates a whole-team task for anyone ACTIVE: a build member, a software member, the captain", async () => {
+    const ctx = ctxFor(p.bizLead);
+    const people = [p.buildMember.id, p.swMember.id, p.bizMember.id, p.captain.id, p.buildLead1.id];
+    const { id } = await createTask(ctx, taskInput({ title: "Car wash", subteam: "", assigneeIds: people }));
+    const task = await t.db.task.findUniqueOrThrow({ where: { id }, include: { assignments: true } });
+    expect(task).toMatchObject({ subteam: null, createdById: p.bizLead.id });
+    expect(task.assignments.map((a) => a.userId).sort()).toEqual([...people].sort());
+    expect(ctx.notifier.events).toEqual([{ type: "task.assigned", taskId: id, userIds: people, actorId: p.bizLead.id }]);
+
+    const err = await createTask(ctx, taskInput({ subteam: "", assigneeIds: [p.disabledBuild.id] })).catch((e) => e);
+    expect((err as ValidationError).fieldErrors.assigneeIds).toContain("isn't active");
+  });
+
+  it("keeps Business tasks Business-only, and says how to add the others", async () => {
+    const err = await createTask(ctxFor(p.bizLead), taskInput({ subteam: "BUSINESS", assigneeIds: [p.bizMember.id, p.buildMember.id] })).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).fieldErrors.assigneeIds).toBe(
+      "Can't assign this task: Brook Member isn't in Business — make it a whole-team task to add them.",
+    );
+  });
+
+  it("other subteam leaders still can't create whole-team tasks", async () => {
+    for (const who of [p.swLead, p.buildLead1]) {
+      const err = await createTask(ctxFor(who), taskInput({ subteam: "", assigneeIds: [p.buildMember.id] })).catch((e) => e);
+      expect(err, who.name).toBeInstanceOf(ForbiddenError);
+      expect((err as ForbiddenError).message).toBe(
+        "Only the captain, mentors, teachers, and the Business leader can create whole-team tasks.",
+      );
+    }
+  });
+
+  it("manages the whole-team tasks they created — edit, review, finish, delete — but not the captain's", async () => {
+    const lead = ctxFor(p.bizLead);
+    const { id } = await createTask(lead, taskInput({ subteam: "", assigneeIds: [p.buildMember.id, p.swMember.id] }));
+    await updateTask(lead, taskInput({ taskId: id, subteam: "", assigneeIds: [p.buildMember.id, p.swMember.id, p.bizMember.id] }));
+    expect(await t.db.taskAssignment.count({ where: { taskId: id } })).toBe(3);
+
+    const sw = await assignmentOf(id, p.swMember.id);
+    await submit(sw.id);
+    expect((await getReviewQueue(p.bizLead, {}, t.db)).groups.find((g) => g.task.id === id)).toMatchObject({ task: { canManage: true } });
+    await reviewAssignment(lead, { assignmentId: sw.id, decision: "approve" });
+    // The Build leader still reviews their own members' items on it.
+    const build = await assignmentOf(id, p.buildMember.id);
+    await submit(build.id);
+    await reviewAssignment(ctxFor(p.buildLead1), { assignmentId: build.id, decision: "approve" });
+
+    expect(await finishTask(lead, { taskId: id, credit: "everyone" })).toEqual({ credited: 1, closed: 0 });
+    await reopenTask(lead, { taskId: id });
+    expect(await getManagedTaskDetail(p.bizLead, id, t.db)).not.toBeNull();
+    await deleteTask(lead, { taskId: id });
+
+    const captains = await makeTask(t.db, p.captain, { subteam: null, assigneeIds: [p.bizMember.id] });
+    expect(await getManagedTaskDetail(p.bizLead, captains.id, t.db)).toBeNull();
+    await expect(updateTask(lead, taskInput({ taskId: captains.id, subteam: "", assigneeIds: [p.bizMember.id] }))).rejects.toThrow(
+      NotFoundError,
+    );
+    await expect(finishTask(lead, { taskId: captains.id, credit: "none" })).rejects.toThrow(NotFoundError);
+    await expect(deleteTask(lead, { taskId: captains.id })).rejects.toThrow(NotFoundError);
+  });
+
+  it("moves their tasks between Business and the whole team; only new people are checked against the new subteam", async () => {
+    const lead = ctxFor(p.bizLead);
+    const { id } = await createTask(lead, taskInput({ subteam: "BUSINESS", assigneeIds: [p.bizMember.id] }));
+    await updateTask(lead, taskInput({ taskId: id, subteam: "", assigneeIds: [p.bizMember.id, p.swMember.id] }));
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).subteam).toBeNull();
+    // Back to Business: the software member already on it stays, but nobody else from outside Business joins.
+    await updateTask(lead, taskInput({ taskId: id, subteam: "BUSINESS", assigneeIds: [p.bizMember.id, p.swMember.id] }));
+    const err = await updateTask(
+      lead,
+      taskInput({ taskId: id, subteam: "BUSINESS", assigneeIds: [p.bizMember.id, p.swMember.id, p.buildMember.id] }),
+    ).catch((e) => e);
+    expect((err as ValidationError).fieldErrors.assigneeIds).toMatch(/Brook Member isn't in Business/);
+    // Other leaders still can't make a task whole-team.
+    const build = await createTask(ctxFor(p.buildLead1), taskInput());
+    await expect(updateTask(ctxFor(p.buildLead1), taskInput({ taskId: build.id, subteam: "" }))).rejects.toThrow(
+      "Only the captain, mentors, teachers, and the Business leader can make a task whole-team.",
+    );
+  });
+
+  it("can't make a Business task someone else created whole-team (they'd lose it, with anyone added)", async () => {
+    const captains = await createTask(ctxFor(p.captain), taskInput({ subteam: "BUSINESS", assigneeIds: [p.bizMember.id] }));
+    const lead = ctxFor(p.bizLead);
+    const err = await updateTask(
+      lead,
+      taskInput({ taskId: captains.id, subteam: "", assigneeIds: [p.bizMember.id, p.buildMember.id, p.swMember.id] }),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(ForbiddenError);
+    expect((err as ForbiddenError).message).toBe(
+      "Only whoever created this task, or the captain, mentors, and teachers, can make it whole-team.",
+    );
+    const after = await t.db.task.findUniqueOrThrow({ where: { id: captains.id }, include: { assignments: true } });
+    expect(after.subteam).toBe("BUSINESS");
+    expect(after.assignments.map((a) => a.userId)).toEqual([p.bizMember.id]);
+    expect(lead.notifier.events).toEqual([]);
+    // They still manage (and can edit) it as a Business task.
+    await updateTask(lead, taskInput({ taskId: captains.id, subteam: "BUSINESS", title: "Still Business", assigneeIds: [p.bizMember.id] }));
+    expect(await getManagedTaskDetail(p.bizLead, captains.id, t.db)).toMatchObject({ title: "Still Business", subteam: "BUSINESS" });
+    // The captain can make it whole-team.
+    await updateTask(ctxFor(p.captain), taskInput({ taskId: captains.id, subteam: "", assigneeIds: [p.bizMember.id] }));
+    expect((await t.db.task.findUniqueOrThrow({ where: { id: captains.id } })).subteam).toBeNull();
+  });
+
+  it("picks existing whole-team categories, but doesn't add to that list", async () => {
+    const outreach = await t.db.taskCategory.create({ data: { subteam: null, name: "Outreach", nameKey: "outreach" } });
+    const lead = ctxFor(p.bizLead);
+    const { id } = await createTask(lead, taskInput({ subteam: "", categoryId: outreach.id, assigneeIds: [p.buildMember.id] }));
+    expect((await t.db.task.findUniqueOrThrow({ where: { id } })).categoryId).toBe(outreach.id);
+
+    const err = await createTask(
+      lead,
+      taskInput({ subteam: "", categoryId: NEW_CATEGORY, newCategory: "Fundraising", assigneeIds: [p.buildMember.id] }),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).fieldErrors.newCategory).toBe(
+      "Only the captain, mentors, and teachers add whole-team categories. Pick one from the list.",
+    );
+    expect(await t.db.taskCategory.count({ where: { subteam: null, nameKey: "fundraising" } })).toBe(0);
+    // Their own Business list is theirs to add to.
+    await createTask(lead, taskInput({ subteam: "BUSINESS", categoryId: NEW_CATEGORY, newCategory: "Sponsors", assigneeIds: [p.bizMember.id] }));
+    expect(await t.db.taskCategory.count({ where: { subteam: "BUSINESS", nameKey: "sponsors" } })).toBe(1);
+  });
+
+  it("duplicating their whole-team task keeps the whole team and everyone on it", async () => {
+    const { id } = await createTask(ctxFor(p.bizLead), taskInput({ subteam: "", assigneeIds: [p.buildMember.id, p.swMember.id] }));
+    const copy = await getTaskDuplicate(p.bizLead, id, { today: TEST_TODAY }, t.db);
+    expect(copy).toMatchObject({ subteam: "" });
+    expect(copy!.assigneeIds.sort()).toEqual([p.buildMember.id, p.swMember.id].sort());
+    // The captain's whole-team tasks aren't theirs to copy.
+    const captains = await makeTask(t.db, p.captain, { subteam: null, assigneeIds: [p.buildMember.id, p.swMember.id] });
+    expect(await getTaskDuplicate(p.bizLead, captains.id, { today: TEST_TODAY }, t.db)).toBeNull();
   });
 });

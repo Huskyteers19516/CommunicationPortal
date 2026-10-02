@@ -539,7 +539,7 @@ describe("demo seed", () => {
       expect(canCreateTask(creator, task.subteam), task.title).toBe(true);
       for (const a of task.assignments) {
         const assignee = byId.get(a.userId)!;
-        expect(canAssignTo(creator, assignee), `${task.title} -> ${assignee.name}`).toBe(true);
+        expect(canAssignTo(creator, assignee, task.subteam), `${task.title} -> ${assignee.name}`).toBe(true);
       }
     }
     expect(tasks.some((x) => x.subteam === null)).toBe(true);

@@ -12,6 +12,7 @@ export const PEOPLE = {
   mentor: "elena.petrova@example.com",
   softwareMember: "maya.patel@example.com",
   buildMember: "ethan.chen@example.com",
+  buildMember2: "isabella.rossi@example.com",
   businessMember: "ava.thompson@example.com",
   businessLeader: "amara.okafor@example.com",
 } as const;
@@ -22,6 +23,10 @@ export function uniq(projectName: string) {
 }
 
 export async function signIn(page: Page, email: string, password = PASSWORD) {
+  // The whole suite (both projects) signs in more often than the app's per-address limit allows in 15 minutes
+  // (AUTH_RATE_LIMITS.loginPerIp, sized for a school's one shared address), and every request here comes from the
+  // same address — so each sign-in starts with that counter cleared. The per-email and per-account limits still apply.
+  await sql(`DELETE FROM "RateLimit" WHERE key LIKE 'login:ip:%'`);
   await page.context().clearCookies();
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);

@@ -6,7 +6,17 @@ import { type DateOnly, dateOnlyToDb, dbToDateOnly, todayInTimezone } from "@/li
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
 import { env } from "../env";
-import { canAssignTo, canCreateTask, canManageTask, canReviewAssignment, hasAllScope, isStaff, ledSubteam } from "../permissions";
+import { isClosedItem } from "../domain/assignment";
+import {
+  canAssignTo,
+  canCreateTask,
+  canManageCategories,
+  canManageTask,
+  canReviewAssignment,
+  hasAllScope,
+  isStaff,
+  ledSubteam,
+} from "../permissions";
 import { assignableUsersWhere, manageableTasksWhere, reviewQueueWhere, visibleQuestionsWhere } from "../scopes";
 
 export const TASKS_PAGE_SIZE = 50;
@@ -39,19 +49,32 @@ export interface SubteamOption {
 export interface TaskFormOptions {
   subteams: SubteamOption[];
   defaultSubteam: "" | Subteam;
+  /**
+   * Subteam values whose category list the actor may add to with "New category…" (canManageCategories). The
+   * Business leader picks from the whole-team categories but doesn't add to them.
+   */
+  newCategorySubteams: ("" | Subteam)[];
 }
 
-/** Subteams the actor may create tasks for (whole team only for all-scope staff). */
-export function getTaskFormOptions(actor: ActorLike): TaskFormOptions {
-  if (!isStaff(actor)) return { subteams: [], defaultSubteam: "" };
-  if (hasAllScope(actor)) {
-    return {
-      subteams: [{ value: "", label: "Whole team" }, ...SUBTEAMS.map((s) => ({ value: s, label: SUBTEAM_LABELS[s] }))],
-      defaultSubteam: "",
-    };
-  }
-  const led = ledSubteam(actor);
-  return led ? { subteams: [{ value: led, label: SUBTEAM_LABELS[led] }], defaultSubteam: led } : { subteams: [], defaultSubteam: "" };
+const subteamOption = (value: "" | Subteam): SubteamOption => ({ value, label: value ? SUBTEAM_LABELS[value] : "Whole team" });
+
+/**
+ * Subteams the actor may create tasks for: all-scope staff every subteam and the whole team (the default);
+ * subteam leaders their own subteam (the default), plus the whole team for the Business leader.
+ *
+ * `editing` (the edit form): only subteams the actor would still manage the task in after saving (updateTask
+ * refuses the rest) — so the Business leader is offered the whole team only for tasks they created.
+ */
+export function getTaskFormOptions(actor: ActorLike, editing?: { createdById: string }): TaskFormOptions {
+  if (!isStaff(actor)) return { subteams: [], defaultSubteam: "", newCategorySubteams: [] };
+  let values: ("" | Subteam)[] = hasAllScope(actor) ? ["", ...SUBTEAMS] : SUBTEAMS.filter((s) => canCreateTask(actor, s));
+  if (!hasAllScope(actor) && canCreateTask(actor, null)) values.push("");
+  if (editing) values = values.filter((v) => canManageTask(actor, { createdById: editing.createdById, subteam: v || null }));
+  return {
+    subteams: values.map(subteamOption),
+    defaultSubteam: values[0] ?? "",
+    newCategorySubteams: values.filter((v) => canManageCategories(actor, v || null)),
+  };
 }
 
 // ---------- assignable people ----------
@@ -65,6 +88,10 @@ export interface AssignablePerson {
   note?: string;
   /** Always stays assigned (e.g. a subteam leader can't remove themselves); rendered checked + disabled. */
   locked?: boolean;
+  /** The actor may put them only on whole-team tasks (the Business leader and people outside Business). */
+  wholeTeamOnly?: boolean;
+  /** Can't be added right now (editing a task that's marked finished): rendered disabled while not picked. */
+  frozen?: boolean;
 }
 
 export interface AssigneeGroup {
@@ -92,15 +119,28 @@ export function groupPeople(people: AssignablePerson[]): AssigneeGroup[] {
   }));
 }
 
-/** ACTIVE people the actor may assign tasks to, grouped by subteam. */
+/**
+ * ACTIVE people the actor may put on some task they can create, grouped by subteam. People they may put only on
+ * whole-team tasks (for the Business leader: everyone outside Business) are marked `wholeTeamOnly`.
+ */
 export async function getAssignableUsers(actor: ActorLike, db: Db = prisma): Promise<AssigneeGroup[]> {
+  const wholeTeam = canCreateTask(actor, null);
+  const own = ledSubteam(actor);
   const users = await db.user.findMany({
-    where: assignableUsersWhere(actor),
-    select: { id: true, name: true, role: true, subteam: true },
+    where: assignableUsersWhere(actor, wholeTeam ? null : own),
+    select: { id: true, name: true, role: true, subteam: true, status: true },
     orderBy: { name: "asc" },
     take: 1000,
   });
-  return groupPeople(users);
+  return groupPeople(
+    users.map((u) => ({
+      id: u.id,
+      name: u.name,
+      role: u.role,
+      subteam: u.subteam,
+      ...(wholeTeam && own && !canAssignTo(actor, u, own) ? { wholeTeamOnly: true } : {}),
+    })),
+  );
 }
 
 // ---------- task list ----------
@@ -109,10 +149,13 @@ export type TaskListView = "upcoming" | "past" | "all";
 
 export interface StatusCounts {
   total: number;
+  /** To do / submitted / rejected only count items of tasks that aren't marked finished; approved counts everywhere. */
   todo: number;
   submitted: number;
   approved: number;
   rejected: number;
+  /** Not approved when the task was marked finished: closed, no credit. */
+  closed: number;
 }
 
 export interface ManagedTaskRow {
@@ -127,6 +170,8 @@ export interface ManagedTaskRow {
   signupLimit: number | null;
   createdByName: string;
   isMine: boolean;
+  /** A leader marked the whole task finished. */
+  finished: boolean;
   counts: StatusCounts;
 }
 
@@ -138,17 +183,28 @@ export interface ManagedTaskList {
 }
 
 function emptyCounts(): StatusCounts {
-  return { total: 0, todo: 0, submitted: 0, approved: 0, rejected: 0 };
+  return { total: 0, todo: 0, submitted: 0, approved: 0, rejected: 0, closed: 0 };
 }
 
-const COUNT_KEY: Record<AssignmentStatus, keyof Omit<StatusCounts, "total">> = {
+const COUNT_KEY: Record<AssignmentStatus, keyof Omit<StatusCounts, "total" | "closed">> = {
   TODO: "todo",
   SUBMITTED: "submitted",
   APPROVED: "approved",
   REJECTED: "rejected",
 };
 
-/** Tasks the actor manages, with per-status assignment counts (one groupBy, no N+1). */
+function addToCounts(counts: StatusCounts, status: AssignmentStatus, completedAt: Date | null, n = 1) {
+  counts[isClosedItem(status, completedAt) ? "closed" : COUNT_KEY[status]] += n;
+  counts.total += n;
+}
+
+/** Not marked finished: the task is still being worked on. */
+const OPEN_TASK = { completedAt: null } satisfies Prisma.TaskWhereInput;
+
+/**
+ * Tasks the actor manages, with per-status assignment counts (one groupBy, no N+1). Upcoming = due today or later
+ * and not marked finished; Past = due before today, or marked finished.
+ */
 export async function listManagedTasks(
   actor: ActorLike,
   opts: { view: TaskListView; subteam?: SubteamFilter; mine?: boolean; page?: number; today?: DateOnly },
@@ -158,7 +214,11 @@ export async function listManagedTasks(
   const where: Prisma.TaskWhereInput = {
     AND: [
       manageableTasksWhere(actor),
-      opts.view === "upcoming" ? { dueDate: { gte: today } } : opts.view === "past" ? { dueDate: { lt: today } } : {},
+      opts.view === "upcoming"
+        ? { dueDate: { gte: today }, ...OPEN_TASK }
+        : opts.view === "past"
+          ? { OR: [{ dueDate: { lt: today } }, { completedAt: { not: null } }] }
+          : {},
       subteamWhere(opts.subteam),
       opts.mine ? { createdById: actor.id } : {},
     ],
@@ -189,6 +249,7 @@ export async function listManagedTasks(
       category: { select: { id: true, name: true } },
       createdById: true,
       createdBy: { select: { name: true } },
+      completedAt: true,
     },
   });
 
@@ -199,11 +260,11 @@ export async function listManagedTasks(
         _count: { _all: true },
       })
     : [];
+  const completedAt = new Map(tasks.map((t) => [t.id, t.completedAt]));
   const countsByTask = new Map<string, StatusCounts>();
   for (const g of grouped) {
     const c = countsByTask.get(g.taskId) ?? emptyCounts();
-    c[COUNT_KEY[g.status]] += g._count._all;
-    c.total += g._count._all;
+    addToCounts(c, g.status, completedAt.get(g.taskId) ?? null, g._count._all);
     countsByTask.set(g.taskId, c);
   }
 
@@ -220,6 +281,7 @@ export async function listManagedTasks(
       signupLimit: t.signupLimit,
       createdByName: t.createdBy.name,
       isMine: t.createdById === actor.id,
+      finished: t.completedAt !== null,
       counts: countsByTask.get(t.id) ?? emptyCounts(),
     })),
     total,
@@ -245,6 +307,10 @@ export interface ManagedAssignment {
   user: { id: string; name: string; role: Role; subteam: Subteam | null; status: AccountStatus };
   /** The person signed themselves up from the Task dashboard. */
   selfAssigned: boolean;
+  /** Approved because the whole task was marked finished and counted for everyone. */
+  finishedWithTask: boolean;
+  /** Not approved and the task is marked finished: closed, no credit. */
+  closed: boolean;
   /** The actor may approve / send back / reopen this item (false for your own item unless all-scope). */
   canReview: boolean;
   /** The actor may take this person off the task (false for your own item unless all-scope). */
@@ -265,6 +331,9 @@ export interface ManagedTaskDetail {
   assignMode: "assign" | "signup";
   createdAt: Date;
   createdBy: { id: string; name: string; role: Role; subteam: Subteam | null };
+  /** When a leader marked the whole task finished ("Mark task finished"), else null. */
+  completedAt: Date | null;
+  completedBy: { id: string; name: string } | null;
   assignments: ManagedAssignment[];
   counts: StatusCounts;
   questions: { id: string; title: string; status: QuestionStatus }[];
@@ -289,6 +358,8 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
       createdAt: true,
       createdById: true,
       createdBy: { select: { id: true, name: true, role: true, subteam: true } },
+      completedAt: true,
+      completedBy: { select: { id: true, name: true } },
       assignments: {
         orderBy: { user: { name: "asc" } },
         select: {
@@ -296,6 +367,7 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
           userId: true,
           status: true,
           selfAssigned: true,
+          finishedWithTask: true,
           submittedAt: true,
           submissionNote: true,
           reviewedAt: true,
@@ -315,10 +387,7 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
   if (!task) return null;
 
   const counts = emptyCounts();
-  for (const a of task.assignments) {
-    counts[COUNT_KEY[a.status]] += 1;
-    counts.total += 1;
-  }
+  for (const a of task.assignments) addToCounts(counts, a.status, task.completedAt);
 
   return {
     id: task.id,
@@ -333,6 +402,8 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
     assignMode: assignModeOf(task.signupMode),
     createdAt: task.createdAt,
     createdBy: task.createdBy,
+    completedAt: task.completedAt,
+    completedBy: task.completedBy,
     counts,
     questions: task.questions,
     assignments: task.assignments.map((a) => ({
@@ -345,6 +416,8 @@ export async function getManagedTaskDetail(actor: ActorLike, id: string, db: Db 
       reviewerName: a.reviewedBy?.name ?? null,
       user: a.user,
       selfAssigned: a.selfAssigned,
+      finishedWithTask: a.finishedWithTask && a.status === "APPROVED",
+      closed: isClosedItem(a.status, task.completedAt),
       canReview: canReviewAssignment(actor, task, { userId: a.userId, assigneeSubteam: a.user.subteam }),
       canRemove: a.userId !== actor.id || hasAllScope(actor),
     })),
@@ -375,7 +448,10 @@ export interface TaskDuplicate {
   assigneeIds: string[];
 }
 
-/** Prefill for "Duplicate task". Null when the task is missing or the actor can't manage it. */
+/**
+ * Prefill for "Duplicate task". Null when the task is missing or the actor can't manage it. A copy of a task that
+ * was marked finished starts open (nothing about being finished is copied).
+ */
 export async function getTaskDuplicate(
   actor: ActorLike,
   id: string,
@@ -404,19 +480,22 @@ export async function getTaskDuplicate(
   });
   if (!task || !canManageTask(actor, task)) return null;
   const sameSubteam = canCreateTask(actor, task.subteam);
+  const subteam = sameSubteam ? (task.subteam ?? "") : getTaskFormOptions(actor).defaultSubteam;
 
   return {
     sourceId: task.id,
     sourceTitle: task.title,
     title: task.title,
     description: task.description,
-    subteam: sameSubteam ? (task.subteam ?? "") : getTaskFormOptions(actor).defaultSubteam,
+    subteam,
     priority: task.priority,
     dueDate: opts.today ?? todayInTimezone(env.teamTimezone),
     categoryId: sameSubteam ? (task.categoryId ?? "") : "",
     assignMode: assignModeOf(task.signupMode),
     signupLimit: task.signupLimit,
-    assigneeIds: task.assignments.filter((a) => !a.selfAssigned && canAssignTo(actor, a.user)).map((a) => a.user.id),
+    assigneeIds: task.assignments
+      .filter((a) => !a.selfAssigned && canAssignTo(actor, a.user, subteam || null))
+      .map((a) => a.user.id),
   };
 }
 

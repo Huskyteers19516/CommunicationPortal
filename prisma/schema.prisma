@@ -161,6 +161,7 @@ model User {
   attendanceChangesMade  AttendanceChange[]    @relation("AttendanceChangeActor")
   plannerPathsCreated    PlannerPath[]         @relation("PlannerPathCreator")
   plannerPathsEdited     PlannerPath[]         @relation("PlannerPathEditor")
+  tasksCompleted         Task[]                @relation("TaskCompleter")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -194,27 +195,31 @@ model PasswordResetToken {
 }
 
 model Task {
-  id          String        @id @default(cuid())
-  title       String
-  description String        @default("")
-  /// Subteam the task belongs to. Null = whole-team task (captain/mentor/teacher/admin only).
-  subteam     Subteam?
+  id            String        @id @default(cuid())
+  title         String
+  description   String        @default("")
+  /// Subteam the task belongs to. Null = whole-team task (captain/mentor/teacher/admin, and the Business leader).
+  subteam       Subteam?
   /// Calendar day (team timezone) the task should be done by. Stored as a DATE.
-  dueDate     DateTime      @db.Date
-  priority    Priority      @default(NORMAL)
+  dueDate       DateTime      @db.Date
+  priority      Priority      @default(NORMAL)
   /// Category the task is sorted under on the Task dashboard (e.g. Build → Intake). Must belong to the task's subteam.
-  categoryId  String?
-  category    TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryId    String?
+  category      TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   /// "Let people sign up" task (true) vs. "Assign people" (false). Closing sign-ups (signupOpen) doesn't change it.
-  signupMode  Boolean       @default(false)
+  signupMode    Boolean       @default(false)
   /// While on, people in the task's subteam (anyone, for whole-team tasks) can sign themselves up. Only ever on for signupMode tasks.
-  signupOpen  Boolean       @default(false)
+  signupOpen    Boolean       @default(false)
   /// Most people the task takes, counting everyone on it. Null = no limit.
-  signupLimit Int?
-  createdById String
-  createdBy   User          @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  signupLimit   Int?
+  createdById   String
+  createdBy     User          @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  /// Set when a leader marks the whole task finished ("Mark task finished"); null = still open.
+  completedAt   DateTime?
+  completedById String?
+  completedBy   User?         @relation("TaskCompleter", fields: [completedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
   assignments TaskAssignment[]
   questions   Question[]
@@ -223,6 +228,7 @@ model Task {
   @@index([subteam, dueDate])
   @@index([createdById])
   @@index([categoryId])
+  @@index([completedAt])
 }
 
 /// A kind of job inside a subteam, e.g. Build → Intake, Drivetrain, CAD. Leaders add them with “+”.
@@ -248,22 +254,26 @@ model TaskCategory {
 }
 
 model TaskAssignment {
-  id             String           @id @default(cuid())
-  taskId         String
-  task           Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  userId         String
-  user           User             @relation("AssignmentAssignee", fields: [userId], references: [id], onDelete: Cascade)
-  status         AssignmentStatus @default(TODO)
-  submittedAt    DateTime?
-  submissionNote String?
-  reviewedById   String?
-  reviewedBy     User?            @relation("AssignmentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
-  reviewedAt     DateTime?
-  reviewNote     String?
+  id                 String            @id @default(cuid())
+  taskId             String
+  task               Task              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User              @relation("AssignmentAssignee", fields: [userId], references: [id], onDelete: Cascade)
+  status             AssignmentStatus  @default(TODO)
+  submittedAt        DateTime?
+  submissionNote     String?
+  reviewedById       String?
+  reviewedBy         User?             @relation("AssignmentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt         DateTime?
+  reviewNote         String?
   /// The person signed themselves up (from the Task dashboard) instead of being assigned by a leader.
-  selfAssigned   Boolean          @default(false)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  selfAssigned       Boolean           @default(false)
+  /// Approved because a leader marked the whole task finished and counted it for everyone (not reviewed one by one).
+  finishedWithTask   Boolean           @default(false)
+  /// The status it had before that, so "Reopen task" can put it back.
+  statusBeforeFinish AssignmentStatus?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
 
   @@unique([taskId, userId])
   @@index([userId, status])

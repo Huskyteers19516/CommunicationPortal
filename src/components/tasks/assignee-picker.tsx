@@ -5,7 +5,7 @@ import { useId, useState } from "react";
 import type { Subteam } from "@/generated/prisma/enums";
 import { SUBTEAM_LABELS } from "@/lib/constants";
 import { cn } from "@/lib/cn";
-import type { AssigneeGroup } from "@/server/queries/tasks";
+import type { AssignablePerson, AssigneeGroup } from "@/server/queries/tasks";
 import { RoleBadge } from "../app/badges";
 import { FieldError } from "../ui/field";
 
@@ -69,17 +69,20 @@ export function AssigneePicker({
   const everyone = groups.flatMap((g) => g.people);
   const visibleCount = q ? everyone.filter((p) => matches(p.name, q)).length : everyone.length;
 
+  /** Bulk buttons add only people who can be added (no note, not frozen). */
+  const addable = (p: AssignablePerson) => !p.note && !p.frozen;
+
   // Shortcut for staff who can see several groups: "Select everyone in Build" when the task is a Build task.
   let shortcut: { label: string; ids: string[] } | null = null;
   if (groups.length > 1 && taskSubteam !== undefined) {
     if (taskSubteam === "") {
-      shortcut = { label: "Select everyone", ids: everyone.filter((p) => !p.note).map((p) => p.id) };
+      shortcut = { label: "Select everyone", ids: everyone.filter(addable).map((p) => p.id) };
     } else {
       const group = groups.find((g) => g.key === taskSubteam);
       if (group) {
         shortcut = {
           label: `Select everyone in ${SUBTEAM_LABELS[taskSubteam]}`,
-          ids: group.people.filter((p) => !p.note).map((p) => p.id),
+          ids: group.people.filter(addable).map((p) => p.id),
         };
       }
     }
@@ -168,7 +171,7 @@ export function AssigneePicker({
         {groups.length === 0 && <p className="px-3 py-6 text-center text-sm text-ink-500">There&apos;s nobody you can assign yet.</p>}
         {groups.map((group) => {
           const visible = group.people.filter((p) => !q || matches(p.name, q));
-          const visibleIds = visible.filter((p) => !p.note || selected.has(p.id)).map((p) => p.id);
+          const visibleIds = visible.filter((p) => addable(p) || selected.has(p.id)).map((p) => p.id);
           const chosen = group.people.filter((p) => selected.has(p.id)).length;
           const headingId = `${baseId}-${group.key}`;
           return (
@@ -205,12 +208,13 @@ export function AssigneePicker({
                 {group.people.map((person) => {
                   const shown = !q || matches(person.name, q);
                   const checked = selected.has(person.id);
+                  const disabled = !!person.locked || (!!person.frozen && !checked);
                   return (
                     <li key={person.id} className={shown ? undefined : "hidden"}>
                       <label
                         className={cn(
                           "flex min-h-11 items-center gap-3 px-3 py-2 transition-colors",
-                          person.locked ? "cursor-default" : "cursor-pointer hover:bg-ink-50",
+                          disabled ? "cursor-default" : "cursor-pointer hover:bg-ink-50",
                           checked && "bg-brand-50/50",
                         )}
                       >
@@ -219,14 +223,16 @@ export function AssigneePicker({
                           name={person.locked ? undefined : name}
                           value={person.id}
                           checked={checked}
-                          disabled={person.locked}
+                          disabled={disabled}
                           onChange={(e) => toggle(person.id, e.target.checked)}
                           className="size-5 shrink-0 rounded border-ink-300 disabled:opacity-70"
                         />
                         {/* A disabled checkbox isn't submitted, so locked people go in a hidden input. */}
                         {person.locked && <input type="hidden" name={name} value={person.id} />}
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-medium text-ink-900">{person.name}</span>
+                          <span className={cn("block truncate text-sm font-medium", disabled && !checked ? "text-ink-400" : "text-ink-900")}>
+                            {person.name}
+                          </span>
                           {person.note && <span className="block text-xs text-amber-700">{person.note}</span>}
                         </span>
                         <RoleBadge role={person.role} />

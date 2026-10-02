@@ -884,6 +884,14 @@ describe("admin queries", () => {
       canDelete: false, // created a task
       isSelf: false,
     });
+    expect(d?.closedAssignments).toBe(0);
+    // An item never approved before a leader marked its task finished is counted apart (it isn't "to do").
+    const closedTask = await makeTask(t.db, lead, { assigneeIds: [m.id] });
+    await t.db.task.update({ where: { id: closedTask.id }, data: { completedAt: TEST_NOW, completedById: lead.id } });
+    expect(await getUserDetail(admin, m.id, t.db, TEST_NOW)).toMatchObject({
+      assignments: { TODO: 1, SUBMITTED: 0, APPROVED: 1, REJECTED: 0 },
+      closedAssignments: 1,
+    });
     expect(await getUserDetail(admin, "ghost", t.db)).toBeNull();
     expect((await getUserDetail(admin, admin.id, t.db))?.isSelf).toBe(true);
     const pending = await makeUser(t.db, { role: "MENTOR", status: "PENDING", email: "owner@example.com" });

@@ -4,6 +4,7 @@ import { addDays } from "@/lib/dates";
 import type { Actor } from "@/server/actor";
 import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, ValidationError } from "@/server/errors";
 import { leaveTask, SIGNUP_RATE_LIMIT, signUpForTask } from "@/server/services/signups";
+import { finishTask, reopenTask } from "@/server/services/tasks";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeTask, makeUser, TEST_NOW, TEST_TODAY } from "./helpers/factories";
 
@@ -199,5 +200,37 @@ describe("leaveTask", () => {
     expect(err.userMessage).toBe("You're not on this task.");
     await expect(leaveTask(ctxFor(build[1]), { taskId: "missing" })).rejects.toThrow(NotFoundError);
     await expect(leaveTask(ctxFor(p.disabledBuild), { taskId: task.id })).rejects.toThrow(ForbiddenError);
+  });
+});
+
+describe("tasks marked finished", () => {
+  it("take no sign-ups and nobody leaves them, until they're reopened", async () => {
+    const task = await signupTask({ limit: 5 });
+    await signUpForTask(ctxFor(build[6]), { taskId: task.id });
+    await finishTask(ctxFor(p.buildLead), { taskId: task.id, credit: "none" });
+
+    let err = await errorOf(signUpForTask(ctxFor(build[7]), { taskId: task.id }));
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.userMessage).toBe("This task is finished, so sign-ups are closed.");
+    expect(await mine(task.id, build[7].id)).toBeNull();
+
+    err = await errorOf(leaveTask(ctxFor(build[6]), { taskId: task.id }));
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.userMessage).toBe("This task is finished, so you can't leave it.");
+    expect(await mine(task.id, build[6].id)).not.toBeNull();
+    // Not on it at all: same answer as before.
+    err = await errorOf(leaveTask(ctxFor(build[5]), { taskId: task.id }));
+    expect(err).toBeInstanceOf(NotFoundError);
+
+    // Whole-team sign-ups too.
+    const team = await signupTask({ subteam: null });
+    await finishTask(ctxFor(p.captain), { taskId: team.id, credit: "everyone" });
+    await expect(signUpForTask(ctxFor(p.swMember), { taskId: team.id })).rejects.toThrow(ConflictError);
+
+    await reopenTask(ctxFor(p.buildLead), { taskId: task.id });
+    await signUpForTask(ctxFor(build[7]), { taskId: task.id });
+    await leaveTask(ctxFor(build[6]), { taskId: task.id });
+    expect(await mine(task.id, build[7].id)).toMatchObject({ selfAssigned: true });
+    expect(await mine(task.id, build[6].id)).toBeNull();
   });
 });

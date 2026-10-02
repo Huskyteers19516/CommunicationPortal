@@ -6,6 +6,13 @@
 //    └────withdraw─────┘   └─send back─▶ REJECTED ──submit──▶ SUBMITTED
 //    ▲                                                        
 //    └──────────────────────reopen (manager)───────────────────┘ (from APPROVED)
+//
+// A whole task can also be marked finished (Task.completedAt, "Mark task finished" — services/tasks.ts):
+// - "Count it as done for everyone": every item that isn't APPROVED becomes APPROVED with finishedWithTask = true
+//   and statusBeforeFinish = what it was, so "Reopen task" can put exactly those items back.
+// - "Just close it": items stay as they are. Anything not APPROVED is then *closed* — no credit, off everyone's
+//   open lists, never overdue, out of the review queue — see isClosedItem.
+// While a task is finished its people can't check off, uncheck, sign up, or leave.
 
 import type { AssignmentStatus } from "@/generated/prisma/enums";
 
@@ -37,7 +44,12 @@ export function isDone(status: AssignmentStatus): boolean {
   return status === "APPROVED";
 }
 
-/** Still on the member's plate (shows in Today / overdue). */
-export function isOpenForMember(status: AssignmentStatus): boolean {
-  return status === "TODO" || status === "REJECTED";
+/** An item of a task that was marked finished without it being approved: closed, no credit. */
+export function isClosedItem(status: AssignmentStatus, taskCompletedAt: Date | string | null): boolean {
+  return taskCompletedAt !== null && status !== "APPROVED";
+}
+
+/** Still on the member's plate (shows in Today / overdue): to do or sent back, and the task isn't marked finished. */
+export function isOpenForMember(status: AssignmentStatus, taskCompletedAt: Date | string | null = null): boolean {
+  return (status === "TODO" || status === "REJECTED") && taskCompletedAt === null;
 }

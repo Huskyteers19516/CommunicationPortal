@@ -2,14 +2,14 @@ import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import type { DateOnly } from "@/lib/dates";
 import type { ManagedTaskRow } from "@/server/queries/tasks";
-import { CategoryBadge, DueBadge, PriorityBadge, SignupBadge, SubteamBadge } from "../app/badges";
+import { CategoryBadge, DueBadge, FinishedBadge, PriorityBadge, SignupBadge, SubteamBadge } from "../app/badges";
 import { Badge } from "../ui/badge";
 import { ProgressBar } from "../ui/progress-bar";
 
 /** One row in the Manage → Tasks list. The whole row is the link (big tap target on phones). */
 export function TaskListItem({ task, today }: { task: ManagedTaskRow; today: DateOnly }) {
   const { counts } = task;
-  const allDone = counts.total > 0 && counts.approved === counts.total;
+  const allDone = task.finished || (counts.total > 0 && counts.approved === counts.total);
   return (
     <Link href={`/manage/tasks/${task.id}`} className="group flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-ink-50 sm:px-5">
       <div className="min-w-0 flex-1">
@@ -22,13 +22,14 @@ export function TaskListItem({ task, today }: { task: ManagedTaskRow; today: Dat
           )}
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <FinishedBadge finished={task.finished} />
           <SubteamBadge subteam={task.subteam} />
           <CategoryBadge name={task.category?.name} />
           <DueBadge due={task.dueDate} today={today} done={allDone} />
           <PriorityBadge priority={task.priority} />
           <SignupBadge
             signupMode={task.signupMode}
-            signupOpen={task.signupOpen}
+            signupOpen={task.signupOpen && !task.finished}
             signupLimit={task.signupLimit}
             spotsTaken={counts.total}
           />

@@ -30,26 +30,43 @@ export function canManageSubteam(actor: ActorLike, subteam: Subteam | null): boo
   return led !== null && subteam === led;
 }
 
-/** Can create a task that belongs to `subteam`. */
+/**
+ * Can create whole-team tasks (subteam null): all-scope staff, and the Business leader — fundraising and outreach
+ * need people from every subteam. Other subteam leaders can't.
+ */
+export function canCreateWholeTeamTask(actor: ActorLike): boolean {
+  return hasAllScope(actor) || ledSubteam(actor) === "BUSINESS";
+}
+
+/** Can create a task that belongs to `subteam` (null = whole team, see canCreateWholeTeamTask). */
 export function canCreateTask(actor: ActorLike, subteam: Subteam | null): boolean {
+  if (subteam === null) return canCreateWholeTeamTask(actor);
   return canManageSubteam(actor, subteam);
 }
 
 /**
- * Can assign a task to this person.
- * All-scope staff: any ACTIVE user. Subteam leaders: ACTIVE users in their own subteam.
+ * Can put this person on a task that belongs to `taskSubteam` (null = whole team).
+ * - All-scope staff: any ACTIVE user.
+ * - The Business leader: any ACTIVE user on whole-team tasks; ACTIVE Business people on Business tasks.
+ * - Other subteam leaders: ACTIVE users in their own subteam (whatever the task's subteam).
  */
 export function canAssignTo(
   actor: ActorLike,
   assignee: { subteam: Subteam | null; status: AccountStatus },
+  taskSubteam: Subteam | null,
 ): boolean {
   if (assignee.status !== "ACTIVE") return false;
   if (hasAllScope(actor)) return true;
   const led = ledSubteam(actor);
-  return led !== null && assignee.subteam === led;
+  if (led === null) return false;
+  if (taskSubteam === null && canCreateWholeTeamTask(actor)) return true;
+  return assignee.subteam === led;
 }
 
-/** Edit/delete a task, see its progress, review its submissions. */
+/**
+ * Edit/delete a task, see its progress, review its submissions, and mark the whole task finished (or reopen it):
+ * whoever created it (e.g. the Business leader's whole-team tasks) and staff who manage its subteam.
+ */
 export function canManageTask(actor: ActorLike, task: { createdById: string; subteam: Subteam | null }): boolean {
   if (!isStaff(actor)) return false;
   return task.createdById === actor.id || canManageSubteam(actor, task.subteam);
@@ -63,11 +80,14 @@ export function canManageCategories(actor: ActorLike, subteam: Subteam | null): 
 }
 
 /**
- * Sign yourself up for a task from the Task dashboard: sign-ups must be open, and the task must be
- * for your subteam (whole-team tasks: anyone). Spots, due date, and "already on it" are checked by the service.
+ * Sign yourself up for a task from the Task dashboard: sign-ups must be open, the task not marked finished, and the
+ * task must be for your subteam (whole-team tasks: anyone). Spots, due date, and "already on it" are checked by the service.
  */
-export function canSignUpForTask(actor: ActorLike, task: { subteam: Subteam | null; signupOpen: boolean }): boolean {
-  if (!task.signupOpen) return false;
+export function canSignUpForTask(
+  actor: ActorLike,
+  task: { subteam: Subteam | null; signupOpen: boolean; completedAt: Date | null },
+): boolean {
+  if (!task.signupOpen || task.completedAt !== null) return false;
   return task.subteam === null || actor.subteam === task.subteam;
 }
 

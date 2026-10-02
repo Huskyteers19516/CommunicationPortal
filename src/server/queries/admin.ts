@@ -243,7 +243,10 @@ export interface UserDetail {
   createdAt: Date;
   approvedAt: Date | null;
   approvedBy: string | null;
+  /** Checklist items by status. To do / waiting / needs changes only count tasks that aren't marked finished. */
   assignments: Record<AssignmentStatus, number>;
+  /** Items not approved when a leader marked their task finished (closed, no credit). */
+  closedAssignments: number;
   tasksCreated: number;
   questionsAsked: number;
   activeSessions: number;
@@ -262,7 +265,7 @@ export interface UserDetail {
 export async function getUserDetail(actor: Actor, id: string, db: Db = prisma, now: Date = new Date()): Promise<UserDetail | null> {
   assertAdmin(actor);
   if (!id || id.length > 64) return null;
-  const [user, byStatus, activeSessions, noActivity] = await Promise.all([
+  const [user, byStatus, closedAssignments, activeSessions, noActivity] = await Promise.all([
     db.user.findUnique({
       where: { id },
       select: {
@@ -280,7 +283,13 @@ export async function getUserDetail(actor: Actor, id: string, db: Db = prisma, n
         _count: { select: { tasksCreated: true, questionsAsked: true } },
       },
     }),
-    db.taskAssignment.groupBy({ by: ["status"], where: { userId: id }, _count: { _all: true } }),
+    // Approved items count wherever they are; the rest only on tasks still open.
+    db.taskAssignment.groupBy({
+      by: ["status"],
+      where: { userId: id, OR: [{ status: "APPROVED" }, { task: { completedAt: null } }] },
+      _count: { _all: true },
+    }),
+    db.taskAssignment.count({ where: { userId: id, status: { not: "APPROVED" }, task: { completedAt: { not: null } } } }),
     db.session.count({ where: { userId: id, expiresAt: { gt: now } } }),
     // Same condition deleteUser's conditional delete uses.
     db.user.count({ where: { id, ...NO_ACTIVITY } }),
@@ -305,6 +314,7 @@ export async function getUserDetail(actor: Actor, id: string, db: Db = prisma, n
     approvedAt: user.approvedAt,
     approvedBy: user.approvedBy?.name ?? null,
     assignments,
+    closedAssignments,
     tasksCreated,
     questionsAsked: user._count.questionsAsked,
     activeSessions,

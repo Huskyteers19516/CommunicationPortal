@@ -12,6 +12,7 @@ import {
   canManageTask,
   canReplyToQuestion,
   canViewQuestion,
+  hasAllScope,
   isStaff,
 } from "../permissions";
 import { questionInboxWhere } from "../scopes";
@@ -441,11 +442,16 @@ export async function getAskTaskOptions(
 export interface AskAboutTask {
   id: string;
   title: string;
-  /** Null = whole-team task (the captain handles those). */
+  /** Null = whole-team task (the captain handles those, unless `poster` runs it). */
   subteam: Subteam | null;
   createdByName: string;
   /** Someone besides the asker leads the task's subteam and can answer (always false for whole-team tasks). */
   subteamHasLeaders: boolean;
+  /**
+   * A whole-team task posted by a subteam leader (the Business leader's fundraising and outreach): they run it, so
+   * the form offers them first. Null otherwise — and when they can't take questions or are the asker.
+   */
+  poster: { id: string; name: string } | null;
 }
 
 /**
@@ -460,17 +466,30 @@ export async function getAskAboutTask(
   if (!taskId || taskId.length > 64) return null;
   const task = await db.task.findUnique({
     where: { id: taskId },
-    select: { id: true, title: true, subteam: true, createdBy: { select: { name: true } } },
+    select: {
+      id: true,
+      title: true,
+      subteam: true,
+      createdBy: { select: { id: true, name: true, role: true, subteam: true, status: true, isAdmin: true } },
+    },
   });
   if (!task) return null;
   const leaders = task.subteam
     ? await db.user.count({ where: { status: "ACTIVE", role: SUBTEAM_LEADER_ROLE[task.subteam], id: { not: actor.id } } })
     : 0;
+  const creator = task.createdBy;
+  // All-scope staff see every whole-team question anyway (the "Captain" choice); a subteam leader only sees it
+  // when it's addressed to them.
+  const poster =
+    task.subteam === null && creator.id !== actor.id && !hasAllScope(creator) && canBeQuestionRecipient(creator)
+      ? { id: creator.id, name: creator.name }
+      : null;
   return {
     id: task.id,
     title: task.title,
     subteam: task.subteam,
-    createdByName: task.createdBy.name,
+    createdByName: creator.name,
     subteamHasLeaders: leaders > 0,
+    poster,
   };
 }

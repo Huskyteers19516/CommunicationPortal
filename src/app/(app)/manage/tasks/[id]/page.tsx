@@ -1,15 +1,4 @@
-import {
-  CopyPlus,
-  Lock,
-  LockOpen,
-  MessageCircleQuestionMark,
-  Pencil,
-  RotateCcw,
-  SquareKanban,
-  Trash2,
-  UserMinus,
-  Users,
-} from "lucide-react";
+import { CopyPlus, Lock, LockOpen, MessageCircleQuestionMark, Pencil, SquareKanban, Trash2, UserMinus, Users } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -17,6 +6,7 @@ import {
   AssignmentStatusBadge,
   CategoryBadge,
   DueBadge,
+  FinishedBadge,
   PriorityBadge,
   QuestionStatusBadge,
   SignupBadge,
@@ -25,8 +15,11 @@ import {
 import { UserChip } from "@/components/app/user-chip";
 import { ActionForm } from "@/components/tasks/action-form";
 import { BackLink } from "@/components/tasks/back-link";
+import { FinishTaskControls, type FinishTaskPerson } from "@/components/tasks/finish-task";
 import { NoteBlock } from "@/components/tasks/note-block";
+import { ReopenItem } from "@/components/tasks/reopen-item";
 import { ReviewActions } from "@/components/tasks/review-actions";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
@@ -35,19 +28,23 @@ import { PageHeader } from "@/components/ui/page-header";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { RichText } from "@/components/ui/rich-text";
 import { SUBTEAM_LABELS } from "@/lib/constants";
-import { formatDateOnly, timeAgo, todayInTimezone } from "@/lib/dates";
+import { formatDateOnly, formatDateTime, timeAgo, todayInTimezone } from "@/lib/dates";
 import { spotsSummary } from "@/lib/signup";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { hasAllScope } from "@/server/permissions";
 import { getManagedTaskDetail, type ManagedAssignment } from "@/server/queries/tasks";
 import { reviewAssignmentAction } from "../../review/actions";
-import { deleteTaskAction, removeAssignmentAction, reopenAssignmentAction, setSignupOpenAction } from "../actions";
+import { deleteTaskAction, removeAssignmentAction, setSignupOpenAction } from "../actions";
 
 export const metadata: Metadata = { title: "Task" };
 
 function currentTime() {
   return new Date();
 }
+
+/** How the finish dialog describes an item that isn't approved yet. */
+const NOT_APPROVED_LABEL = { TODO: "To do", SUBMITTED: "Checked off", REJECTED: "Sent back" } as const;
 
 export default async function ManageTaskPage({ params }: PageProps<"/manage/tasks/[id]">) {
   const actor = await requireStaffUser();
@@ -58,14 +55,31 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
   const today = todayInTimezone(env.teamTimezone);
   const now = currentTime();
   const { counts } = task;
-  const allDone = counts.total > 0 && counts.approved === counts.total;
+  const finished = task.completedAt !== null;
+  const allDone = finished || (counts.total > 0 && counts.approved === counts.total);
   const signupTask = task.assignMode === "signup";
+  const signupOpen = task.signupOpen && !finished;
   const countParts = [
     counts.approved && `${counts.approved} approved`,
     counts.submitted && `${counts.submitted} waiting for review`,
     counts.rejected && `${counts.rejected} sent back`,
     counts.todo && `${counts.todo} to do`,
+    counts.closed && `${counts.closed} closed (no credit)`,
   ].filter(Boolean);
+  const notApproved: FinishTaskPerson[] = task.assignments.flatMap((a) =>
+    a.status === "APPROVED"
+      ? []
+      : [
+          {
+            id: a.user.id,
+            name: a.user.name,
+            label: NOT_APPROVED_LABEL[a.status],
+            waiting: a.status === "SUBMITTED",
+            isMe: a.user.id === actor.id,
+          },
+        ],
+  );
+  const counted = task.assignments.filter((a) => a.finishedWithTask).length;
 
   return (
     <>
@@ -92,6 +106,15 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
               <CopyPlus className="size-4" aria-hidden />
               Duplicate
             </ButtonLink>
+            <FinishTaskControls
+              taskId={task.id}
+              title={task.title}
+              finished={finished}
+              total={counts.total}
+              notApproved={notApproved}
+              canCountOwn={hasAllScope(actor)}
+              counted={counted}
+            />
             <ActionForm
               action={deleteTaskAction}
               fields={{ taskId: task.id }}
@@ -107,17 +130,24 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
       />
 
       <div className="-mt-3 mb-6 flex flex-wrap gap-1.5">
+        <FinishedBadge finished={finished} />
         <SubteamBadge subteam={task.subteam} />
         <CategoryBadge name={task.category?.name} />
         <DueBadge due={task.dueDate} today={today} done={allDone} />
         <PriorityBadge priority={task.priority} />
-        <SignupBadge
-          signupMode={signupTask}
-          signupOpen={task.signupOpen}
-          signupLimit={task.signupLimit}
-          spotsTaken={counts.total}
-        />
+        <SignupBadge signupMode={signupTask} signupOpen={signupOpen} signupLimit={task.signupLimit} spotsTaken={counts.total} />
       </div>
+
+      {task.completedAt && (
+        <Alert tone="success" role={null} className="mb-4" title="Finished">
+          Marked finished by {task.completedBy ? (task.completedBy.id === actor.id ? "you" : task.completedBy.name) : "a leader"} ·{" "}
+          {formatDateTime(task.completedAt, env.teamTimezone)}.{" "}
+          {counts.closed > 0
+            ? `${counts.closed} ${counts.closed === 1 ? "person wasn't" : "people weren't"} approved by then — closed without credit. `
+            : ""}
+          Nobody can check it off or sign up until it&apos;s reopened.
+        </Alert>
+      )}
 
       <div className="space-y-4">
         <Card>
@@ -147,26 +177,30 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
             <CardHeader
               title="Sign-ups"
               description={
-                task.signupOpen
-                  ? task.subteam
-                    ? `Open — ${SUBTEAM_LABELS[task.subteam]} members can sign themselves up on the Task dashboard.`
-                    : "Open — anyone on the team can sign up on the Task dashboard."
-                  : "Sign-ups are closed."
+                finished
+                  ? "Closed — the task is finished. Reopen it to take sign-ups again."
+                  : task.signupOpen
+                    ? task.subteam
+                      ? `Open — ${SUBTEAM_LABELS[task.subteam]} members can sign themselves up on the Task dashboard.`
+                      : "Open — anyone on the team can sign up on the Task dashboard."
+                    : "Sign-ups are closed."
               }
               actions={
-                <ActionForm
-                  action={setSignupOpenAction}
-                  fields={{ taskId: task.id, open: task.signupOpen ? "false" : "true" }}
-                  pendingText={task.signupOpen ? "Closing…" : "Opening…"}
-                >
-                  {task.signupOpen ? <Lock className="size-4" aria-hidden /> : <LockOpen className="size-4" aria-hidden />}
-                  {task.signupOpen ? "Close sign-ups" : "Open sign-ups"}
-                </ActionForm>
+                !finished && (
+                  <ActionForm
+                    action={setSignupOpenAction}
+                    fields={{ taskId: task.id, open: task.signupOpen ? "false" : "true" }}
+                    pendingText={task.signupOpen ? "Closing…" : "Opening…"}
+                  >
+                    {task.signupOpen ? <Lock className="size-4" aria-hidden /> : <LockOpen className="size-4" aria-hidden />}
+                    {task.signupOpen ? "Close sign-ups" : "Open sign-ups"}
+                  </ActionForm>
+                )
               }
             />
             <CardBody>
               <p className="text-sm text-ink-700">
-                {spotsSummary({ signupOpen: task.signupOpen, signupLimit: task.signupLimit, spotsTaken: counts.total })}
+                {spotsSummary({ signupOpen, signupLimit: task.signupLimit, spotsTaken: counts.total })}
               </p>
             </CardBody>
           </Card>
@@ -175,30 +209,38 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
         <Card>
           <CardHeader
             title={`${signupTask ? "People on it" : "Assigned people"} (${counts.total})`}
-            description="Approve submissions so they officially count."
+            description={
+              finished
+                ? "The task is finished: approved items count, the rest are closed."
+                : "Approve submissions so they officially count."
+            }
           />
           {task.assignments.length === 0 ? (
             <EmptyState
               icon={Users}
-              title={!signupTask ? "Nobody is assigned" : task.signupOpen ? "Nobody has signed up yet" : "Nobody is on it"}
+              title={!signupTask ? "Nobody is assigned" : signupOpen ? "Nobody has signed up yet" : "Nobody is on it"}
               description={
-                !signupTask
-                  ? "Edit the task to add people."
-                  : task.signupOpen
-                    ? "People show up here when they sign up. You can also add people yourself."
-                    : "Open sign-ups again, or add people yourself."
+                finished
+                  ? "Reopen the task to add people."
+                  : !signupTask
+                    ? "Edit the task to add people."
+                    : task.signupOpen
+                      ? "People show up here when they sign up. You can also add people yourself."
+                      : "Open sign-ups again, or add people yourself."
               }
               action={
-                <ButtonLink href={`/manage/tasks/${task.id}/edit`} variant="secondary">
-                  Add people
-                </ButtonLink>
+                !finished && (
+                  <ButtonLink href={`/manage/tasks/${task.id}/edit`} variant="secondary">
+                    Add people
+                  </ButtonLink>
+                )
               }
             />
           ) : (
             <ul className="divide-y divide-ink-100">
               {task.assignments.map((a) => (
                 <li key={a.id} className="space-y-3 px-4 py-4 sm:px-5">
-                  <AssignmentRow assignment={a} now={now} timeZone={env.teamTimezone} />
+                  <AssignmentRow assignment={a} finished={finished} now={now} timeZone={env.teamTimezone} />
                 </li>
               ))}
             </ul>
@@ -231,7 +273,18 @@ export default async function ManageTaskPage({ params }: PageProps<"/manage/task
   );
 }
 
-function AssignmentRow({ assignment: a, now, timeZone }: { assignment: ManagedAssignment; now: Date; timeZone: string }) {
+function AssignmentRow({
+  assignment: a,
+  finished,
+  now,
+  timeZone,
+}: {
+  assignment: ManagedAssignment;
+  /** The task is marked finished. */
+  finished: boolean;
+  now: Date;
+  timeZone: string;
+}) {
   const firstName = a.user.name.trim().split(/\s+/)[0] || a.user.name;
   const remove = a.canRemove && (
     <ActionForm
@@ -256,32 +309,50 @@ function AssignmentRow({ assignment: a, now, timeZone }: { assignment: ManagedAs
           {a.selfAssigned && <Badge tone="blue">Signed up</Badge>}
         </div>
         <div className="flex flex-col items-end gap-1">
-          <AssignmentStatusBadge status={a.status} />
+          <AssignmentStatusBadge status={a.status} closed={a.closed} />
           {showSubmitted && <span className="text-xs text-ink-500">Submitted {timeAgo(a.submittedAt!, now, timeZone)}</span>}
         </div>
       </div>
+      {a.finishedWithTask && <p className="text-xs text-ink-500">Counted as done when the task was marked finished.</p>}
+      {a.closed && (
+        <p className="text-xs text-ink-500">
+          {a.status === "SUBMITTED"
+            ? "Checked off but not approved before the task was marked finished — approve it if it should count."
+            : "Doesn't count — the task was marked finished without it."}
+        </p>
+      )}
       {a.submissionNote && a.status !== "TODO" && <NoteBlock label={`${firstName}'s note`} text={a.submissionNote} />}
       {a.reviewNote && (
         <NoteBlock
           tone="feedback"
-          label={a.status === "SUBMITTED" ? "Previous feedback" : a.reviewerName ? `Feedback from ${a.reviewerName}` : "Feedback"}
+          label={
+            a.status === "SUBMITTED" || a.finishedWithTask
+              ? "Previous feedback"
+              : a.reviewerName
+                ? `Feedback from ${a.reviewerName}`
+                : "Feedback"
+          }
           text={a.reviewNote}
         />
       )}
       {a.status === "SUBMITTED" && a.canReview ? (
-        <ReviewActions assignmentId={a.id} personName={a.user.name} action={reviewAssignmentAction} extra={remove} />
+        <ReviewActions
+          assignmentId={a.id}
+          personName={a.user.name}
+          action={reviewAssignmentAction}
+          extra={remove}
+          allowSendBack={!finished}
+        />
       ) : (
         <div className="flex flex-wrap items-start gap-2">
-          {a.status === "APPROVED" && a.canReview && (
-            <ActionForm
-              action={reopenAssignmentAction}
-              fields={{ assignmentId: a.id }}
-              pendingText="Reopening…"
-              aria-label={`Reopen ${a.user.name}'s checklist item`}
-            >
-              <RotateCcw className="size-4" aria-hidden />
-              Reopen
-            </ActionForm>
+          {/* Stays mounted after it's used, so its status line can say what happened. */}
+          {a.canReview && (
+            <ReopenItem
+              assignmentId={a.id}
+              personName={a.user.name}
+              approved={a.status === "APPROVED"}
+              taskFinished={finished}
+            />
           )}
           {remove}
           {!a.canRemove && (

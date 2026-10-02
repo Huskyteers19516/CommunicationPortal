@@ -45,7 +45,7 @@ export async function runAction(
     if (e instanceof ValidationError) {
       return { ok: false, message: e.userMessage, fieldErrors: e.fieldErrors, values, nonce: nextNonce() };
     }
-    if (isAppError(e)) return { ok: false, message: e.userMessage, values, nonce: nextNonce() };
+    if (isAppError(e)) return { ok: false, message: e.userMessage, values, nonce: nextNonce(), ...(e.code ? { code: e.code } : {}) };
     console.error("[action] unexpected error", e);
     return { ok: false, message: "Something went wrong. Please try again.", values, nonce: nextNonce() };
   }

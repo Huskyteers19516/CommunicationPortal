@@ -25,7 +25,8 @@ const EMPTY: Record<MyTasksTab, { icon: LucideIcon; title: string; description: 
   done: {
     icon: ListChecks,
     title: "No approved tasks yet",
-    description: "Check items off on your Today list. They land here once a leader approves them.",
+    description:
+      "Check items off on your Today list. They land here once a leader approves them, or marks the whole task finished.",
   },
   all: {
     icon: ClipboardList,

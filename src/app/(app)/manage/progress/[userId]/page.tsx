@@ -70,7 +70,11 @@ export default async function MemberProgressPage({ params, searchParams }: PageP
           label="Approved"
           value={`${summary.approved}/${summary.total}`}
           icon={CircleCheck}
-          hint={summary.completionRate === null ? "Nothing due" : `${summary.completionRate}% done`}
+          hint={
+            summary.completionRate === null
+              ? "Nothing due"
+              : `${summary.completionRate}% done${summary.closed > 0 ? ` · ${summary.closed} closed with a finished task` : ""}`
+          }
         />
         <StatCard label="Waiting for review" value={summary.submitted} icon={BadgeCheck} hint="Checked off, not reviewed yet" />
         <StatCard

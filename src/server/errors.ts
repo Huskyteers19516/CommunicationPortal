@@ -3,10 +3,13 @@
 export class AppError extends Error {
   /** Safe to show to the user. */
   readonly userMessage: string;
-  constructor(userMessage: string) {
+  /** Optional reason the page can react to (passed on as ActionState.code), e.g. TASK_FINISHED_CODES. */
+  readonly code?: string;
+  constructor(userMessage: string, code?: string) {
     super(userMessage);
     this.name = new.target.name;
     this.userMessage = userMessage;
+    if (code) this.code = code;
   }
 }
 
@@ -41,8 +44,8 @@ export class NotFoundError extends AppError {
 
 /** The action conflicts with the current state (e.g. reviewing an already-approved task). */
 export class ConflictError extends AppError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, code?: string) {
+    super(message, code);
   }
 }
 

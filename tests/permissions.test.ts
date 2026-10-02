@@ -3,6 +3,8 @@ import type { Actor } from "@/server/actor";
 import {
   canAdminister,
   canAssignTo,
+  canCreateTask,
+  canCreateWholeTeamTask,
   canDeleteSponsorship,
   canEditPart,
   canGrantRole,
@@ -62,6 +64,11 @@ beforeAll(async () => {
   await makeTask(db, p.captain, { subteam: null, assigneeIds: [p.swMember.id, p.buildMember.id, p.bizMember.id, p.captain.id] });
   await makeTask(db, p.captain, { subteam: "BUILD", assigneeIds: [p.buildLead1.id] });
   await makeTask(db, p.bizLead, { subteam: "BUSINESS", assigneeIds: [p.bizMember.id, p.bizLead.id] });
+  await makeTask(db, p.bizLead, { subteam: null, assigneeIds: [p.swMember.id, p.buildMember.id, p.bizMember.id] });
+  // Marked finished ("Just close it"): its submissions leave every review queue.
+  await makeTask(db, p.buildLead1, { subteam: "BUILD", assigneeIds: [p.buildMember.id] }).then((task) =>
+    db.task.update({ where: { id: task.id }, data: { completedAt: new Date(), completedById: p.buildLead1.id } }),
+  );
   await db.taskAssignment.updateMany({ data: { status: "SUBMITTED" } });
 
   // Questions with every targeting shape.
@@ -101,13 +108,19 @@ describe("scopes mirror permission functions", () => {
     }
   });
 
-  it("reviewQueueWhere == canReviewAssignment on SUBMITTED", async () => {
+  it("reviewQueueWhere == canReviewAssignment on SUBMITTED items of tasks that aren't marked finished", async () => {
     const all = await t.db.taskAssignment.findMany({ include: { task: true, user: { select: { subteam: true } } } });
+    expect(all.some((a) => a.task.completedAt !== null && a.status === "SUBMITTED")).toBe(true);
     for (const actor of Object.values(people)) {
       const viaDb = new Set((await t.db.taskAssignment.findMany({ where: reviewQueueWhere(actor) })).map((x) => x.id));
       const viaFn = new Set(
         all
-          .filter((a) => a.status === "SUBMITTED" && canReviewAssignment(actor, a.task, { userId: a.userId, assigneeSubteam: a.user.subteam }))
+          .filter(
+            (a) =>
+              a.status === "SUBMITTED" &&
+              a.task.completedAt === null &&
+              canReviewAssignment(actor, a.task, { userId: a.userId, assigneeSubteam: a.user.subteam }),
+          )
           .map((x) => x.id),
       );
       expect([...viaDb].sort(), `actor ${actor.name}`).toEqual([...viaFn].sort());
@@ -146,9 +159,11 @@ describe("scopes mirror permission functions", () => {
   it("assignable/manageable members == canAssignTo / canViewMemberProgress", async () => {
     const users = await t.db.user.findMany();
     for (const actor of Object.values(people)) {
-      const assignable = new Set((await t.db.user.findMany({ where: assignableUsersWhere(actor) })).map((u) => u.id));
-      const expected = new Set(users.filter((u) => isStaff(actor) && canAssignTo(actor, u)).map((u) => u.id));
-      expect([...assignable].sort(), `actor ${actor.name}`).toEqual([...expected].sort());
+      for (const subteam of ["SOFTWARE", "BUILD", "BUSINESS", null] as const) {
+        const assignable = new Set((await t.db.user.findMany({ where: assignableUsersWhere(actor, subteam) })).map((u) => u.id));
+        const expected = new Set(users.filter((u) => isStaff(actor) && canAssignTo(actor, u, subteam)).map((u) => u.id));
+        expect([...assignable].sort(), `actor ${actor.name}, ${subteam ?? "whole team"}`).toEqual([...expected].sort());
+      }
 
       const visible = new Set((await t.db.user.findMany({ where: manageableMembersWhere(actor) })).map((u) => u.id));
       const expectedVisible = new Set(
@@ -178,10 +193,46 @@ describe("specific rules", () => {
   });
 
   it("cannot assign to inactive users or outside own subteam", () => {
-    expect(canAssignTo(people.buildLead1, people.buildMember)).toBe(true);
-    expect(canAssignTo(people.buildLead1, people.swMember)).toBe(false);
-    expect(canAssignTo(people.captain, people.disabledMember)).toBe(false);
-    expect(canAssignTo(people.captain, people.pendingLead)).toBe(false);
+    expect(canAssignTo(people.buildLead1, people.buildMember, "BUILD")).toBe(true);
+    expect(canAssignTo(people.buildLead1, people.swMember, "BUILD")).toBe(false);
+    expect(canAssignTo(people.captain, people.disabledMember, null)).toBe(false);
+    expect(canAssignTo(people.captain, people.pendingLead, null)).toBe(false);
+  });
+
+  it("the Business leader creates whole-team tasks and puts anyone on them; other subteam leaders don't", () => {
+    const p = people;
+    const lists = ["SOFTWARE", "BUILD", "BUSINESS", null] as const;
+    const creates = (actor: Actor) => lists.filter((s) => canCreateTask(actor, s));
+    expect(creates(p.bizLead)).toEqual(["BUSINESS", null]);
+    expect(canCreateWholeTeamTask(p.bizLead)).toBe(true);
+    for (const who of [p.swLead, p.buildLead1, p.buildLead2]) {
+      expect(canCreateWholeTeamTask(who), who.name).toBe(false);
+      expect(canCreateTask(who, null), who.name).toBe(false);
+    }
+    expect(creates(p.swLead)).toEqual(["SOFTWARE"]);
+    expect(creates(p.buildLead1)).toEqual(["BUILD"]);
+    for (const who of [p.captain, p.mentor, p.teacher, p.admin]) expect(creates(who), who.name).toEqual([...lists]);
+    for (const who of [p.swMember, p.buildMember, p.bizMember]) expect(creates(who), who.name).toEqual([]);
+
+    // Whole-team tasks: the Business leader puts anyone ACTIVE on them…
+    for (const who of [p.swMember, p.buildMember, p.bizMember, p.captain, p.swLead, p.bizLead]) {
+      expect(canAssignTo(p.bizLead, who, null), who.name).toBe(true);
+    }
+    expect(canAssignTo(p.bizLead, p.disabledMember, null)).toBe(false);
+    expect(canAssignTo(p.bizLead, p.pendingLead, null)).toBe(false);
+    // …but their Business tasks stay Business-only.
+    expect(canAssignTo(p.bizLead, p.bizMember, "BUSINESS")).toBe(true);
+    expect(canAssignTo(p.bizLead, p.buildMember, "BUSINESS")).toBe(false);
+    expect(canAssignTo(p.bizLead, p.swMember, "BUSINESS")).toBe(false);
+    // Other subteam leaders: their own people only, whole-team task or not.
+    expect(canAssignTo(p.buildLead1, p.buildMember, null)).toBe(true);
+    expect(canAssignTo(p.buildLead1, p.swMember, null)).toBe(false);
+    expect(canAssignTo(p.swLead, p.buildMember, null)).toBe(false);
+    // They manage (edit, review, finish) the whole-team tasks they created, not the captain's.
+    expect(canManageTask(p.bizLead, { createdById: p.bizLead.id, subteam: null })).toBe(true);
+    expect(canManageTask(p.bizLead, { createdById: p.captain.id, subteam: null })).toBe(false);
+    // Whole-team categories stay with all-scope staff.
+    expect(canManageCategories(p.bizLead, null)).toBe(false);
   });
 
   it("members only see their own questions", () => {
@@ -218,10 +269,10 @@ describe("task dashboard rules", () => {
     expect(allowed(p.pendingLead)).toEqual(["BUILD"]);
   });
 
-  it("sign-up: open tasks for your own subteam, or whole-team tasks for anyone", () => {
+  it("sign-up: open tasks for your own subteam, or whole-team tasks for anyone — never once it's marked finished", () => {
     const p = people;
-    const build = { subteam: "BUILD" as const, signupOpen: true };
-    const team = { subteam: null, signupOpen: true };
+    const build = { subteam: "BUILD" as const, signupOpen: true, completedAt: null };
+    const team = { subteam: null, signupOpen: true, completedAt: null };
     expect(canSignUpForTask(p.buildMember, build)).toBe(true);
     expect(canSignUpForTask(p.buildLead1, build)).toBe(true);
     expect(canSignUpForTask(p.swMember, build)).toBe(false);
@@ -233,6 +284,8 @@ describe("task dashboard rules", () => {
     for (const who of Object.values(p)) {
       expect(canSignUpForTask(who, { ...build, signupOpen: false }), who.name).toBe(false);
       expect(canSignUpForTask(who, { ...team, signupOpen: false }), who.name).toBe(false);
+      expect(canSignUpForTask(who, { ...build, completedAt: new Date() }), who.name).toBe(false);
+      expect(canSignUpForTask(who, { ...team, completedAt: new Date() }), who.name).toBe(false);
     }
   });
 });

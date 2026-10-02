@@ -159,7 +159,8 @@ export default async function TaskDashboardPage({ searchParams }: PageProps<"/ta
         </div>
       </div>
 
-      <PublicStatusLegend className="mb-4" />
+      {/* Finished tasks (the only ones with "closed" people) are always on the Past tab. */}
+      <PublicStatusLegend className="mb-4" showClosed={filters.view === "past"} />
 
       {board.truncated && (
         <Alert className="mb-4">

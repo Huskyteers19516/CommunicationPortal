@@ -4,6 +4,7 @@ import { LIMITS } from "@/lib/constants";
 import { addDays, dateOnlyToDb } from "@/lib/dates";
 import type { Actor } from "@/server/actor";
 import type { EmailMessage } from "@/server/email/transport";
+import { TASK_FINISHED_CODES } from "@/lib/action-state";
 import { ConflictError, NotFoundError, RateLimitError, ValidationError } from "@/server/errors";
 import { deliverNotification } from "@/server/notifications/deliver";
 import {
@@ -19,6 +20,7 @@ import {
   updateSubmissionNote,
   withdrawAssignment,
 } from "@/server/services/checklist";
+import { finishTask, reopenTask } from "@/server/services/tasks";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeTask, makeUser, TEST_NOW, TEST_TODAY, TEST_TZ } from "./helpers/factories";
 
@@ -555,5 +557,143 @@ describe("getMyTasks", () => {
 
     const done = await getMyTasks(many, { tab: "done", page: 3 }, t.db);
     expect(done).toMatchObject({ items: [], page: 1, pageCount: 1, counts: { open: total, done: 0, all: total } });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("tasks a leader marked finished", () => {
+  const finish = (taskId: string, credit: "everyone" | "none") => finishTask(contextFor(t.db, buildLead), { taskId, credit });
+
+  it("can't be checked off, unchecked, or have the note changed anymore", async () => {
+    const user = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    const todo = await assign(user, { title: "closed todo" });
+    const waiting = await assign(user, { title: "closed waiting", status: "SUBMITTED", submissionNote: "Here it is" });
+    await finish(todo.taskId, "none");
+    await finish(waiting.taskId, "none");
+
+    const ctx = contextFor(t.db, user);
+    // Refused with a code the checklist shows as a neutral notice (not a red error), saying how it ended.
+    const refused = await submitAssignment(ctx, { assignmentId: todo.assignmentId }).catch((e) => e);
+    expect(refused).toBeInstanceOf(ConflictError);
+    expect(refused).toMatchObject({
+      code: TASK_FINISHED_CODES.closed,
+      message: "Blake Lead marked the whole task finished — it was closed without credit.",
+    });
+    await expect(withdrawAssignment(ctx, { assignmentId: waiting.assignmentId })).rejects.toMatchObject({
+      code: TASK_FINISHED_CODES.closed,
+      message: "Blake Lead marked the whole task finished — your check-off wasn't approved in time, so it doesn't count.",
+    });
+    await expect(updateSubmissionNote(ctx, { assignmentId: waiting.assignmentId, note: "Changed" })).rejects.toThrow(ConflictError);
+    expect((await load(todo.assignmentId)).status).toBe("TODO");
+    expect(await load(waiting.assignmentId)).toMatchObject({ status: "SUBMITTED", submissionNote: "Here it is" });
+    expect(ctx.notifier.events).toEqual([]);
+    // Someone else's item still looks missing, finished or not.
+    await expect(submitAssignment(contextFor(t.db, otherMember), { assignmentId: todo.assignmentId })).rejects.toThrow(NotFoundError);
+
+    // Reopened: back to normal.
+    await reopenTask(contextFor(t.db, buildLead), { taskId: todo.taskId });
+    await submitAssignment(ctx, { assignmentId: todo.assignmentId });
+    expect((await load(todo.assignmentId)).status).toBe("SUBMITTED");
+  });
+
+  it("a stale check-off after 'Count it as done' says it counts (not an error); the finisher is 'You'", async () => {
+    const user = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    const item = await assign(user, { title: "counted while open" });
+    await finish(item.taskId, "everyone");
+    await expect(submitAssignment(contextFor(t.db, user), { assignmentId: item.assignmentId })).rejects.toMatchObject({
+      code: TASK_FINISHED_CODES.counted,
+      message: "Blake Lead marked the whole task finished — it counts as done for you.",
+    });
+    // A leader's own item on a task they finished (just closed): "You".
+    const own = await assign(buildLead, { title: "own item" });
+    await finish(own.taskId, "none");
+    await expect(submitAssignment(contextFor(t.db, buildLead), { assignmentId: own.assignmentId })).rejects.toThrow(
+      "You marked the whole task finished — it was closed without credit.",
+    );
+    // Other refusals carry no code.
+    const done = await assign(user, { status: "APPROVED" });
+    const other = await submitAssignment(contextFor(t.db, user), { assignmentId: done.assignmentId }).catch((e) => e);
+    expect(other).toBeInstanceOf(ConflictError);
+    expect((other as ConflictError).code).toBeUndefined();
+  });
+
+  it("Today: closed items are gone (never overdue or waiting); items counted as done show as done", async () => {
+    const user = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    const closedIds = [
+      await assign(user, { title: "closed today", due: 0 }),
+      await assign(user, { title: "closed overdue", due: -2 }),
+      await assign(user, { title: "closed sent back", due: 3, status: "REJECTED" }),
+      await assign(user, { title: "closed waiting", due: -1, status: "SUBMITTED" }),
+      await assign(user, { title: "closed upcoming", due: 2, status: "SUBMITTED" }),
+    ];
+    for (const c of closedIds) await finish(c.taskId, "none");
+    const counted = await assign(user, { title: "counted today", due: 0, alsoAssign: [otherMember] });
+    await finish(counted.taskId, "everyone");
+    await assign(user, { title: "open today", due: 0 });
+
+    const view = await getTodayView(user, TEST_TODAY, t.db);
+    expect(titles(view.today)).toEqual(["open today", "counted today"]);
+    expect([view.needsChanges, view.overdue, view.waiting, view.upcoming].map(titles)).toEqual([[], [], [], []]);
+    expect(view.summary).toEqual({ todayTotal: 2, todayApproved: 1, todaySubmitted: 0, overdueCount: 0 });
+    expect(view.today.find((i) => i.task.title === "counted today")).toMatchObject({
+      status: "APPROVED",
+      finishedWithTask: true,
+      reviewerName: "Blake Lead",
+      task: { finishedAt: TEST_NOW.toISOString(), finishedByName: "Blake Lead" },
+    });
+    expect(view.today.find((i) => i.task.title === "open today")).toMatchObject({
+      finishedWithTask: false,
+      task: { finishedAt: null, finishedByName: null },
+    });
+  });
+
+  it("My tasks: closed items leave Open and are listed under Done", async () => {
+    const user = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    const closed = await assign(user, { title: "closed", due: -3 });
+    await finish(closed.taskId, "none");
+    const counted = await assign(user, { title: "counted", due: 1, status: "SUBMITTED" });
+    await finish(counted.taskId, "everyone");
+    await assign(user, { title: "still open", due: 2 });
+
+    const open = await getMyTasks(user, { tab: "open", page: 1 }, t.db);
+    expect(titles(open.items)).toEqual(["still open"]);
+    expect(open.counts).toEqual({ open: 1, done: 2, all: 3 });
+    const done = await getMyTasks(user, { tab: "done", page: 1 }, t.db);
+    expect(titles(done.items).sort()).toEqual(["closed", "counted"]);
+    expect(done.items.find((i) => i.task.title === "closed")).toMatchObject({ status: "TODO", task: { finishedByName: "Blake Lead" } });
+    expect(done.items.find((i) => i.task.title === "counted")).toMatchObject({ status: "APPROVED", finishedWithTask: true });
+  });
+
+  it("My tasks → Done: most recently done first — approvals by approval time, closed items by when the task was finished", async () => {
+    const user = await makeUser(t.db, { role: "MEMBER", subteam: "BUILD" });
+    const hoursAgo = (h: number) => new Date(TEST_NOW.getTime() - h * 3_600_000);
+    const finishAt = (taskId: string, at: Date) =>
+      finishTask({ ...contextFor(t.db, buildLead), now: at }, { taskId, credit: "none" });
+
+    await assign(user, { title: "approved 5h ago", status: "APPROVED", reviewedAt: hoursAgo(5) });
+    await assign(user, { title: "approved 1h ago", status: "APPROVED", reviewedAt: hoursAgo(1) });
+    // A closed to-do (no review time) and a closed send-back (reviewed long ago) are dated by the finish.
+    const closedTodo = await assign(user, { title: "closed to-do, finished 3h ago" });
+    await finishAt(closedTodo.taskId, hoursAgo(3));
+    const closedSentBack = await assign(user, {
+      title: "closed send-back, finished 2h ago",
+      status: "REJECTED",
+      reviewedAt: hoursAgo(48),
+    });
+    await finishAt(closedSentBack.taskId, hoursAgo(2));
+    // Approved one by one long before its task was finished: still dated by its approval.
+    const early = await assign(user, { title: "approved 10h ago, finished now", status: "APPROVED", reviewedAt: hoursAgo(10) });
+    await finishAt(early.taskId, TEST_NOW);
+
+    const done = await getMyTasks(user, { tab: "done", page: 1 }, t.db);
+    expect(titles(done.items)).toEqual([
+      "approved 1h ago",
+      "closed send-back, finished 2h ago",
+      "closed to-do, finished 3h ago",
+      "approved 5h ago",
+      "approved 10h ago, finished now",
+    ]);
+    expect(done.counts.done).toBe(5);
   });
 });

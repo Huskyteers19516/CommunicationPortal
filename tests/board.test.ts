@@ -6,8 +6,9 @@ import { type BoardSection, type BoardTask, BOARD_PAST_LIMIT, getBoardTask, getT
 import { getTodayView } from "@/server/queries/checklist";
 import { isFull, signupBadge, spotsSummary } from "@/lib/signup";
 import { getAskAboutTask, getAskTaskOptions } from "@/server/queries/questions";
+import { finishTask, reopenTask } from "@/server/services/tasks";
 import { createTestDb, type TestDb } from "./helpers/db";
-import { makeUser, TEST_NOW, TEST_TODAY } from "./helpers/factories";
+import { contextFor, makeUser, TEST_NOW, TEST_TODAY } from "./helpers/factories";
 
 let t: TestDb;
 let p: Record<
@@ -224,7 +225,7 @@ describe("getTaskBoard", () => {
       { id: p.buildLead.id, name: "Blake Lead", publicStatus: "todo", selfAssigned: false, isMe: false },
       { id: p.buildMember3.id, name: "Cy Build", publicStatus: "todo", selfAssigned: false, isMe: false },
     ]);
-    expect(intake.counts).toEqual({ total: 4, done: 1, checked: 1, todo: 2 });
+    expect(intake.counts).toEqual({ total: 4, done: 1, checked: 1, todo: 2, closed: 0 });
     const json = JSON.stringify(b);
     expect(json).not.toContain(SECRET_SUBMISSION);
     expect(json).not.toContain(SECRET_REVIEW);
@@ -365,6 +366,23 @@ describe("asking about a dashboard task", () => {
     expect(await getAskTaskOptions(p.swMember, { today: TEST_TODAY, includeTaskId: "missing" }, t.db)).toEqual(plain);
   });
 
+  it("offers the Business leader for questions about their whole-team task (not the captain by default)", async () => {
+    await task("carWash", { title: "Car wash crew", subteam: null, day: 4, creator: p.bizLead, people: [[p.buildMember, "TODO"]] });
+    expect(await getAskAboutTask(p.buildMember, ids.carWash, t.db)).toMatchObject({
+      subteam: null,
+      createdByName: "Bo Lead",
+      poster: { id: p.bizLead.id, name: "Bo Lead" },
+    });
+    // Not to themselves; and their Business tasks go to the Business leaders as usual.
+    expect((await getAskAboutTask(p.bizLead, ids.carWash, t.db))?.poster).toBeNull();
+    await task("bizFlyers", { title: "Flyers", subteam: "BUSINESS", day: 4, creator: p.bizLead });
+    expect((await getAskAboutTask(p.buildMember, ids.bizFlyers, t.db))?.poster).toBeNull();
+    // Someone who can't take questions anymore isn't offered.
+    const former = await makeUser(t.db, { role: "BUSINESS_LEADER", status: "DISABLED", name: "Former Lead" });
+    await task("oldDrive", { title: "Old drive", subteam: null, day: 4, creator: former });
+    expect((await getAskAboutTask(p.buildMember, ids.oldDrive, t.db))?.poster).toBeNull();
+  });
+
   it("tells the form the task's subteam, who posted it, and whether anyone else leads that subteam", async () => {
     expect(await getAskAboutTask(p.swMember, ids.intake, t.db)).toEqual({
       id: ids.intake,
@@ -372,11 +390,17 @@ describe("asking about a dashboard task", () => {
       subteam: "BUILD",
       createdByName: "Blake Lead",
       subteamHasLeaders: true,
+      poster: null,
     });
     // Blake is the only Build leader: nobody else to ask.
     expect((await getAskAboutTask(p.buildLead, ids.intake, t.db))?.subteamHasLeaders).toBe(false);
     // Whole-team tasks go to the captain.
-    expect(await getAskAboutTask(p.buildMember, ids.team, t.db)).toMatchObject({ subteam: null, createdByName: "Cap Captain", subteamHasLeaders: false });
+    expect(await getAskAboutTask(p.buildMember, ids.team, t.db)).toMatchObject({
+      subteam: null,
+      createdByName: "Cap Captain",
+      subteamHasLeaders: false,
+      poster: null,
+    });
     expect(await getAskAboutTask(p.swMember, "missing", t.db)).toBeNull();
     expect(await getAskAboutTask(p.swMember, undefined, t.db)).toBeNull();
     expect(await getAskAboutTask(p.swMember, "x".repeat(65), t.db)).toBeNull();
@@ -407,5 +431,94 @@ describe("sign-up labels", () => {
     expect(spotsSummary(info(false, 2, 0))).toBe("0 of 2 spots taken");
     expect(spotsSummary(info(true, null, 1))).toBe("1 person on it · no limit");
     expect(spotsSummary(info(false, null, 3))).toBe("3 people on it");
+  });
+});
+
+describe("tasks marked finished", () => {
+  it("are past whatever their due date, say who finished them, and count everyone counted as done (2/2)", async () => {
+    await task("drivetrain", {
+      title: "Drivetrain construction",
+      subteam: "BUILD",
+      day: 2,
+      creator: p.buildLead,
+      people: [
+        [p.buildMember, "APPROVED"],
+        [p.buildMember2, "TODO"],
+      ],
+    });
+    expect(allTasks((await board(p.buildMember2)).sections).map((x) => x.id)).toContain(ids.drivetrain);
+    await finishTask(contextFor(t.db, p.buildLead), { taskId: ids.drivetrain, credit: "everyone" });
+
+    expect(allTasks((await board(p.buildMember2)).sections).map((x) => x.id)).not.toContain(ids.drivetrain);
+    const past = await board(p.buildMember2, { view: "past" });
+    expect(find(past.sections, "drivetrain")).toMatchObject({
+      counts: { total: 2, done: 2, checked: 0, todo: 0, closed: 0 },
+      completedAt: TEST_NOW,
+      completedByName: "Blake Lead",
+      isMine: true,
+      canManage: false,
+    });
+    expect(find(past.sections, "drivetrain")).toMatchObject({ completedById: p.buildLead.id, countedWhenFinished: 0 });
+    // Only people who manage it see how many "Reopen task" would put back (the one counted for everyone).
+    expect(find((await board(p.buildLead, { view: "past" })).sections, "drivetrain")).toMatchObject({
+      canManage: true,
+      countedWhenFinished: 1,
+    });
+    // Gone from the other person's Today, done.
+    const today = await getTodayView(p.buildMember2, TEST_TODAY, t.db);
+    expect([...today.overdue, ...today.today, ...today.upcoming, ...today.waiting].map((i) => i.task.id)).not.toContain(ids.drivetrain);
+  });
+
+  it("'Just close it': people who weren't done show as closed, and nobody signs up or leaves", async () => {
+    await task("closedSignup", {
+      title: "Closed sign-up",
+      subteam: "BUILD",
+      day: 3,
+      creator: p.buildLead,
+      signupOpen: true,
+      signupLimit: 5,
+      people: [
+        [p.buildMember3, "TODO", { self: true }],
+        [p.buildMember2, "SUBMITTED"],
+      ],
+    });
+    await finishTask(contextFor(t.db, p.buildLead), { taskId: ids.closedSignup, credit: "none" });
+
+    const asSignedUp = find((await board(p.buildMember3, { view: "past" })).sections, "closedSignup");
+    expect(asSignedUp.people.map((x) => [x.name, x.publicStatus])).toEqual([
+      ["Ben Build", "closed"],
+      ["Cy Build", "closed"],
+    ]);
+    expect(asSignedUp).toMatchObject({ counts: { total: 2, done: 0, checked: 0, todo: 0, closed: 2 }, signupOpen: false, canLeave: false });
+    const asOther = await getBoardTask(p.buildMember, ids.closedSignup, { today: TEST_TODAY }, t.db);
+    expect(asOther).toMatchObject({ canSignUp: false, signupOpen: false, signupNote: "This task is finished, so sign-ups are closed." });
+    expect(allTasks((await board(p.buildMember, { open: true })).sections).map((x) => x.id)).not.toContain(ids.closedSignup);
+
+    await reopenTask(contextFor(t.db, p.buildLead), { taskId: ids.closedSignup });
+    const reopened = find((await board(p.buildMember3)).sections, "closedSignup");
+    expect(reopened).toMatchObject({ signupOpen: true, canLeave: true, completedAt: null });
+    expect(reopened.people.map((x) => x.publicStatus)).toEqual(["checked", "todo"]);
+    expect((await getBoardTask(p.buildMember, ids.closedSignup, { today: TEST_TODAY }, t.db))?.canSignUp).toBe(true);
+  });
+});
+
+describe("who adds tasks where", () => {
+  it("the Business leader adds tasks to Whole team without managing its categories; other leaders don't", async () => {
+    const rights = async (actor: Actor) =>
+      (await board(actor)).sections.map((s) => [s.key, { tasks: s.canCreateTasks, categories: s.canManage }]);
+    expect(await rights(p.bizLead)).toEqual([
+      ["SOFTWARE", { tasks: false, categories: false }],
+      ["BUILD", { tasks: false, categories: false }],
+      ["BUSINESS", { tasks: true, categories: true }],
+      ["TEAM", { tasks: true, categories: false }],
+    ]);
+    expect(await rights(p.buildLead)).toEqual([
+      ["SOFTWARE", { tasks: false, categories: false }],
+      ["BUILD", { tasks: true, categories: true }],
+      ["BUSINESS", { tasks: false, categories: false }],
+      ["TEAM", { tasks: false, categories: false }],
+    ]);
+    expect((await board(p.captain)).sections.every((s) => s.canCreateTasks && s.canManage)).toBe(true);
+    expect((await board(p.bizMember)).sections.some((s) => s.canCreateTasks || s.canManage)).toBe(false);
   });
 });

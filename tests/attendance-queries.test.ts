@@ -38,8 +38,9 @@ import {
 } from "@/server/queries/attendance";
 import { getChangeFilterChoices, listAttendanceChanges, listAttendanceChangesForCsv } from "@/server/queries/attendance-changes";
 import { addPerson, checkInWithCode, openSession, removePerson, setCredit, setMyCredit, setRsvp, updateSettings } from "@/server/services/attendance";
+import { finishTask } from "@/server/services/tasks";
 import { createTestDb, type TestDb } from "./helpers/db";
-import { contextFor, makeUser, TEST_NOW, TEST_TODAY, TEST_TZ } from "./helpers/factories";
+import { contextFor, makeTask, makeUser, TEST_NOW, TEST_TODAY, TEST_TZ } from "./helpers/factories";
 
 // TEST_TODAY is Thursday 2026-09-24; with the default schedule (regular meetings Mon/Tue/Thu, Flex Tue/Thu) reports
 // start Mon 2026-08-31, so period 1 is Sep 14 – Sep 27 (the current one) and period 0 is Aug 31 – Sep 13.
@@ -165,6 +166,19 @@ describe("gates", () => {
 });
 
 describe("reports", () => {
+  it("'What got done' lists items counted when a task was marked finished, never ones closed without credit", async () => {
+    const lead = await makeUser(t.db, { role: "BUILD_LEADER", name: "Finish Lead" });
+    const counted = await makeTask(t.db, lead, { title: "Counted for everyone", subteam: "BUILD", assigneeIds: [p.member.id] });
+    const closed = await makeTask(t.db, lead, { title: "Closed without credit", subteam: "BUILD", assigneeIds: [p.member.id] });
+    await finishTask(contextFor(t.db, lead), { taskId: counted.id, credit: "everyone" });
+    await finishTask(contextFor(t.db, lead), { taskId: closed.id, credit: "none" });
+
+    const report = await getAttendanceReport(p.teacher, 1, reportOpts);
+    expect(report?.tasks.find((x) => x.id === counted.id)).toMatchObject({ title: "Counted for everyone", people: ["member"] });
+    expect(report?.tasks.some((x) => x.id === closed.id)).toBe(false);
+    await t.db.task.deleteMany({ where: { id: { in: [counted.id, closed.id] } } });
+  });
+
   it("attendance taken on an extra meeting day counts", async () => {
     const saturday = "2026-09-19";
     await t.db.calendarEvent.create({ data: { title: "Extra build day", kind: "MEETING", startsOn: dateOnlyToDb(saturday) } });

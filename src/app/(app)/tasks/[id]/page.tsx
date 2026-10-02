@@ -2,10 +2,12 @@ import { MessageCircleQuestionMark, Settings2, Users } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { CategoryBadge, DueBadge, PriorityBadge, SignupBadge, SubteamBadge } from "@/components/app/badges";
+import { CategoryBadge, DueBadge, FinishedBadge, PriorityBadge, SignupBadge, SubteamBadge } from "@/components/app/badges";
 import { PUBLIC_STATUS_STYLES, PublicStatusIcon } from "@/components/board/people-chips";
 import { SignupButtons } from "@/components/board/signup-buttons";
 import { BackLink } from "@/components/tasks/back-link";
+import { FinishTaskControls } from "@/components/tasks/finish-task";
+import { Alert } from "@/components/ui/alert";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
@@ -16,10 +18,11 @@ import { ProgressBar } from "@/components/ui/progress-bar";
 import { RichText } from "@/components/ui/rich-text";
 import { cn } from "@/lib/cn";
 import { SUBTEAM_LABELS } from "@/lib/constants";
-import { formatDateOnly, todayInTimezone } from "@/lib/dates";
+import { formatDateOnly, formatDateTime, todayInTimezone } from "@/lib/dates";
 import { isSignupTask, spotsSummary } from "@/lib/signup";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { hasAllScope } from "@/server/permissions";
 import { getBoardTask } from "@/server/queries/board";
 
 export const metadata: Metadata = { title: "Task" };
@@ -32,12 +35,14 @@ export default async function BoardTaskPage({ params }: PageProps<"/tasks/[id]">
   if (!task) notFound();
 
   const { counts } = task;
-  const allDone = counts.total > 0 && counts.done === counts.total;
+  const finished = task.completedAt !== null;
+  const allDone = finished || (counts.total > 0 && counts.done === counts.total);
   const signupTask = isSignupTask(task);
   const countParts = [
     counts.done && `${counts.done} done`,
     counts.checked && `${counts.checked} checked off`,
     counts.todo && `${counts.todo} to do`,
+    counts.closed && `${counts.closed} closed`,
   ].filter(Boolean);
 
   return (
@@ -53,21 +58,49 @@ export default async function BoardTaskPage({ params }: PageProps<"/tasks/[id]">
         }
         actions={
           task.canManage && (
-            <ButtonLink href={`/manage/tasks/${task.id}`} variant="secondary">
-              <Settings2 className="size-4" aria-hidden />
-              Manage task
-            </ButtonLink>
+            <>
+              <ButtonLink href={`/manage/tasks/${task.id}`} variant="secondary">
+                <Settings2 className="size-4" aria-hidden />
+                Manage task
+              </ButtonLink>
+              <FinishTaskControls
+                taskId={task.id}
+                title={task.title}
+                finished={finished}
+                total={counts.total}
+                notApproved={task.people
+                  .filter((p) => p.publicStatus !== "done")
+                  .map((p) => ({
+                    id: p.id,
+                    name: p.name,
+                    label: PUBLIC_STATUS_STYLES[p.publicStatus].label,
+                    waiting: p.publicStatus === "checked",
+                    isMe: p.isMe,
+                  }))}
+                canCountOwn={hasAllScope(actor)}
+                counted={task.countedWhenFinished}
+              />
+            </>
           )
         }
       />
 
       <div className="-mt-3 mb-6 flex flex-wrap gap-1.5">
+        <FinishedBadge finished={finished} />
         <SubteamBadge subteam={task.subteam} />
         <CategoryBadge name={task.category?.name} />
         <DueBadge due={task.dueDate} today={today} done={allDone} />
         <PriorityBadge priority={task.priority} />
         <SignupBadge {...task} />
       </div>
+
+      {task.completedAt && (
+        <Alert tone="success" role={null} className="mb-4" title="Finished">
+          Marked finished by {task.completedById === actor.id ? "you" : (task.completedByName ?? "a leader")} ·{" "}
+          {formatDateTime(task.completedAt, env.teamTimezone)}.
+          {counts.closed > 0 && " People who weren't done by then are shown as closed."}
+        </Alert>
+      )}
 
       <div className="space-y-4">
         <Card>
@@ -95,17 +128,21 @@ export default async function BoardTaskPage({ params }: PageProps<"/tasks/[id]">
             <CardHeader
               title="Sign-up"
               description={
-                task.signupOpen
-                  ? task.subteam
-                    ? `${SUBTEAM_LABELS[task.subteam]} members can sign themselves up.`
-                    : "Anyone on the team can sign up."
-                  : "Sign-ups are closed."
+                finished
+                  ? "This task is finished, so sign-ups are closed."
+                  : task.signupOpen
+                    ? task.subteam
+                      ? `${SUBTEAM_LABELS[task.subteam]} members can sign themselves up.`
+                      : "Anyone on the team can sign up."
+                    : "Sign-ups are closed."
               }
             />
             <CardBody className="space-y-3">
               <p className="text-sm text-ink-700">{spotsSummary(task)}</p>
               {task.isMine && !task.canLeave && (
-                <p className="text-sm text-ink-500">You&apos;re on this task. It&apos;s on your checklist.</p>
+                <p className="text-sm text-ink-500">
+                  {finished ? "You're on this task." : "You're on this task. It's on your checklist."}
+                </p>
               )}
               <SignupButtons task={task} />
               {/* "Closed" is already in the card's description. */}

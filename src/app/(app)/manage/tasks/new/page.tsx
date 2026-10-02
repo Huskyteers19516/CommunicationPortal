@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import type { Subteam } from "@/generated/prisma/enums";
 import { SUBTEAMS } from "@/lib/constants";
 import { addDays, todayInTimezone } from "@/lib/dates";
-import { parsePeopleParam, prefillAssigneeIds, prefillBackHref, prefillDueDate } from "@/lib/task-prefill";
+import { parsePeopleParam, prefillAssigneeIds, prefillBackHref, prefillDueDate, prefillSubteam } from "@/lib/task-prefill";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { getTaskFormCategories } from "@/server/queries/categories";
@@ -32,14 +32,21 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
     getTaskFormCategories(actor),
   ]);
 
+  // ?people=<id>,<id> (Attendance → "Assign a task to the people coming"): only people the actor can assign.
+  const people = copy ? [] : prefillAssigneeIds(parsePeopleParam(sp.people), groups);
   // ?subteam=BUILD|TEAM&category=<id> (the dashboard's "+" buttons): only subteams and categories the actor may use.
   const subteamParam = first(sp.subteam);
   const wanted: "" | Subteam | undefined = subteamParam === "TEAM" ? "" : SUBTEAMS.find((s) => s === subteamParam);
-  const subteam = wanted !== undefined && options.subteams.some((o) => o.value === wanted) ? wanted : options.defaultSubteam;
+  // The Business leader's people from other subteams only fit a whole-team task, so that's where a prefill starts.
+  const subteam = prefillSubteam({
+    requested: wanted,
+    allowed: options.subteams.map((o) => o.value),
+    defaultSubteam: options.defaultSubteam,
+    people,
+    groups,
+  });
   const categoryParam = first(sp.category);
   const categoryId = categoryParam && categories[subteam]?.some((c) => c.id === categoryParam) ? categoryParam : "";
-  // ?people=<id>,<id> (Attendance → "Assign a task to the people coming"): only people the actor can assign.
-  const people = copy ? [] : prefillAssigneeIds(parsePeopleParam(sp.people), groups);
   // ?due=<day> and ?back=/attendance/plan?day=<day> (same link): the planned day, and back to "Who's coming".
   const minDate = addDays(today, -DUE_DATE_MAX_PAST_DAYS);
   const maxDate = addDays(today, DUE_DATE_MAX_FUTURE_DAYS);
@@ -96,6 +103,7 @@ export default async function NewTaskPage({ searchParams }: PageProps<"/manage/t
               }
         }
         subteamOptions={options.subteams}
+        newCategorySubteams={options.newCategorySubteams}
         categories={categories}
         groups={groups}
         minDate={minDate}

@@ -1,4 +1,4 @@
-import { ShieldCheck, Tag } from "lucide-react";
+import { CircleCheckBig, ShieldCheck, Tag } from "lucide-react";
 import type { AccountStatus, AssignmentStatus, Priority, QuestionStatus, Role, Subteam } from "@/generated/prisma/enums";
 import {
   ASSIGNMENT_STATUS_LABELS,
@@ -53,8 +53,21 @@ export function AccountStatusBadge({ status }: { status: AccountStatus }) {
 
 const assignmentTone: Record<AssignmentStatus, BadgeTone> = { TODO: "gray", SUBMITTED: "yellow", APPROVED: "green", REJECTED: "red" };
 
-export function AssignmentStatusBadge({ status }: { status: AssignmentStatus }) {
+/** A checklist item's status. `closed`: not approved when its task was marked finished (no credit). */
+export function AssignmentStatusBadge({ status, closed = false }: { status: AssignmentStatus; closed?: boolean }) {
+  if (closed) return <Badge tone="gray">Closed</Badge>;
   return <Badge tone={assignmentTone[status]}>{ASSIGNMENT_STATUS_LABELS[status]}</Badge>;
+}
+
+/** "Finished" — a leader marked the whole task finished. Nothing while it's open. */
+export function FinishedBadge({ finished }: { finished: boolean }) {
+  if (!finished) return null;
+  return (
+    <Badge tone="green">
+      <CircleCheckBig className="size-3" aria-hidden />
+      Finished
+    </Badge>
+  );
 }
 
 const questionTone: Record<QuestionStatus, BadgeTone> = { OPEN: "yellow", ANSWERED: "blue", RESOLVED: "green" };

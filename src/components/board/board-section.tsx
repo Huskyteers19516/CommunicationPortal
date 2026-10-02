@@ -36,7 +36,7 @@ export function BoardSectionView({
   wide?: boolean;
   /** Shown when there is nothing in the section. */
   emptyText: string;
-  /** Plain active view: managers get "new task here" per category and the "no categories yet" hint. */
+  /** Plain active view: people who create tasks here get "new task here" per category, managers the "no categories yet" hint. */
   canAddTasks: boolean;
   /** 3-column layout: keep room for a row of manager controls so the columns line up. */
   reserveControlsRow?: boolean;
@@ -44,6 +44,7 @@ export function BoardSectionView({
 }) {
   const headingId = `section-${section.key}`;
   const manage = section.canManage && canAddTasks;
+  const addTasks = section.canCreateTasks && canAddTasks;
   const hasGroups = section.categories.length > 0;
   const nothing = !hasGroups && section.uncategorized.length === 0;
 
@@ -59,6 +60,7 @@ export function BoardSectionView({
         label={section.label}
         taskCount={section.taskCount}
         canManage={section.canManage}
+        canCreateTasks={section.canCreateTasks}
         reserveControlsRow={reserveControlsRow}
       />
 
@@ -79,7 +81,7 @@ export function BoardSectionView({
                     <span className="min-w-0 wrap-anywhere">{category.name}</span>
                     <span className="shrink-0 text-xs font-normal tabular-nums text-ink-500">{category.tasks.length}</span>
                   </h3>
-                  {manage && (
+                  {addTasks && (
                     <Link
                       href={`/manage/tasks/new?subteam=${section.key}&category=${encodeURIComponent(category.id)}`}
                       aria-label={`New task in ${category.name}`}

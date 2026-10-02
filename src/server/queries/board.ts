@@ -2,6 +2,8 @@ import "server-only";
 // The Task dashboard (/tasks, /tasks/[id]): every task of every subteam, who's on it, and how far along
 // they are. Every ACTIVE person can see it, so this is the PUBLIC view of a task: a simplified status per
 // person (done / checked off / to do — "sent back" reads as "to do"), and never submission or review notes.
+// A task a leader marked finished is past (whatever its due date), takes no sign-ups, and everyone on it who wasn't
+// approved shows as "closed".
 
 import type { Prisma } from "@/generated/prisma/client";
 import type { AssignmentStatus, Priority, Role, Subteam } from "@/generated/prisma/enums";
@@ -10,18 +12,19 @@ import { addDays, type DateOnly, dateOnlyToDb, dbToDateOnly } from "@/lib/dates"
 import { isFull } from "@/lib/signup";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
-import { canManageCategories, canManageTask, canSignUpForTask } from "../permissions";
+import { isClosedItem } from "../domain/assignment";
+import { canCreateTask, canManageCategories, canManageTask, canSignUpForTask } from "../permissions";
 
 type ActorLike = Pick<Actor, "id" | "role" | "subteam" | "isAdmin">;
 
 export type BoardView = "active" | "past";
 /** A dashboard section: a subteam, or "TEAM" for whole-team tasks. */
 export type BoardSectionKey = Subteam | "TEAM";
-/** What everyone may see about one person's progress. */
-export type PublicStatus = "done" | "checked" | "todo";
+/** What everyone may see about one person's progress. "closed" = the task was marked finished without them. */
+export type PublicStatus = "done" | "checked" | "todo" | "closed";
 
 export const BOARD_SECTION_KEYS: BoardSectionKey[] = [...SUBTEAMS, "TEAM"];
-/** Tasks due more than this many days ago count as past, finished or not. */
+/** Tasks due more than this many days ago count as past, done or not. */
 export const BOARD_ACTIVE_DAYS_BACK = 30;
 export const BOARD_ACTIVE_LIMIT = 300;
 export const BOARD_PAST_LIMIT = 100;
@@ -33,6 +36,11 @@ const PUBLIC_STATUS: Record<AssignmentStatus, PublicStatus> = {
   // Being sent back is between the member and their leader.
   REJECTED: "todo",
 };
+
+/** One person's public status; anything not approved on a finished task is closed. */
+export function publicStatusOf(status: AssignmentStatus, taskCompletedAt: Date | null): PublicStatus {
+  return isClosedItem(status, taskCompletedAt) ? "closed" : PUBLIC_STATUS[status];
+}
 
 export function sectionKeyOf(subteam: Subteam | null): BoardSectionKey {
   return subteam ?? "TEAM";
@@ -56,7 +64,7 @@ export function parseBoardSection(value: string | string[] | undefined): BoardSe
 export interface BoardPerson {
   id: string;
   name: string;
-  /** Done / checked off (waiting for review) / to do. "Sent back" shows as to do. */
+  /** Done / checked off (waiting for review) / to do / closed. "Sent back" shows as to do. */
   publicStatus: PublicStatus;
   /** Signed themselves up (vs. assigned by a leader). */
   selfAssigned: boolean;
@@ -72,6 +80,7 @@ export interface BoardTask {
   category: { id: string; name: string } | null;
   /** Set up as "Let people sign up" (stays true while sign-ups are closed). */
   signupMode: boolean;
+  /** Sign-ups are open right now (never while the task is marked finished). */
   signupOpen: boolean;
   signupLimit: number | null;
   /** People on the task (assigned or signed up). */
@@ -79,14 +88,23 @@ export interface BoardTask {
   full: boolean;
   /** Everyone on the task, by name. */
   people: BoardPerson[];
-  counts: { total: number; done: number; checked: number; todo: number };
+  counts: { total: number; done: number; checked: number; todo: number; closed: number };
+  /** When a leader marked the whole task finished, and who; null while it's open. */
+  completedAt: Date | null;
+  completedById: string | null;
+  completedByName: string | null;
+  /**
+   * For people who manage the task (else 0): how many items count only because it was finished "for everyone" —
+   * what "Reopen task" puts back.
+   */
+  countedWhenFinished: number;
   /** The viewer is on this task. */
   isMine: boolean;
-  /** The viewer may sign up right now (open, their subteam, a spot left, not past due, not on it yet). */
+  /** The viewer may sign up right now (open, not finished, their subteam, a spot left, not past due, not on it yet). */
   canSignUp: boolean;
-  /** The viewer signed up and hasn't checked it off yet. */
+  /** The viewer signed up and hasn't checked it off yet (and the task isn't finished). */
   canLeave: boolean;
-  /** The viewer manages this task (can open it under Manage). */
+  /** The viewer manages this task (can open it under Manage, and mark it finished or reopen it). */
   canManage: boolean;
 }
 
@@ -100,8 +118,10 @@ export interface BoardSection {
   key: BoardSectionKey;
   subteam: Subteam | null;
   label: string;
-  /** The viewer can add categories and tasks here. */
+  /** The viewer can add, rename, and delete categories here. */
   canManage: boolean;
+  /** The viewer can create tasks here (the Business leader: whole-team tasks too, without managing those categories). */
+  canCreateTasks: boolean;
   taskCount: number;
   /** In display order. Managers also get empty ones (so they can add tasks into them). */
   categories: BoardCategory[];
@@ -123,7 +143,7 @@ export interface BoardFilters {
   subteam?: BoardSectionKey;
   /** Only tasks the viewer is on. */
   mine?: boolean;
-  /** Only tasks with sign-ups open and a spot left, not past due (and your own sign-ups you can still leave). */
+  /** Only tasks with sign-ups open and a spot left, not past due or finished (and your own sign-ups you can still leave). */
   open?: boolean;
   today: DateOnly;
 }
@@ -140,16 +160,25 @@ const boardTaskSelect = {
   signupMode: true,
   signupOpen: true,
   signupLimit: true,
+  completedAt: true,
+  completedById: true,
+  completedBy: { select: { name: true } },
   category: { select: { id: true, name: true } },
   // Public fields only: no submission or review notes.
-  assignments: { select: { userId: true, status: true, selfAssigned: true, user: { select: { name: true } } } },
+  assignments: {
+    select: { userId: true, status: true, selfAssigned: true, finishedWithTask: true, user: { select: { name: true } } },
+  },
 } satisfies Prisma.TaskSelect;
 
 type BoardTaskRow = Prisma.TaskGetPayload<{ select: typeof boardTaskSelect }>;
 
-/** Still being worked on: due within the last 30 days, and not yet due or someone isn't approved yet. */
+/**
+ * Still being worked on: not marked finished, due within the last 30 days, and not yet due or someone isn't
+ * approved yet. Everything else (finished tasks too, whatever their due date) is past.
+ */
 function activeWhere(today: DateOnly): Prisma.TaskWhereInput {
   return {
+    completedAt: null,
     dueDate: { gte: dateOnlyToDb(addDays(today, -BOARD_ACTIVE_DAYS_BACK)) },
     OR: [{ dueDate: { gte: dateOnlyToDb(today) } }, { assignments: { some: { status: { not: "APPROVED" } } } }],
   };
@@ -160,18 +189,19 @@ function toBoardTask(actor: ActorLike, t: BoardTaskRow, today: DateOnly): BoardT
     .map((a) => ({
       id: a.userId,
       name: a.user.name,
-      publicStatus: PUBLIC_STATUS[a.status],
+      publicStatus: publicStatusOf(a.status, t.completedAt),
       selfAssigned: a.selfAssigned,
       isMe: a.userId === actor.id,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const counts = { total: people.length, done: 0, checked: 0, todo: 0 };
+  const counts = { total: people.length, done: 0, checked: 0, todo: 0, closed: 0 };
   for (const p of people) counts[p.publicStatus] += 1;
 
   const mine = t.assignments.find((a) => a.userId === actor.id);
   const spotsTaken = t.assignments.length;
   const full = isFull({ signupLimit: t.signupLimit, spotsTaken });
   const dueDate = dbToDateOnly(t.dueDate);
+  const canManage = canManageTask(actor, t);
   return {
     id: t.id,
     title: t.title,
@@ -180,16 +210,21 @@ function toBoardTask(actor: ActorLike, t: BoardTaskRow, today: DateOnly): BoardT
     subteam: t.subteam,
     category: t.category,
     signupMode: t.signupMode,
-    signupOpen: t.signupOpen,
+    // A finished task takes no sign-ups, whatever the leader's open/closed switch says.
+    signupOpen: t.signupOpen && t.completedAt === null,
     signupLimit: t.signupLimit,
     spotsTaken,
     full,
     people,
     counts,
+    completedAt: t.completedAt,
+    completedById: t.completedById,
+    completedByName: t.completedBy?.name ?? null,
+    countedWhenFinished: canManage ? t.assignments.filter((a) => a.finishedWithTask).length : 0,
     isMine: !!mine,
     canSignUp: canSignUpForTask(actor, t) && !mine && !full && dueDate >= today,
-    canLeave: !!mine && mine.selfAssigned && mine.status === "TODO",
-    canManage: canManageTask(actor, t),
+    canLeave: !!mine && mine.selfAssigned && mine.status === "TODO" && t.completedAt === null,
+    canManage,
   };
 }
 
@@ -206,7 +241,7 @@ export async function getTaskBoard(actor: ActorLike, filters: BoardFilters, db: 
       view === "active" ? active : { NOT: active },
       filters.subteam ? { subteam: subteamOfSection(filters.subteam) } : {},
       filters.mine ? { assignments: { some: { userId: actor.id } } } : {},
-      filters.open ? { signupOpen: true, dueDate: { gte: dateOnlyToDb(today) } } : {},
+      filters.open ? { signupOpen: true, completedAt: null, dueDate: { gte: dateOnlyToDb(today) } } : {},
     ],
   };
   const limit = view === "active" ? BOARD_ACTIVE_LIMIT : BOARD_PAST_LIMIT;
@@ -236,6 +271,7 @@ export async function getTaskBoard(actor: ActorLike, filters: BoardFilters, db: 
   const sections = sectionKeys.map((key): BoardSection => {
     const subteam = subteamOfSection(key);
     const canManage = canManageCategories(actor, subteam);
+    const canCreateTasks = canCreateTask(actor, subteam);
     const own = tasks.filter((t) => t.subteam === subteam);
     const groups = categories
       .filter((c) => c.subteam === subteam)
@@ -246,6 +282,7 @@ export async function getTaskBoard(actor: ActorLike, filters: BoardFilters, db: 
       subteam,
       label: sectionLabel(key),
       canManage,
+      canCreateTasks,
       taskCount: own.length,
       categories: groups.filter((g) => g.tasks.length > 0 || (canManage && showEmpty)),
       uncategorized: own.filter((t) => !t.category || !grouped.has(t.category.id)),
@@ -288,7 +325,8 @@ export async function getBoardTask(
   let signupNote: string | null = null;
   const signupTask = task.signupMode;
   if (!task.isMine && signupTask && !task.canSignUp) {
-    if (!task.signupOpen) signupNote = "Sign-ups for this task are closed.";
+    if (task.completedAt) signupNote = "This task is finished, so sign-ups are closed.";
+    else if (!task.signupOpen) signupNote = "Sign-ups for this task are closed.";
     else if (!canSignUpForTask(actor, task)) signupNote = `Only ${task.subteam ? SUBTEAM_LABELS[task.subteam] : "team"} members can sign up.`;
     else if (task.dueDate < opts.today) signupNote = "The due date has passed.";
     else if (task.full) signupNote = "All spots are taken.";

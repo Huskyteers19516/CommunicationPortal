@@ -13,8 +13,9 @@ import {
   TEAM_PROGRESS_PAGE_SIZE,
 } from "@/server/queries/progress";
 import { getReviewQueue } from "@/server/queries/tasks";
+import { finishTask } from "@/server/services/tasks";
 import { createTestDb, type TestDb } from "./helpers/db";
-import { makeTask, makeUser, TEST_NOW, TEST_TODAY } from "./helpers/factories";
+import { contextFor, makeTask, makeUser, TEST_NOW, TEST_TODAY } from "./helpers/factories";
 
 let t: TestDb;
 let p: Record<
@@ -152,7 +153,7 @@ describe("getOverview", () => {
     expect(o.overdueOpenCount).toBe(3);
     expect(o.todaysTasks.map((x) => x.title)).toEqual(["Build today"]);
     expect(o.todaysTaskTotal).toBe(1);
-    expect(o.todaysTasks[0].counts).toEqual({ total: 3, approved: 1, submitted: 1, rejected: 0, todo: 1 });
+    expect(o.todaysTasks[0].counts).toEqual({ total: 3, approved: 1, submitted: 1, rejected: 0, todo: 1, closed: 0 });
     expect(o.attention.map((a) => [a.name, a.overdueCount])).toEqual([
       ["Alex Builder", 2],
       ["blake Builder", 1],
@@ -167,7 +168,7 @@ describe("getOverview", () => {
     expect(o.overdueOpenCount).toBe(5); // + swA t7 (REJECTED) and t8 (TODO)
     // High priority first.
     expect(o.todaysTasks.map((x) => x.title)).toEqual(["Team today", "Build today", "Software today"]);
-    expect(o.todaysTasks[0].counts).toEqual({ total: 3, approved: 1, submitted: 1, rejected: 0, todo: 1 });
+    expect(o.todaysTasks[0].counts).toEqual({ total: 3, approved: 1, submitted: 1, rejected: 0, todo: 1, closed: 0 });
     expect(o.attention).toHaveLength(3);
     expect(o.attention[0].overdueCount).toBe(2);
     expect(new Set(o.attention.slice(0, 2).map((a) => a.id))).toEqual(new Set([p.buildA.id, p.swA.id]));
@@ -454,5 +455,81 @@ describe("team progress paging", () => {
     expect(clamped.page).toBe(2);
     // Totals and the strip cover everyone, not just the current page.
     expect(page1.subteams.find((s) => s.subteam === "BUSINESS")!.people).toBe(51);
+  });
+});
+
+describe("tasks marked finished", () => {
+  // Its own database, so the numbers above stay as they are.
+  let fresh: TestDb;
+  let q: Record<"lead" | "grant" | "paige" | "sam", Actor>;
+  const ids: Record<string, string> = {};
+
+  beforeAll(async () => {
+    fresh = await createTestDb();
+    const db = fresh.db;
+    q = {
+      lead: await makeUser(db, { role: "BUILD_LEADER", name: "Fin Lead" }),
+      grant: await makeUser(db, { role: "MEMBER", subteam: "BUILD", name: "Grant" }),
+      paige: await makeUser(db, { role: "MEMBER", subteam: "BUILD", name: "Paige" }),
+      sam: await makeUser(db, { role: "MEMBER", subteam: "BUILD", name: "Sam" }),
+    };
+    const ctx = contextFor(db, q.lead);
+    // Yesterday, "Just close it": Grant never did it, Paige was approved, Sam checked off but wasn't reviewed.
+    const closed = await makeTask(db, q.lead, { title: "Closed", subteam: "BUILD", dueDate: d(-1), assigneeIds: [q.grant.id, q.paige.id, q.sam.id] });
+    await db.taskAssignment.update({
+      where: { taskId_userId: { taskId: closed.id, userId: q.paige.id } },
+      data: { status: "APPROVED", reviewedAt: minutesAgo(30), reviewedById: q.lead.id },
+    });
+    await db.taskAssignment.update({
+      where: { taskId_userId: { taskId: closed.id, userId: q.sam.id } },
+      data: { status: "SUBMITTED", submittedAt: minutesAgo(20) },
+    });
+    await finishTask(ctx, { taskId: closed.id, credit: "none" });
+    // Two days ago, counted for everyone.
+    const counted = await makeTask(db, q.lead, { title: "Counted", subteam: "BUILD", dueDate: d(-2), assigneeIds: [q.grant.id] });
+    await finishTask(ctx, { taskId: counted.id, credit: "everyone" });
+    // Three days ago and still open: really overdue.
+    const open = await makeTask(db, q.lead, { title: "Still open", subteam: "BUILD", dueDate: d(-3), assigneeIds: [q.grant.id] });
+    // Due today, closed.
+    const today = await makeTask(db, q.lead, { title: "Closed today", subteam: "BUILD", dueDate: d(0), assigneeIds: [q.paige.id] });
+    await finishTask(ctx, { taskId: today.id, credit: "none" });
+    Object.assign(ids, { closed: closed.id, counted: counted.id, open: open.id, today: today.id });
+  });
+
+  afterAll(async () => {
+    await fresh?.drop();
+  });
+
+  it("team progress: counted items are approved; closed ones count in the total but aren't done, waiting, or overdue", async () => {
+    const tp = await getTeamProgress(q.lead, { range: "week" }, TEST_TODAY, fresh.db);
+    const row = (u: Actor) => tp.rows.find((r) => r.user.id === u.id)!;
+    expect(row(q.grant)).toMatchObject({ total: 3, approved: 1, todo: 1, submitted: 0, rejected: 0, closed: 1, overdue: 1, completionRate: 33 });
+    expect(row(q.paige)).toMatchObject({ total: 2, approved: 1, closed: 1, overdue: 0 });
+    expect(row(q.sam)).toMatchObject({ total: 1, approved: 0, submitted: 0, closed: 1, overdue: 0, completionRate: 0 });
+    expect(tp.totals).toMatchObject({ total: 6, approved: 2, closed: 3, todo: 1, submitted: 0, overdue: 1 });
+  });
+
+  it("one person's progress marks closed and counted items, and only open ones are overdue", async () => {
+    const mp = (await getMemberProgress(q.lead, q.grant.id, { range: "week" }, TEST_TODAY, fresh.db))!;
+    expect(mp.summary).toMatchObject({ total: 3, approved: 1, closed: 1, todo: 1, overdue: 1 });
+    const byTask = new Map(mp.assignments.map((a) => [a.task.id, a]));
+    expect(byTask.get(ids.closed)).toMatchObject({ status: "TODO", closed: true, overdue: false, finishedWithTask: false });
+    expect(byTask.get(ids.counted)).toMatchObject({ status: "APPROVED", closed: false, overdue: false, finishedWithTask: true });
+    expect(byTask.get(ids.open)).toMatchObject({ status: "TODO", closed: false, overdue: true });
+  });
+
+  it("the overview: not overdue, not waiting for review, closed today's task says so; marking finished isn't 'activity'", async () => {
+    const o = await getOverview(q.lead, TEST_TODAY, fresh.db);
+    expect(o.overdueOpenCount).toBe(1);
+    expect(o.attention.map((a) => [a.name, a.overdueCount])).toEqual([["Grant", 1]]);
+    expect(o.reviewQueueCount).toBe(0);
+    expect((await getReviewQueue(q.lead, {}, fresh.db)).total).toBe(0);
+    expect(o.dueToday).toEqual({ total: 1, approved: 0, submitted: 0 });
+    expect(o.todaysTasks).toMatchObject([{ id: ids.today, finished: true, counts: { total: 1, closed: 1, todo: 0 } }]);
+    // Paige's one-by-one approval and Sam's check-off are activity; Grant counted with the whole task isn't.
+    expect(o.recentActivity.map((a) => [a.person.name, a.status])).toEqual([
+      ["Sam", "SUBMITTED"],
+      ["Paige", "APPROVED"],
+    ]);
   });
 });

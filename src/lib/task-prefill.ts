@@ -27,6 +27,26 @@ export function prefillAssigneeIds(requested: string[], groups: { people: { id: 
   return requested.filter((id) => allowed.has(id));
 }
 
+/**
+ * The subteam a new task starts with. The whole team when a prefilled person fits only a whole-team task (the
+ * Business leader assigning the people coming from Attendance, who are from every subteam) — even over a requested
+ * subteam, which couldn't take them; otherwise the requested one (?subteam=) when the actor may use it; otherwise
+ * the actor's default. "" = whole team.
+ */
+export function prefillSubteam<S extends string>(opts: {
+  requested: "" | S | undefined;
+  /** The subteam values the actor may create tasks for. */
+  allowed: ("" | S)[];
+  defaultSubteam: "" | S;
+  people: string[];
+  groups: { people: { id: string; wholeTeamOnly?: boolean }[] }[];
+}): "" | S {
+  const wholeTeamOnly = new Set(opts.groups.flatMap((g) => g.people.filter((p) => p.wholeTeamOnly).map((p) => p.id)));
+  if (opts.allowed.includes("") && opts.people.some((id) => wholeTeamOnly.has(id))) return "";
+  if (opts.requested !== undefined && opts.allowed.includes(opts.requested)) return opts.requested;
+  return opts.defaultSubteam;
+}
+
 /** ?due=YYYY-MM-DD (the planned day): used as the due date when it's a real day within [min, max], else null. */
 export function prefillDueDate(value: string | string[] | undefined, min: DateOnly, max: DateOnly): DateOnly | null {
   const raw = Array.isArray(value) ? value[0] : value;

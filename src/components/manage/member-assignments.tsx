@@ -12,9 +12,11 @@ function timeline(item: MemberAssignment, timeZone: string): string[] {
   const parts: string[] = [];
   if (item.submittedAt) parts.push(`Checked off ${formatDateTime(item.submittedAt, timeZone)}`);
   if (item.reviewedAt && (item.status === "APPROVED" || item.status === "REJECTED")) {
-    const verb = item.status === "APPROVED" ? "Approved" : "Sent back";
+    const verb = item.finishedWithTask ? "Counted done with the whole task" : item.status === "APPROVED" ? "Approved" : "Sent back";
     parts.push(`${verb} ${formatDateTime(item.reviewedAt, timeZone)}${item.reviewerName ? ` by ${item.reviewerName}` : ""}`);
   }
+  // True whether it was never approved or a leader took the credit back afterwards.
+  if (item.closed) parts.push("Doesn't count — the task was marked finished without it");
   return parts;
 }
 
@@ -36,7 +38,7 @@ export function MemberAssignmentList({
   return (
     <ul className="divide-y divide-ink-100">
       {items.map((item) => {
-        const done = item.status === "APPROVED" || item.status === "SUBMITTED";
+        const done = item.status === "APPROVED" || item.status === "SUBMITTED" || item.closed;
         const meta = timeline(item, timeZone);
         return (
           <li key={item.id} className="px-4 py-3.5 sm:px-5">
@@ -59,7 +61,7 @@ export function MemberAssignmentList({
                 </div>
               </div>
               <div className="shrink-0">
-                <AssignmentStatusBadge status={item.status} />
+                <AssignmentStatusBadge status={item.status} closed={item.closed} />
               </div>
             </div>
             {meta.length > 0 && (
@@ -74,7 +76,11 @@ export function MemberAssignmentList({
                 <MessageSquareText className="mt-0.5 size-4 shrink-0 text-ink-400" aria-hidden />
                 <div className="min-w-0">
                   <p className="text-xs font-medium text-ink-500">
-                    {item.reviewerName ? `Note from ${item.reviewerName}` : "Leader's note"}
+                    {item.finishedWithTask || item.closed
+                      ? "Earlier feedback"
+                      : item.reviewerName
+                        ? `Note from ${item.reviewerName}`
+                        : "Leader's note"}
                   </p>
                   <RichText text={item.reviewNote} />
                 </div>

@@ -76,7 +76,7 @@ export function ProgressLegend({ className }: { className?: string }) {
       </span>
       <span className="inline-flex items-center gap-1.5">
         <span className="size-2.5 rounded-full bg-ink-200" aria-hidden />
-        To do / needs changes
+        To do / needs changes / closed
       </span>
     </p>
   );

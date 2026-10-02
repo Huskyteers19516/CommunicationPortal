@@ -22,7 +22,7 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 | Role | Subteam | Needs admin approval | Scope |
 |---|---|---|---|
 | MEMBER | required: SOFTWARE / BUILD / BUSINESS | no (ACTIVE on sign-up) | own checklist, ask questions |
-| SOFTWARE_LEADER / BUILD_LEADER (×3) / BUSINESS_LEADER | implied by role | yes | manage own subteam: tasks, review, answer questions |
+| SOFTWARE_LEADER / BUILD_LEADER (×3) / BUSINESS_LEADER | implied by role | yes | manage own subteam: tasks, review, answer questions (the Business leader also creates whole-team tasks) |
 | CAPTAIN | none | yes | all subteams + whole-team tasks |
 | MENTOR / TEACHER | none | yes | all subteams + whole-team tasks |
 | `isAdmin` flag (**owner**, shown as "Owner") | any role | — | everything above + owners' accounts + granting Owner |
@@ -41,20 +41,85 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 - Seats: `SEAT_LIMITS` in `src/lib/constants.ts` (1 captain, 1 software, 3 build, 1 business leader).
 - Everyone (including leaders) can be assigned tasks and has a Today checklist.
 - Nobody reviews their own submission unless all-scope.
-- Whole-team tasks (subteam null) are created/edited only by all-scope staff, but **subteam leaders also review their own members' items** on them (`canReviewAssignment(actor, task, { userId, assigneeSubteam })`, mirrored by `reviewableAssignmentsWhere` / `reviewQueueWhere`).
+- Whole-team tasks (subteam null) are created by all-scope staff **and the Business leader** (`canCreateWholeTeamTask`, used
+  by `canCreateTask(actor, null)`: fundraising and outreach need everyone). Who may be put on a task depends on the
+  task's subteam — `canAssignTo(actor, assignee, taskSubteam)`, mirrored by `assignableUsersWhere(actor, taskSubteam)`:
+  all-scope staff anyone ACTIVE; the Business leader anyone ACTIVE on whole-team tasks and Business people on Business
+  tasks; other subteam leaders their own subteam's people. Whole-team tasks are managed (edited, deleted, reviewed,
+  finished) by all-scope staff and **whoever created them** (`canManageTask`: so the Business leader manages the ones
+  they made, not the captain's). Nobody can edit a task out of their own hands: `updateTask` refuses a subteam the actor
+  wouldn't manage it in afterwards (`canManageTask` on the result — e.g. the Business leader making the captain's Business
+  task whole-team), and the edit form only offers those (`getTaskFormOptions(actor, { createdById })`). Questions about
+  such a whole-team task go to its poster by default (`getAskAboutTask(...).poster`: a whole-team task created by
+  someone who isn't all-scope; the ask form preselects "<name> — posted this task" instead of the captain). The
+  whole-team **categories** stay all-scope only (`canManageCategories`): the Business
+  leader picks from them, and the task form's "New category…" is only offered where `newCategorySubteams` allows it
+  (`resolveCategory` refuses it otherwise). **Subteam leaders also review their own members' items** on whole-team tasks
+  (`canReviewAssignment(actor, task, { userId, assigneeSubteam })`, mirrored by `reviewableAssignmentsWhere` / `reviewQueueWhere`).
+- `getAssignableUsers(actor)` lists everyone the actor may put on *some* task they can create; for the Business leader the
+  people outside Business are marked `wholeTeamOnly`, and the task form hides them while the task is for a subteam
+  (anyone already picked stays listed with a note, so nothing is dropped silently; `assertAssignable` then says
+  "… isn't in Business — make it a whole-team task to add them", and the picker hints "Need people from other subteams?
+  Choose Whole team."). `prefillSubteam` (`src/lib/task-prefill.ts`) starts a `?people=` task as whole-team when a
+  prefilled person only fits one — even over an explicit `?subteam=` that couldn't take them.
 - Members only see their own questions; staff see questions in their scope.
 - **Every service must enforce permissions itself** by calling functions from `permissions.ts` (or filtering with `scopes.ts`). UI hiding is not security.
 
 ## Checklist lifecycle (`src/server/domain/assignment.ts`)
 
-`Task` = what a leader assigns (title, description, subteam|null, dueDate DATE, priority, creator).
+`Task` = what a leader assigns (title, description, subteam|null, dueDate DATE, priority, creator; `completedAt`/`completedBy` once marked finished).
 `TaskAssignment` = one person's checklist item for a task: `TODO → SUBMITTED → APPROVED` (officially done) or `→ REJECTED` (sent back with a note) → `SUBMITTED` again. Members can withdraw `SUBMITTED → TODO`. Managers can reopen `APPROVED → TODO`.
 
 - Use `canTransition` / `allowedFrom` and do **conditional** writes to avoid races, e.g.
   `db.taskAssignment.updateMany({ where: { id, status: { in: allowedFrom("approve") } }, data })` and treat `count === 0` as a `ConflictError`.
 - On submit: `status=SUBMITTED, submittedAt=now, submissionNote=note|null` (keep the old `reviewNote` so reviewers can see prior feedback).
 - On approve/reject: `status, reviewedById=actor, reviewedAt=now, reviewNote=note|null`. Reject **requires** a note (tell them what to fix).
-- On withdraw: `status=TODO, submittedAt=null, submissionNote=null`. On reopen: `status=TODO`, clear `reviewedAt/reviewedById`, keep `reviewNote`.
+- On withdraw: `status=TODO, submittedAt=null, submissionNote=null`. On reopen: `status=TODO`, clear `reviewedAt/reviewedById`, keep `reviewNote`
+  (and clear `finishedWithTask` / `statusBeforeFinish`, below).
+
+### Marking a whole task finished (`finishTask` / `reopenTask` in `services/tasks.ts`)
+
+For when the job is done but not everyone checked it off. Anyone who `canManageTask` — on the manage page and on
+`/tasks/[id]` (`FinishTaskControls`: a `<dialog>` that names who isn't approved yet; focus moves to the button that
+replaces it and a `role="status"` line says what happened).
+
+- **Count it as done for everyone still on it** (`credit: "everyone"`, the default): one `UPDATE` turns every item that
+  isn't APPROVED into APPROVED with `reviewedById = actor`, `reviewedAt = now`, `finishedWithTask = true`, and
+  `statusBeforeFinish` = what it was. `reviewNote` is left alone (pages label it "Earlier feedback" and say "marked done
+  with the whole task" from the flag). Like reviewing, a **subteam leader's own item isn't counted** (all-scope staff's is):
+  it stays as it is (so it's closed), and the dialog says so. While that own item is **checked off** (SUBMITTED) this choice
+  is a `ConflictError` ("Your own item is waiting for review…") and the dialog disables it: a finished task's waiting
+  items leave every review queue, so nobody would ever be asked to approve it. They get it approved first, or just close.
+- **Just close it — no credit** (`credit: "none"`): items stay as they are.
+- Either way `Task.completedAt / completedById` are set, in **one transaction with the task row locked** (`FOR UPDATE`);
+  finishing a finished task is a `ConflictError` naming who did it. No emails.
+- **Reopen task** (same people, same lock): clears `completedAt/completedById` and puts back only items still APPROVED
+  with `finishedWithTask` (status = `statusBeforeFinish`, review fields and both flags cleared). Items reviewed one by one
+  stay. Reopening an open task is a `ConflictError`. Its confirm only promises to put people back when someone was
+  counted (`counted` / `BoardTask.countedWhenFinished`).
+  **Known loss:** finishing overwrites `reviewedById/reviewedAt`, and nothing stores the old ones, so a **sent-back** item
+  restored by Reopen task keeps its note but loses who sent it back and when (the member's card shows the feedback
+  without "— name", the manage page says "Feedback", and it drops out of the overview's Recent activity). Restoring them
+  exactly needs a migration (e.g. `previousReviewedById/previousReviewedAt` next to `statusBeforeFinish`).
+- **While finished**: anything not APPROVED is **closed** (`isClosedItem`): no credit, off Today and the Open tab (listed
+  under Done as "Closed — the task was marked finished" with the dashboard's minus-circle mark; the Done tab is ordered
+  by when each item was done — approval time, or the finish time for closed ones), never overdue, out of the review queue (`reviewQueueWhere`, so
+  the nav badge and bulk approve too). Members can't check off, uncheck, or edit the note (`services/checklist.ts` locks the
+  task row `FOR SHARE` first, so a check-off can't land after the finish), nobody signs up or leaves (`canSignUpForTask`,
+  `leaveTask`), and sign-ups can't be opened (`setSignupOpen`). Such a refused check-off / uncheck / note is a
+  `ConflictError` with `code` = `TASK_FINISHED_CODES.counted | .closed` (`src/lib/action-state.ts`, passed on as
+  `ActionState.code` by `runAction`) and a message saying how it ended ("Marcus Johnson marked the whole task finished —
+  it counts as done for you."); the checklist item shows it as a neutral status line in place (no refresh, which would
+  usually take the item off the list), focused. Managers can still **approve** a closed submission on the task page (then
+  it counts), not send it back. On a finished task the per-person "Reopen" is **Take back credit** (`ReopenItem`, with a
+  confirm and a status line): `reopenAssignment` (which returns `taskFinished`) takes that person's credit back for good —
+  the item is closed ("Doesn't count — the task was marked finished without it"). Editing still works, but nobody new can
+  be added (the picker disables everyone not already on it). Duplicating makes an open task; deleting works as usual.
+- **Counts**: approved items count as approved everywhere (progress, the two-week report's "what got done" at the finish
+  time). Closed items stay in totals (so completion rates stay honest) as their own `closed` bucket, never as to do /
+  waiting / overdue: Manage → Tasks and the task page (`StatusCounts.closed`), the overview, team and member progress,
+  Admin → People (`closedAssignments`), and the dashboard's public status `"closed"`. Recent activity leaves out items
+  approved by finishing (one task could fill it).
 
 ## Categories, sign-up tasks, and the Task dashboard
 
@@ -69,7 +134,10 @@ Stack: Next.js 16 App Router (Server Components + Server Actions) · React 19 ·
 - `updateTask` gets `previousAssigneeIds` (+ `previousAssigneeIdsSent`) from the edit form: changes are computed against the
   people the form showed, so sign-ups that happened while the form was open are kept.
 - `/tasks` (Task dashboard) and `/tasks/[id]` are for every ACTIVE user (`queries/board.ts`). They show who's on each task
-  with a **public** status only (done / checked off / to do — "sent back" shows as to do) and never notes.
+  with a **public** status only (done / checked off / to do — "sent back" shows as to do; closed on a finished task) and
+  never notes. A task marked finished is always on **Past** (`activeWhere` requires `completedAt: null`), shows a
+  "Finished" badge, and reports `signupOpen: false`. A section's `canManage` (its categories) and `canCreateTasks`
+  (`canCreateTask`) are separate: the Business leader gets "New task" on Whole team without the category controls.
 
 ## Team members (`src/server/queries/people.ts`, `/people`)
 
@@ -449,7 +517,8 @@ Taking attendance with a rotating QR code, "Coming?" answers, day plans, and two
   answers, plans, and sessions already saved for it stay (clearing an answer works on any day). The regular
   Mon/Tue/Thu meetings are never calendar events.
 - **Assign a task to the people coming** links to `/manage/tasks/new?people=<id>,<id>&due=<day>&back=/attendance/plan?day=<day>`;
-  the page keeps only people the actor can assign (`prefillAssigneeIds`), uses the day as the due date when it's in range
+  the page keeps only people the actor can assign (`prefillAssigneeIds`), starts as a whole-team task when one of them only
+  fits one (`prefillSubteam`: the Business leader), uses the day as the due date when it's in range
   (`prefillDueDate`), and goes back to Who's coming (`prefillBackHref`, only that page) — `src/lib/task-prefill.ts`.
 - **Credits and the weekly target** (Gwen's "-/2 times"): each `AttendanceRecord` counts toward a weekly target by its
   `credit`, in **sixths** (6 = 1, 4 = 2/3, 3 = 1/2, 2 = 1/3, so everything adds up exactly), and `creditKind`

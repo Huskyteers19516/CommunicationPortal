@@ -2,8 +2,9 @@
 // Keep these two files in sync — tests in tests/permissions.test.ts check they agree.
 
 import type { Prisma } from "@/generated/prisma/client";
+import type { Subteam } from "@/generated/prisma/enums";
 import type { Actor } from "./actor";
-import { canReviewResources, hasAllScope, isStaff, ledSubteam } from "./permissions";
+import { canCreateWholeTeamTask, canReviewResources, hasAllScope, isStaff, ledSubteam } from "./permissions";
 
 type ActorLike = Pick<Actor, "id" | "role" | "subteam" | "isAdmin">;
 
@@ -29,10 +30,13 @@ export function reviewableAssignmentsWhere(actor: ActorLike): Prisma.TaskAssignm
   return { userId: { not: actor.id }, OR: or };
 }
 
-/** Submitted assignments waiting for this actor's review. */
+/**
+ * Submitted assignments waiting for this actor's review. Items of a task someone marked finished ("Just close it")
+ * aren't waiting for anyone anymore, so they leave the queue (a manager can still approve them on the task's page).
+ */
 export function reviewQueueWhere(actor: ActorLike): Prisma.TaskAssignmentWhereInput {
   if (!isStaff(actor)) return NONE;
-  return { AND: [{ status: "SUBMITTED" }, reviewableAssignmentsWhere(actor)] };
+  return { AND: [{ status: "SUBMITTED", task: { completedAt: null } }, reviewableAssignmentsWhere(actor)] };
 }
 
 /** Questions the actor can see (mirror of canViewQuestion). */
@@ -58,9 +62,17 @@ export function manageableMembersWhere(actor: ActorLike): Prisma.UserWhereInput 
   return led ? { status: "ACTIVE", subteam: led } : NONE;
 }
 
-/** Users the actor may assign tasks to (mirror of canAssignTo). */
-export function assignableUsersWhere(actor: ActorLike): Prisma.UserWhereInput {
-  return manageableMembersWhere(actor);
+/**
+ * Users the actor may put on a task of `taskSubteam` (null = whole team) — mirror of canAssignTo: all-scope staff and
+ * (on whole-team tasks) the Business leader: everyone ACTIVE; subteam leaders: ACTIVE people in their own subteam.
+ */
+export function assignableUsersWhere(actor: ActorLike, taskSubteam: Subteam | null): Prisma.UserWhereInput {
+  if (!isStaff(actor)) return NONE;
+  if (hasAllScope(actor)) return { status: "ACTIVE" };
+  const led = ledSubteam(actor);
+  if (!led) return NONE;
+  if (taskSubteam === null && canCreateWholeTeamTask(actor)) return { status: "ACTIVE" };
+  return { status: "ACTIVE", subteam: led };
 }
 
 /** Resources the actor can see (mirror of canViewResource). */

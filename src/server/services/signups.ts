@@ -2,6 +2,7 @@
 //
 // Sign-ups take a row lock on the task (SELECT … FOR UPDATE) before counting who's on it, so two people
 // racing for the last spot can't both get it. Leaders editing the task take the same lock (updateTask).
+// A task marked finished takes no sign-ups and nobody leaves it (leaving locks the row too, FOR SHARE).
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import { SUBTEAM_LABELS } from "@/lib/constants";
@@ -18,6 +19,7 @@ export const SIGNUP_RATE_LIMIT = { limit: 30, windowMs: 60 * 60 * 1000 } as cons
 
 const TASK_NOT_FOUND = "That task no longer exists.";
 const ALREADY_ON_IT = "You're already on this task.";
+const FINISHED = "This task is finished, so sign-ups are closed.";
 
 const taskIdInput = z.object({ taskId: idSchema });
 
@@ -50,11 +52,13 @@ export async function signUpForTask(ctx: ServiceContext, raw: unknown): Promise<
           signupOpen: true,
           signupLimit: true,
           dueDate: true,
+          completedAt: true,
           assignments: { select: { userId: true } },
         },
       });
       if (!task) throw new NotFoundError(TASK_NOT_FOUND);
 
+      if (task.completedAt) throw new ConflictError(FINISHED);
       if (!canSignUpForTask(ctx.actor, task)) {
         throw new ForbiddenError(
           !task.signupOpen
@@ -83,15 +87,24 @@ export async function signUpForTask(ctx: ServiceContext, raw: unknown): Promise<
 }
 
 /**
- * Take yourself off a task you signed up for, as long as you haven't checked it off yet.
- * Tasks a leader assigned you stay put — ask the leader.
+ * Take yourself off a task you signed up for, as long as you haven't checked it off yet and the task isn't
+ * marked finished. Tasks a leader assigned you stay put — ask the leader.
  */
 export async function leaveTask(ctx: ServiceContext, raw: unknown): Promise<void> {
   requireActive(ctx);
   const { taskId } = parseInput(taskIdInput, asRecord(raw));
 
-  const { count } = await ctx.db.taskAssignment.deleteMany({
-    where: { taskId, userId: ctx.actor.id, selfAssigned: true, status: "TODO" },
+  const count = await ctx.db.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ completedAt: Date | null }[]>`
+      SELECT "completedAt" FROM "Task" WHERE id = ${taskId} FOR SHARE`;
+    if (locked[0]?.completedAt) {
+      const mine = await tx.taskAssignment.count({ where: { taskId, userId: ctx.actor.id } });
+      if (mine > 0) throw new ConflictError("This task is finished, so you can't leave it.");
+    }
+    const { count } = await tx.taskAssignment.deleteMany({
+      where: { taskId, userId: ctx.actor.id, selfAssigned: true, status: "TODO" },
+    });
+    return count;
   });
   if (count > 0) return;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Crown, Send, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Crown, Megaphone, Send, UserRound, Users, type LucideIcon } from "lucide-react";
 import { useActionState, useState } from "react";
 import type { Subteam } from "@/generated/prisma/enums";
 import { ButtonLink } from "@/components/ui/button";
@@ -13,8 +13,11 @@ import { LIMITS, SUBTEAM_LABELS, SUBTEAMS } from "@/lib/constants";
 import { type DateOnly, formatDateOnly } from "@/lib/dates";
 import type { AskAboutTask, AskTaskOption, RecipientGroup } from "@/server/queries/questions";
 
-/** "leaders" = the asker's own subteam leaders; "taskLeaders" = the leaders of the task asked about. */
-type Choice = "leaders" | "taskLeaders" | "captain" | "person";
+/**
+ * "leaders" = the asker's own subteam leaders; "taskLeaders" = the leaders of the task asked about; "poster" = the
+ * subteam leader who posted the whole-team task asked about (e.g. the Business leader's fundraiser) — sent to them.
+ */
+type Choice = "leaders" | "taskLeaders" | "captain" | "person" | "poster";
 
 export interface AskQuestionFormProps {
   action: (prev: ActionState, formData: FormData) => Promise<ActionState>;
@@ -104,15 +107,19 @@ export function AskQuestionForm({
   const taskSubteam = aboutTask?.subteam ?? null;
   const otherSubteamTask = !!taskSubteam && taskSubteam !== actorSubteam;
   const offerTaskLeaders = otherSubteamTask && !!aboutTask?.subteamHasLeaders;
+  // A whole-team task a subteam leader posted: they run it (the captain may not even know about it).
+  const poster = aboutTask && taskSubteam === null ? aboutTask.poster : null;
   const initialChoice: Choice = !aboutTask
     ? fallback
-    : taskSubteam === null
-      ? noLeaders // whole-team task → the captain
-      : offerTaskLeaders
-        ? "taskLeaders"
-        : otherSubteamTask
-          ? noLeaders // that subteam has no leaders yet
-          : fallback;
+    : poster
+      ? "poster"
+      : taskSubteam === null
+        ? noLeaders // whole-team task → the captain
+        : offerTaskLeaders
+          ? "taskLeaders"
+          : otherSubteamTask
+            ? noLeaders // that subteam has no leaders yet
+            : fallback;
   const [choice, setChoice] = useState<Choice>(initialChoice);
 
   const v = state?.values;
@@ -122,7 +129,8 @@ export function AskQuestionForm({
   const taskDefault = v?.taskId ?? (defaultTaskId && tasks.some((t) => t.taskId === defaultTaskId) ? defaultTaskId : "");
   // Which task is picked below, so "About:" at the top only shows while it's still the one from the task page.
   const [pickedTaskId, setPickedTaskId] = useState(taskDefault);
-  const choiceCount = (actorSubteam ? 1 : 0) + (offerTaskLeaders ? 1 : 0) + (actorIsCaptain ? 0 : 1) + 1;
+  const choiceCount = (poster ? 1 : 0) + (actorSubteam ? 1 : 0) + (offerTaskLeaders ? 1 : 0) + (actorIsCaptain ? 0 : 1) + 1;
+  const toOnePerson = choice === "person" || choice === "poster";
   const taskLabel = (t: AskTaskOption) => `${t.title} · due ${formatDateOnly(t.dueDate, today)}`;
   // React resets the form after every submit, but a <select> only applies defaultValue when it mounts.
   // A new key per submission remounts the selects so they come back with what the user picked.
@@ -146,12 +154,28 @@ export function AskQuestionForm({
 
       <fieldset className="space-y-2">
         <legend className="mb-2 text-sm font-medium text-ink-800">Who should answer?</legend>
-        <input type="hidden" name="to" value={choice === "person" ? "person" : "subteam"} />
+        <input type="hidden" name="to" value={toOnePerson ? "person" : "subteam"} />
+        {choice === "poster" && poster && (
+          <>
+            <input type="hidden" name="recipientId" value={poster.id} />
+            <input type="hidden" name="subteam" value="" />
+          </>
+        )}
         {choice === "leaders" && <input type="hidden" name="subteam" value={actorSubteam ?? ""} />}
         {choice === "taskLeaders" && <input type="hidden" name="subteam" value={taskSubteam ?? ""} />}
         {choice === "captain" && <input type="hidden" name="subteam" value="" />}
 
         <div className={cn("grid gap-2", choiceCount > 3 ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
+          {poster && (
+            <ChoiceCard
+              value="poster"
+              checked={choice === "poster"}
+              onSelect={setChoice}
+              icon={Megaphone}
+              title={poster.name}
+              description="Posted this task — they run it."
+            />
+          )}
           {offerTaskLeaders && taskSubteam && (
             <ChoiceCard
               value="taskLeaders"
@@ -189,7 +213,7 @@ export function AskQuestionForm({
               description={
                 !hasCaptain
                   ? "No captain yet — mentors and teachers will see it."
-                  : aboutTask && taskSubteam === null
+                  : aboutTask && taskSubteam === null && !poster
                     ? "They run whole-team tasks."
                     : "For whole-team questions."
               }
@@ -208,7 +232,7 @@ export function AskQuestionForm({
         <FieldError id="to-error">{errors.to}</FieldError>
         {discordEnabled && (
           <p className="text-xs text-ink-500">
-            {choice === "person"
+            {toOnePerson
               ? "Questions to one person stay in the portal. They're not posted to the leaders' Discord channel."
               : "It's also posted in the leaders-only Discord channel so any leader can help."}
           </p>

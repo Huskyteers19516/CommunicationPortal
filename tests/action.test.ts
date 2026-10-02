@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeLineBreaks, optionalText, text } from "@/lib/validation";
-import { formDataToObject } from "@/server/action";
+import { formDataToObject, runAction } from "@/server/action";
+import { ConflictError } from "@/server/errors";
 
 describe("formDataToObject", () => {
   it("turns repeated keys into arrays, in order, and skips Next's own fields", () => {
@@ -54,5 +55,19 @@ describe("text / optionalText line breaks", () => {
   it("still treats line breaks alone as empty", () => {
     expect(text("Info", 10).safeParse("\r\n\r\n").success).toBe(false);
     expect(optionalText("Info", 10).parse("\r\n \r")).toBeUndefined();
+  });
+});
+
+describe("runAction", () => {
+  it("passes an error's code on to the page (e.g. a task marked finished meanwhile), and only when there is one", async () => {
+    const coded = await runAction(async () => {
+      throw new ConflictError("Blake marked the whole task finished — it counts as done for you.", "taskFinishedCounted");
+    });
+    expect(coded).toMatchObject({ ok: false, code: "taskFinishedCounted", message: "Blake marked the whole task finished — it counts as done for you." });
+    const plain = await runAction(async () => {
+      throw new ConflictError("Already reviewed.");
+    });
+    expect(plain).toMatchObject({ ok: false, message: "Already reviewed." });
+    expect(plain && "code" in plain).toBe(false);
   });
 });

@@ -2,14 +2,15 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import type { DateOnly } from "@/lib/dates";
 import type { BoardTask } from "@/server/queries/board";
-import { DueBadge, PriorityBadge, SignupBadge } from "../app/badges";
+import { DueBadge, FinishedBadge, PriorityBadge, SignupBadge } from "../app/badges";
 import { Badge } from "../ui/badge";
 import { PeopleChips } from "./people-chips";
 import { SignupButtons } from "./signup-buttons";
 
-/** One task on the dashboard: title (links to /tasks/[id]), due/priority/sign-up badges, people, actions. */
+/** One task on the dashboard: title (links to /tasks/[id]), finished/due/priority/sign-up badges, people, actions. */
 export function BoardTaskCard({ task, today }: { task: BoardTask; today: DateOnly }) {
-  const allDone = task.counts.total > 0 && task.counts.done === task.counts.total;
+  const finished = task.completedAt !== null;
+  const allDone = finished || (task.counts.total > 0 && task.counts.done === task.counts.total);
   const signupTask = task.signupMode;
   return (
     <article
@@ -31,6 +32,7 @@ export function BoardTaskCard({ task, today }: { task: BoardTask; today: DateOnl
         )}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <FinishedBadge finished={finished} />
         <DueBadge due={task.dueDate} today={today} done={allDone} />
         <PriorityBadge priority={task.priority} />
         <SignupBadge

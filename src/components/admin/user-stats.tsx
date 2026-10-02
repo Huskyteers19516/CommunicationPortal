@@ -16,7 +16,7 @@ function Row({ label, children, sub }: { label: string; children: ReactNode; sub
 
 export function UserStats({ user, now, timeZone }: { user: UserDetail; now: Date; timeZone: string }) {
   const a = user.assignments;
-  const totalAssigned = a.TODO + a.SUBMITTED + a.APPROVED + a.REJECTED;
+  const totalAssigned = a.TODO + a.SUBMITTED + a.APPROVED + a.REJECTED + user.closedAssignments;
   return (
     <Card>
       <CardHeader title="Activity" />
@@ -27,6 +27,11 @@ export function UserStats({ user, now, timeZone }: { user: UserDetail; now: Date
             {a[s]}
           </Row>
         ))}
+        {user.closedAssignments > 0 && (
+          <Row label="Closed with a finished task" sub>
+            {user.closedAssignments}
+          </Row>
+        )}
         <Row label="Tasks created">{user.tasksCreated}</Row>
         <Row label="Questions asked">{user.questionsAsked}</Row>
         <Row label="Signed in on">

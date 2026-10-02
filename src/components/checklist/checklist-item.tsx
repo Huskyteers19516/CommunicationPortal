@@ -1,6 +1,14 @@
 "use client";
 
-import { Check, ChevronDown, LoaderCircle, MessageCircleQuestionMark, MessageSquarePlus, PencilLine } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  CircleMinus,
+  LoaderCircle,
+  MessageCircleQuestionMark,
+  MessageSquarePlus,
+  PencilLine,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -8,6 +16,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   useActionState,
+  useEffect,
   useId,
   useOptimistic,
   useRef,
@@ -23,7 +32,7 @@ import { FormMessage } from "@/components/ui/form-message";
 import { RichText } from "@/components/ui/rich-text";
 import { SubmitButton } from "@/components/ui/submit-button";
 import type { AssignmentStatus } from "@/generated/prisma/enums";
-import { type ActionState, initialActionState } from "@/lib/action-state";
+import { type ActionState, initialActionState, TASK_FINISHED_CODES } from "@/lib/action-state";
 import { cn } from "@/lib/cn";
 import { LIMITS } from "@/lib/constants";
 import { type DateOnly, DEFAULT_TEAM_TIMEZONE, formatDateTime, timeAgo } from "@/lib/dates";
@@ -39,7 +48,8 @@ const circleStyles: Record<AssignmentStatus, string> = {
   APPROVED: "border-brand-500 bg-brand-500 text-white",
 };
 
-function checkboxLabel(status: AssignmentStatus, title: string): string {
+function checkboxLabel(status: AssignmentStatus, title: string, closed: boolean): string {
+  if (closed) return `Closed: ${title}. The task was marked finished without it.`;
   if (status === "APPROVED") return `Approved: ${title}`;
   if (status === "SUBMITTED") return `Waiting for review: ${title}. Tap to uncheck.`;
   return `Check off: ${title}`;
@@ -67,9 +77,17 @@ export function ChecklistItem({
   showDue?: boolean;
 }) {
   const router = useRouter();
-  const [status, setOptimisticStatus] = useOptimistic(item.status);
+  const [optimisticStatus, setOptimisticStatus] = useOptimistic(item.status);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  /**
+   * A leader marked the task finished while this page was open, so the tap was refused. Not an error from the
+   * member's side (they may even have got the credit): the item shows how it ended, with a neutral notice, right
+   * here — no refresh, which would usually take the item off this list (and the notice and focus with it). Tied to
+   * the data it was shown on, so fresh data from the server (e.g. the task reopened) replaces it.
+   */
+  const [finishedNews, setFinishedNews] = useState<{ on: string; outcome: "counted" | "closed"; message: string } | null>(null);
+  const noticeRef = useRef<HTMLDivElement>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   /** The "Check off with a note" form (TODO / REJECTED items). The draft survives failures and Cancel. */
@@ -82,13 +100,42 @@ export function ChecklistItem({
   const checkOffFormRef = useRef<HTMLFormElement>(null);
 
   const { task } = item;
-  const checked = status === "SUBMITTED" || status === "APPROVED";
+  const dataKey = `${item.status}|${task.finishedAt ?? ""}`;
+  const news = finishedNews?.on === dataKey ? finishedNews : null;
+  const status: AssignmentStatus = news?.outcome === "counted" ? "APPROVED" : optimisticStatus;
+  const notice = news?.message ?? null;
   const approved = status === "APPROVED";
+  /** Approved only because the whole task was marked finished and counted for everyone. */
+  const countedWithTask = item.finishedWithTask || news?.outcome === "counted";
+  /** The task was marked finished before this was approved: closed, no credit, nothing left to do. */
+  const closed = (task.finishedAt !== null || news !== null) && !approved;
+  const checked = !closed && (status === "SUBMITTED" || approved);
   /** Still up to the member (not waiting on a leader, not done) — only these can be "overdue". */
-  const onMyPlate = status === "TODO" || status === "REJECTED";
+  const onMyPlate = !closed && (status === "TODO" || status === "REJECTED");
   /** Stays up while its own check-off is in flight, so keyboard focus isn't dropped mid-request. */
   const showCheckOffForm = noteCheckOffOpen && (onMyPlate || pending);
   const nowDate = new Date(now);
+
+  // The circle gets disabled and the buttons go away: keep keyboard focus on the news instead.
+  useEffect(() => {
+    if (notice) noticeRef.current?.focus();
+  }, [notice]);
+
+  /** A failed action: the task-finished refusal becomes the notice (see finishedNews); anything else an error. */
+  function failed(result: ActionState) {
+    const outcome =
+      result?.code === TASK_FINISHED_CODES.counted ? "counted" : result?.code === TASK_FINISHED_CODES.closed ? "closed" : null;
+    if (outcome) {
+      setError(null);
+      setEditingNote(false);
+      setNoteCheckOffOpen(false);
+      setFinishedNews({ on: dataKey, outcome, message: result?.message ?? "A leader marked this task finished." });
+      return;
+    }
+    setError(result?.message ?? OFFLINE_MESSAGE);
+    // Someone may have reviewed it in the meantime — pull fresh data.
+    router.refresh();
+  }
 
   /** Run a check/uncheck with an optimistic status; on failure show why and pull fresh data. */
   function run(next: AssignmentStatus, call: () => Promise<ActionState>, onSuccess?: () => void) {
@@ -101,13 +148,8 @@ export function ChecklistItem({
       } catch {
         result = { ok: false, message: OFFLINE_MESSAGE };
       }
-      if (result?.ok) {
-        onSuccess?.();
-      } else {
-        setError(result?.message ?? OFFLINE_MESSAGE);
-        // Someone may have reviewed it in the meantime — pull fresh data.
-        router.refresh();
-      }
+      if (result?.ok) onSuccess?.();
+      else failed(result);
     });
   }
 
@@ -134,7 +176,7 @@ export function ChecklistItem({
   }
 
   function toggle() {
-    if (approved || pending) return;
+    if (approved || closed || pending) return;
     if (status === "SUBMITTED") {
       // Unchecking deletes the member's note — don't let one stray tap do that silently.
       if (item.submissionNote && !window.confirm(UNCHECK_CONFIRM)) return;
@@ -170,7 +212,25 @@ export function ChecklistItem({
 
   // No "·" separators: in a wrapping row they end up starting or ending a line. The gap separates parts.
   const meta: ReactNode[] = [];
-  if (status === "APPROVED") {
+  if (closed) {
+    meta.push(
+      <span className="font-medium text-ink-600">
+        {status === "SUBMITTED"
+          ? "Closed — you checked it off, but it wasn't approved before the task was marked finished"
+          : "Closed — the task was marked finished"}
+      </span>,
+    );
+    if (task.finishedAt) meta.push(<Ago iso={task.finishedAt} now={nowDate} timeZone={timeZone} />);
+  } else if (status === "APPROVED" && countedWithTask) {
+    meta.push(
+      <span className="font-medium text-brand-700">
+        {item.finishedWithTask
+          ? `Done — ${item.reviewerName ?? "a leader"} marked the whole task finished`
+          : "Done — the whole task was marked finished"}
+      </span>,
+    );
+    if (item.finishedWithTask && item.reviewedAt) meta.push(<Ago iso={item.reviewedAt} now={nowDate} timeZone={timeZone} />);
+  } else if (status === "APPROVED") {
     meta.push(<span className="font-medium text-brand-700">Approved by {item.reviewerName ?? "a leader"}</span>);
     if (item.reviewedAt) meta.push(<Ago iso={item.reviewedAt} now={nowDate} timeZone={timeZone} />);
   } else if (status === "SUBMITTED") {
@@ -184,14 +244,14 @@ export function ChecklistItem({
   meta.push(<span>from {task.creatorName}</span>);
 
   const showSubmissionNote = status !== "TODO" && !!item.submissionNote;
-  const showEarlierNote = status !== "REJECTED" && !!item.reviewNote;
+  const showEarlierNote = (closed || status !== "REJECTED") && !!item.reviewNote;
 
   return (
     <div
       className={cn(
         "rounded-xl border p-3 shadow-sm sm:p-4",
-        status === "REJECTED" ? "border-red-200 border-l-4 border-l-red-500" : "border-ink-200",
-        approved ? "bg-ink-50/70" : "bg-white",
+        status === "REJECTED" && !closed ? "border-red-200 border-l-4 border-l-red-500" : "border-ink-200",
+        approved || closed ? "bg-ink-50/70" : "bg-white",
       )}
     >
       <div className="flex items-start gap-2 sm:gap-3">
@@ -200,28 +260,33 @@ export function ChecklistItem({
           type="button"
           role="checkbox"
           aria-checked={checked}
-          aria-label={checkboxLabel(status, task.title)}
+          aria-label={checkboxLabel(status, task.title, closed)}
           aria-busy={pending || undefined}
-          disabled={approved}
+          disabled={approved || closed}
           onClick={toggle}
           className="group -ml-1 -mt-1 flex size-11 shrink-0 items-center justify-center rounded-full disabled:cursor-default"
         >
-          <span
-            className={cn(
-              "flex size-7 items-center justify-center rounded-full border-2 transition-colors",
-              circleStyles[status],
-              pending && "animate-pulse",
-            )}
-          >
-            <Check className="size-4" strokeWidth={3} aria-hidden />
-          </span>
+          {closed ? (
+            // Same mark as "Closed" on the Task dashboard, so it doesn't look like an unchecked to-do.
+            <CircleMinus className="size-7 text-ink-400" strokeWidth={1.75} aria-hidden />
+          ) : (
+            <span
+              className={cn(
+                "flex size-7 items-center justify-center rounded-full border-2 transition-colors",
+                circleStyles[status],
+                pending && "animate-pulse",
+              )}
+            >
+              <Check className="size-4" strokeWidth={3} aria-hidden />
+            </span>
+          )}
         </button>
 
         <div className="min-w-0 flex-1">
           <p
             className={cn(
               "font-medium leading-snug wrap-anywhere",
-              approved ? "text-ink-500 line-through decoration-ink-300" : "text-ink-900",
+              approved ? "text-ink-500 line-through decoration-ink-300" : closed ? "text-ink-500" : "text-ink-900",
             )}
           >
             {task.title}
@@ -242,7 +307,7 @@ export function ChecklistItem({
             ))}
           </p>
 
-          {status === "REJECTED" && item.reviewNote && (
+          {status === "REJECTED" && !closed && item.reviewNote && (
             <Alert tone="error" title="Leader feedback" className="mt-3">
               <RichText text={item.reviewNote} />
               {item.reviewerName && <p className="mt-1 text-xs text-red-700">— {item.reviewerName}</p>}
@@ -254,6 +319,15 @@ export function ChecklistItem({
               {error}
             </Alert>
           )}
+
+          {/* Always on the page so the notice is announced; focused when it appears. */}
+          <div ref={noticeRef} role="status" tabIndex={-1} className={notice ? "mt-3" : undefined}>
+            {notice && (
+              <Alert tone="info" role={null}>
+                {notice}
+              </Alert>
+            )}
+          </div>
 
           <div className="-ml-2 mt-1 flex flex-wrap items-center">
             <button
@@ -280,7 +354,7 @@ export function ChecklistItem({
                 Check off with a note
               </button>
             )}
-            {status === "SUBMITTED" && !editingNote && !showCheckOffForm && (
+            {status === "SUBMITTED" && !closed && !editingNote && !showCheckOffForm && (
               <button
                 type="button"
                 onClick={() => setEditingNote(true)}
@@ -333,7 +407,7 @@ export function ChecklistItem({
             </form>
           )}
 
-          {status === "SUBMITTED" && editingNote && (
+          {status === "SUBMITTED" && !closed && editingNote && (
             <NoteForm
               assignmentId={item.assignmentId}
               initial={item.submissionNote ?? ""}
@@ -342,7 +416,12 @@ export function ChecklistItem({
                 setEditingNote(false);
                 setDetailsOpen(true);
               }}
-              onFailed={() => router.refresh()}
+              // Other failures are shown inside the note form.
+              onFailed={(result) =>
+                result?.code === TASK_FINISHED_CODES.counted || result?.code === TASK_FINISHED_CODES.closed
+                  ? failed(result)
+                  : router.refresh()
+              }
             />
           )}
 
@@ -353,7 +432,13 @@ export function ChecklistItem({
               <p className="text-ink-500">No description.</p>
             )}
             {showEarlierNote && item.reviewNote && (
-              <NoteBlock label={status === "APPROVED" ? `Note from ${item.reviewerName ?? "your leader"}` : "Earlier feedback"}>
+              <NoteBlock
+                label={
+                  status === "APPROVED" && !countedWithTask
+                    ? `Note from ${item.reviewerName ?? "your leader"}`
+                    : "Earlier feedback"
+                }
+              >
                 <RichText text={item.reviewNote} className="text-ink-800" />
               </NoteBlock>
             )}
@@ -407,7 +492,8 @@ function NoteForm({
   initial: string;
   onCancel: () => void;
   onSaved: () => void;
-  onFailed: () => void;
+  /** A refusal (not a problem with the note itself): the item shows why. */
+  onFailed: (result: ActionState) => void;
 }) {
   const fieldId = useId();
   const [state, formAction] = useActionState(async (prev: ActionState, formData: FormData): Promise<ActionState> => {
@@ -419,7 +505,7 @@ function NoteForm({
       return { ok: false, message: OFFLINE_MESSAGE, values: { note: typeof note === "string" ? note : "" } };
     }
     if (result?.ok) onSaved();
-    else if (!result?.fieldErrors?.note) onFailed();
+    else if (!result?.fieldErrors?.note) onFailed(result);
     return result;
   }, initialActionState);
   const noteError = state?.fieldErrors?.note;

@@ -12,7 +12,7 @@ import { SUBTEAM_LABELS, SUBTEAMS } from "@/lib/constants";
 import { todayInTimezone } from "@/lib/dates";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
-import { hasAllScope } from "@/server/permissions";
+import { canCreateTask, hasAllScope } from "@/server/permissions";
 import { listManagedTasks, parseSubteamFilter, type SubteamFilter, type TaskListView } from "@/server/queries/tasks";
 
 export const metadata: Metadata = { title: "Tasks" };
@@ -69,7 +69,13 @@ export default async function ManageTasksPage({ searchParams }: PageProps<"/mana
     <>
       <PageHeader
         title="Tasks"
-        description={allScope ? "Assign work to the team and track it." : "Assign work to your subteam and track it."}
+        description={
+          allScope
+            ? "Assign work to the team and track it."
+            : canCreateTask(actor, null)
+              ? "Assign work to your subteam or the whole team and track it."
+              : "Assign work to your subteam and track it."
+        }
         actions={
           <>
             <ButtonLink href="/manage/categories" variant="secondary">
@@ -110,7 +116,11 @@ export default async function ManageTasksPage({ searchParams }: PageProps<"/mana
               }
             />
           ) : view === "past" ? (
-            <EmptyState icon={FolderKanban} title="No past tasks yet" description="Tasks move here after their due date." />
+            <EmptyState
+              icon={FolderKanban}
+              title="No past tasks yet"
+              description="Tasks move here after their due date, or once they're marked finished."
+            />
           ) : (
             <EmptyState
               icon={FolderKanban}

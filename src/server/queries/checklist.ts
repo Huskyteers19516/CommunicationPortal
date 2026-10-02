@@ -1,6 +1,9 @@
 import "server-only";
 // Read side of the member checklist (/today and /my-tasks). Everything here is scoped to the
 // actor's own assignments — nobody else's checklist can ever show up.
+//
+// Tasks a leader marked finished (Task.completedAt): their approved items count as done like any other; items
+// that were never approved are *closed* — off Today and the Open tab, never overdue, listed under Done as closed.
 
 import type { Prisma } from "@/generated/prisma/client";
 import type { AssignmentStatus, Priority, Subteam } from "@/generated/prisma/enums";
@@ -17,6 +20,8 @@ export interface ChecklistItemData {
   reviewNote: string | null;
   reviewedAt: string | null;
   reviewerName: string | null;
+  /** Approved because a leader marked the whole task finished and counted it for everyone. */
+  finishedWithTask: boolean;
   task: {
     id: string;
     title: string;
@@ -27,6 +32,9 @@ export interface ChecklistItemData {
     creatorName: string;
     /** Task dashboard category (e.g. "Intake"), if any. */
     categoryName: string | null;
+    /** When a leader marked the whole task finished (ISO), else null. Not approved by then = closed, no credit. */
+    finishedAt: string | null;
+    finishedByName: string | null;
   };
 }
 
@@ -40,6 +48,7 @@ const itemSelect = {
   reviewNote: true,
   reviewedAt: true,
   reviewedBy: { select: { name: true } },
+  finishedWithTask: true,
   task: {
     select: {
       id: true,
@@ -50,6 +59,8 @@ const itemSelect = {
       priority: true,
       createdBy: { select: { name: true } },
       category: { select: { name: true } },
+      completedAt: true,
+      completedBy: { select: { name: true } },
     },
   },
 } satisfies Prisma.TaskAssignmentSelect;
@@ -65,6 +76,7 @@ function toItem(row: ItemRow): ChecklistItemData {
     reviewNote: row.reviewNote,
     reviewedAt: row.reviewedAt?.toISOString() ?? null,
     reviewerName: row.reviewedBy?.name ?? null,
+    finishedWithTask: row.finishedWithTask,
     task: {
       id: row.task.id,
       title: row.task.title,
@@ -74,9 +86,14 @@ function toItem(row: ItemRow): ChecklistItemData {
       priority: row.task.priority,
       creatorName: row.task.createdBy.name,
       categoryName: row.task.category?.name ?? null,
+      finishedAt: row.task.completedAt?.toISOString() ?? null,
+      finishedByName: row.task.completedBy?.name ?? null,
     },
   };
 }
+
+/** The item's task isn't marked finished (closed items never show as open, overdue, or waiting). */
+const OPEN_TASK = { completedAt: null } satisfies Prisma.TaskWhereInput;
 
 const PRIORITY_RANK: Record<Priority, number> = { HIGH: 0, NORMAL: 1, LOW: 2 };
 const TODAY_STATUS_RANK: Record<AssignmentStatus, number> = { TODO: 0, REJECTED: 0, SUBMITTED: 1, APPROVED: 2 };
@@ -124,7 +141,10 @@ export interface TodayView {
   hiddenOverdue: number;
 }
 
-/** Everything the actor needs to look at on the Today page, grouped into sections. Each item appears once. */
+/**
+ * Everything the actor needs to look at on the Today page, grouped into sections. Each item appears once.
+ * Items of tasks marked finished only show when approved (as done); closed ones aren't on Today at all.
+ */
 export async function getTodayView(actor: ActorRef, today: DateOnly, db: Db = prisma): Promise<TodayView> {
   const todayDb = dateOnlyToDb(today);
   const horizon = addDays(today, UPCOMING_DAYS);
@@ -133,8 +153,8 @@ export async function getTodayView(actor: ActorRef, today: DateOnly, db: Db = pr
     where: {
       userId: actor.id,
       OR: [
-        { status: "REJECTED" },
-        { status: { in: ["TODO", "SUBMITTED"] }, task: { dueDate: { lte: dateOnlyToDb(horizon) } } },
+        { status: "REJECTED", task: OPEN_TASK },
+        { status: { in: ["TODO", "SUBMITTED"] }, task: { dueDate: { lte: dateOnlyToDb(horizon) }, ...OPEN_TASK } },
         { status: "APPROVED", task: { dueDate: todayDb } },
       ],
     },
@@ -180,7 +200,7 @@ export async function getTodayView(actor: ActorRef, today: DateOnly, db: Db = pr
   if (rows.length === TODAY_VIEW_LIMIT) {
     // Very rare: the cap cut off the oldest items. Keep the headline number honest.
     view.summary.overdueCount = await db.taskAssignment.count({
-      where: { userId: actor.id, status: "TODO", task: { dueDate: { lt: todayDb } } },
+      where: { userId: actor.id, status: "TODO", task: { dueDate: { lt: todayDb }, ...OPEN_TASK } },
     });
     view.hiddenOverdue = Math.max(0, view.summary.overdueCount - view.overdue.length);
   }
@@ -197,17 +217,36 @@ export const MY_TASKS_PAGE_SIZE = 50;
 
 const OPEN_STATUSES: AssignmentStatus[] = ["TODO", "REJECTED", "SUBMITTED"];
 
+/** Open = still to do, sent back, or waiting, on a task nobody marked finished. Done = approved, or closed with its task. */
 const TAB_WHERE: Record<MyTasksTab, Prisma.TaskAssignmentWhereInput> = {
-  open: { status: { in: OPEN_STATUSES } },
-  done: { status: "APPROVED" },
+  open: { status: { in: OPEN_STATUSES }, task: OPEN_TASK },
+  done: { OR: [{ status: "APPROVED" }, { task: { completedAt: { not: null } } }] },
   all: {},
 };
 
-const TAB_ORDER: Record<MyTasksTab, Prisma.TaskAssignmentOrderByWithRelationInput[]> = {
+/** Done is ordered by when each item was done (see loadDonePage), which Prisma's orderBy can't express. */
+const TAB_ORDER: Record<Exclude<MyTasksTab, "done">, Prisma.TaskAssignmentOrderByWithRelationInput[]> = {
   open: [{ task: { dueDate: "asc" } }, { createdAt: "asc" }, { id: "asc" }],
-  done: [{ reviewedAt: { sort: "desc", nulls: "last" } }, { id: "asc" }],
   all: [{ task: { dueDate: "desc" } }, { createdAt: "desc" }, { id: "asc" }],
 };
+
+/**
+ * One page of the Done tab, most recently done first: an approved item by when it was approved, a closed one by
+ * when its task was marked finished (so a closed to-do doesn't sink below every approval ever, and a closed
+ * send-back isn't dated by the send-back). Same rows as TAB_WHERE.done.
+ */
+async function loadDonePage(actor: ActorRef, page: number, db: Db): Promise<ItemRow[]> {
+  const ids = await db.$queryRaw<{ id: string }[]>`
+    SELECT a.id
+    FROM "TaskAssignment" a JOIN "Task" t ON t.id = a."taskId"
+    WHERE a."userId" = ${actor.id} AND (a.status = 'APPROVED' OR t."completedAt" IS NOT NULL)
+    ORDER BY (CASE WHEN a.status = 'APPROVED' THEN a."reviewedAt" ELSE t."completedAt" END) DESC NULLS LAST, a.id ASC
+    LIMIT ${MY_TASKS_PAGE_SIZE} OFFSET ${(page - 1) * MY_TASKS_PAGE_SIZE}`;
+  if (ids.length === 0) return [];
+  const rows = await db.taskAssignment.findMany({ where: { id: { in: ids.map((r) => r.id) }, userId: actor.id }, select: itemSelect });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.flatMap((r) => byId.get(r.id) ?? []);
+}
 
 export function parseMyTasksTab(value: string | string[] | undefined): MyTasksTab {
   const v = Array.isArray(value) ? value[0] : value;
@@ -232,26 +271,19 @@ export async function getMyTasks(
   const requested = Number.isInteger(opts.page) && opts.page > 0 ? opts.page : 1;
   const where: Prisma.TaskAssignmentWhereInput = { userId: actor.id, ...TAB_WHERE[tab] };
   const load = (page: number) =>
-    db.taskAssignment.findMany({
-      where,
-      select: itemSelect,
-      orderBy: TAB_ORDER[tab],
-      skip: (page - 1) * MY_TASKS_PAGE_SIZE,
-      take: MY_TASKS_PAGE_SIZE,
-    });
+    tab === "done"
+      ? loadDonePage(actor, page, db)
+      : db.taskAssignment.findMany({
+          where,
+          select: itemSelect,
+          orderBy: TAB_ORDER[tab],
+          skip: (page - 1) * MY_TASKS_PAGE_SIZE,
+          take: MY_TASKS_PAGE_SIZE,
+        });
 
-  const [groups, firstTry] = await Promise.all([
-    db.taskAssignment.groupBy({ by: ["status"], where: { userId: actor.id }, _count: { _all: true } }),
-    load(requested),
-  ]);
-
-  const byStatus = new Map(groups.map((g) => [g.status, g._count._all]));
-  const count = (statuses: AssignmentStatus[]) => statuses.reduce((n, s) => n + (byStatus.get(s) ?? 0), 0);
-  const counts: Record<MyTasksTab, number> = {
-    open: count(OPEN_STATUSES),
-    done: count(["APPROVED"]),
-    all: count(["TODO", "REJECTED", "SUBMITTED", "APPROVED"]),
-  };
+  const countTab = (t: MyTasksTab) => db.taskAssignment.count({ where: { userId: actor.id, ...TAB_WHERE[t] } });
+  const [open, done, all, firstTry] = await Promise.all([countTab("open"), countTab("done"), countTab("all"), load(requested)]);
+  const counts: Record<MyTasksTab, number> = { open, done, all };
 
   const pageCount = Math.max(1, Math.ceil(counts[tab] / MY_TASKS_PAGE_SIZE));
   // Past the last page (e.g. an old link): show the last page instead of an empty list.

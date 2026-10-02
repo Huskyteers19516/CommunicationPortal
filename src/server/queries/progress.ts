@@ -1,6 +1,8 @@
 // Read-only dashboards for staff: the Manage overview and team/member progress.
 // Every query applies the scope helpers, so a subteam leader only ever sees their own people/tasks.
 // Counting is done with count/groupBy in a fixed number of queries (never one query per person).
+// Tasks a leader marked finished: approved items count as approved; the rest are "closed" — still part of the
+// total (so completion rates stay honest), but neither done, waiting, nor overdue.
 import "server-only";
 import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
@@ -10,6 +12,7 @@ import { addDays, dateOnlyToDb, type DateOnly, dbToDateOnly } from "@/lib/dates"
 import { idSchema } from "@/lib/validation";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
+import { isClosedItem } from "../domain/assignment";
 import { canAccessManage, canManageTask, canViewMemberProgress, hasAllScope, ledSubteam } from "../permissions";
 import { manageableMembersWhere, manageableTasksWhere, questionInboxWhere, reviewQueueWhere } from "../scopes";
 
@@ -21,8 +24,12 @@ export const PROGRESS_RANGES = ["today", "week", "month"] as const;
 export type ProgressRange = (typeof PROGRESS_RANGES)[number];
 export const DEFAULT_PROGRESS_RANGE: ProgressRange = "week";
 
-/** Items still on the person's plate. Overdue = one of these with a due date before today. */
+/** Items still on the person's plate. Overdue = one of these with a due date before today, on an open task. */
 const OPEN_STATUSES: AssignmentStatus[] = [AssignmentStatus.TODO, AssignmentStatus.REJECTED];
+
+/** Not marked finished. */
+const OPEN_TASK = { completedAt: null } satisfies Prisma.TaskWhereInput;
+const FINISHED_TASK = { completedAt: { not: null } } satisfies Prisma.TaskWhereInput;
 
 const rangeSchema = z.enum(PROGRESS_RANGES);
 const subteamSchema = z.enum(Subteam);
@@ -58,18 +65,23 @@ export function completionRate(approved: number, total: number): number | null {
 export interface StatusCounts {
   total: number;
   approved: number;
+  /** Submitted / rejected / todo only count items of tasks that aren't marked finished. */
   submitted: number;
   rejected: number;
   todo: number;
+  /** Not approved when the task was marked finished: closed, no credit. */
+  closed: number;
 }
 
 function emptyCounts(): StatusCounts {
-  return { total: 0, approved: 0, submitted: 0, rejected: 0, todo: 0 };
+  return { total: 0, approved: 0, submitted: 0, rejected: 0, todo: 0, closed: 0 };
 }
 
-function addStatus(counts: StatusCounts, status: AssignmentStatus, n: number) {
+/** `finished` = the item's task is marked finished. */
+function addStatus(counts: StatusCounts, status: AssignmentStatus, n: number, finished = false) {
   counts.total += n;
   if (status === "APPROVED") counts.approved += n;
+  else if (finished) counts.closed += n;
   else if (status === "SUBMITTED") counts.submitted += n;
   else if (status === "REJECTED") counts.rejected += n;
   else counts.todo += n;
@@ -81,6 +93,7 @@ function addCounts(into: StatusCounts, from: StatusCounts) {
   into.submitted += from.submitted;
   into.rejected += from.rejected;
   into.todo += from.todo;
+  into.closed += from.closed;
 }
 
 export interface PersonRef {
@@ -111,6 +124,8 @@ export interface TodaysTask {
   title: string;
   subteam: Subteam | null;
   priority: Priority;
+  /** A leader marked the whole task finished. */
+  finished: boolean;
   counts: StatusCounts;
 }
 
@@ -148,7 +163,10 @@ export interface Overview {
   todaysTaskTotal: number;
   /** Top 5 in-scope people by overdue open items. */
   attention: AttentionPerson[];
-  /** Latest 10 submissions / reviews in scope, newest first. */
+  /**
+   * Latest 10 submissions / reviews in scope, newest first. Items approved by "Mark task finished" aren't reviews
+   * one by one, so they're left out (one task could otherwise fill the list).
+   */
   recentActivity: ActivityItem[];
 }
 
@@ -173,7 +191,7 @@ export async function getOverview(actor: Actor, today: DateOnly, db: Db = prisma
   const overdueWhere: Prisma.TaskAssignmentWhereInput = {
     user: people,
     status: { in: OPEN_STATUSES },
-    task: { dueDate: { lt: todayDb } },
+    task: { dueDate: { lt: todayDb }, ...OPEN_TASK },
   };
   // Activity on tasks the actor manages, plus activity of the people they look after.
   const activityScope: Prisma.TaskAssignmentWhereInput = { OR: [{ task: manageableTasksWhere(actor) }, { user: people }] };
@@ -182,6 +200,7 @@ export async function getOverview(actor: Actor, today: DateOnly, db: Db = prisma
     reviewQueueCount,
     openQuestionCount,
     dueTodayGroups,
+    dueTodayFinishedGroups,
     overdueOpenCount,
     taskRows,
     todaysTaskTotal,
@@ -194,13 +213,18 @@ export async function getOverview(actor: Actor, today: DateOnly, db: Db = prisma
     db.question.count({ where: { AND: [questionInboxWhere(actor), { status: "OPEN" }] } }),
     db.taskAssignment.groupBy({
       by: ["status"],
-      where: { user: people, task: { dueDate: todayDb } },
+      where: { user: people, task: { dueDate: todayDb, ...OPEN_TASK } },
+      _count: { _all: true },
+    }),
+    db.taskAssignment.groupBy({
+      by: ["status"],
+      where: { user: people, task: { dueDate: todayDb, ...FINISHED_TASK } },
       _count: { _all: true },
     }),
     db.taskAssignment.count({ where: overdueWhere }),
     db.task.findMany({
       where: todaysTasksWhere,
-      select: { id: true, title: true, subteam: true, priority: true },
+      select: { id: true, title: true, subteam: true, priority: true, completedAt: true },
       orderBy: [{ priority: "desc" }, { createdAt: "asc" }, { id: "asc" }],
       take: TODAYS_TASKS_MAX,
     }),
@@ -224,7 +248,9 @@ export async function getOverview(actor: Actor, today: DateOnly, db: Db = prisma
       take: ACTIVITY_MAX,
     }),
     db.taskAssignment.findMany({
-      where: { AND: [activityScope, { status: { in: ["APPROVED", "REJECTED"] }, reviewedAt: { not: null } }] },
+      where: {
+        AND: [activityScope, { status: { in: ["APPROVED", "REJECTED"] }, reviewedAt: { not: null }, finishedWithTask: false }],
+      },
       select: activitySelect,
       orderBy: [{ reviewedAt: "desc" }, { id: "asc" }],
       take: ACTIVITY_MAX,
@@ -233,14 +259,20 @@ export async function getOverview(actor: Actor, today: DateOnly, db: Db = prisma
 
   const dueToday = emptyCounts();
   for (const g of dueTodayGroups) addStatus(dueToday, g.status, g._count._all);
+  for (const g of dueTodayFinishedGroups) addStatus(dueToday, g.status, g._count._all, true);
 
+  const finishedTasks = new Set(taskRows.filter((t) => t.completedAt !== null).map((t) => t.id));
   const perTask = new Map<string, StatusCounts>();
   for (const g of taskStatusGroups) {
     let counts = perTask.get(g.taskId);
     if (!counts) perTask.set(g.taskId, (counts = emptyCounts()));
-    addStatus(counts, g.status, g._count._all);
+    addStatus(counts, g.status, g._count._all, finishedTasks.has(g.taskId));
   }
-  const todaysTasks: TodaysTask[] = taskRows.map((t) => ({ ...t, counts: perTask.get(t.id) ?? emptyCounts() }));
+  const todaysTasks: TodaysTask[] = taskRows.map(({ completedAt, ...t }) => ({
+    ...t,
+    finished: completedAt !== null,
+    counts: perTask.get(t.id) ?? emptyCounts(),
+  }));
 
   const attentionIds = attentionGroups.map((g) => g.userId);
   const attentionUsers = attentionIds.length
@@ -288,7 +320,7 @@ export async function getOverview(actor: Actor, today: DateOnly, db: Db = prisma
 // ---------------------------------------------------------------------------
 
 export interface ProgressSummary extends StatusCounts {
-  /** Open items (to do / sent back) due before today — regardless of the range. */
+  /** Open items (to do / sent back) due before today on tasks not marked finished — regardless of the range. */
   overdue: number;
   /** Approved share in percent, null when there are no items in the range. */
   completionRate: number | null;
@@ -345,7 +377,8 @@ export async function getTeamProgress(
   const subteam = allScope ? (parseSubteamFilter(options.subteam) ?? null) : ledSubteam(actor);
 
   const people = manageableMembersWhere(actor);
-  const [users, rangeGroups, overdueGroups] = await Promise.all([
+  const due = { gte: dateOnlyToDb(from), lte: dateOnlyToDb(to) };
+  const [users, rangeGroups, rangeFinishedGroups, overdueGroups] = await Promise.all([
     db.user.findMany({
       where: people,
       select: { ...personSelect, lastSeenAt: true },
@@ -354,22 +387,31 @@ export async function getTeamProgress(
     }),
     db.taskAssignment.groupBy({
       by: ["userId", "status"],
-      where: { user: people, task: { dueDate: { gte: dateOnlyToDb(from), lte: dateOnlyToDb(to) } } },
+      where: { user: people, task: { dueDate: due, ...OPEN_TASK } },
+      _count: { _all: true },
+    }),
+    db.taskAssignment.groupBy({
+      by: ["userId", "status"],
+      where: { user: people, task: { dueDate: due, ...FINISHED_TASK } },
       _count: { _all: true },
     }),
     db.taskAssignment.groupBy({
       by: ["userId"],
-      where: { user: people, status: { in: OPEN_STATUSES }, task: { dueDate: { lt: dateOnlyToDb(today) } } },
+      where: { user: people, status: { in: OPEN_STATUSES }, task: { dueDate: { lt: dateOnlyToDb(today) }, ...OPEN_TASK } },
       _count: { _all: true },
     }),
   ]);
 
   const countsByUser = new Map<string, StatusCounts>();
-  for (const g of rangeGroups) {
-    let counts = countsByUser.get(g.userId);
-    if (!counts) countsByUser.set(g.userId, (counts = emptyCounts()));
-    addStatus(counts, g.status, g._count._all);
-  }
+  const addGroups = (groups: typeof rangeGroups, finished: boolean) => {
+    for (const g of groups) {
+      let counts = countsByUser.get(g.userId);
+      if (!counts) countsByUser.set(g.userId, (counts = emptyCounts()));
+      addStatus(counts, g.status, g._count._all, finished);
+    }
+  };
+  addGroups(rangeGroups, false);
+  addGroups(rangeFinishedGroups, true);
   const overdueByUser = new Map(overdueGroups.map((g) => [g.userId, g._count._all]));
 
   const allRows: TeamProgressRow[] = [...users].sort(comparePeople).map((user) => ({
@@ -431,8 +473,12 @@ export interface MemberAssignment {
   reviewedAt: Date | null;
   reviewNote: string | null;
   reviewerName: string | null;
-  /** Open and due before today. */
+  /** Open and due before today (never on a task marked finished). */
   overdue: boolean;
+  /** Not approved and the task is marked finished: closed, no credit. */
+  closed: boolean;
+  /** Approved because the whole task was marked finished and counted for everyone. */
+  finishedWithTask: boolean;
   /** Due inside the selected range (false = shown only because it is overdue). */
   inRange: boolean;
   task: { id: string; title: string; subteam: Subteam | null; priority: Priority; dueDate: DateOnly };
@@ -481,13 +527,18 @@ export async function getMemberProgress(
   const overdueWhere: Prisma.TaskAssignmentWhereInput = {
     userId: user.id,
     status: { in: OPEN_STATUSES },
-    task: { dueDate: { lt: todayDb } },
+    task: { dueDate: { lt: todayDb }, ...OPEN_TASK },
   };
 
-  const [groups, overdue, rows] = await Promise.all([
+  const [groups, finishedGroups, overdue, rows] = await Promise.all([
     db.taskAssignment.groupBy({
       by: ["status"],
-      where: { userId: user.id, task: { dueDate: { gte: fromDb, lte: toDb } } },
+      where: { userId: user.id, task: { dueDate: { gte: fromDb, lte: toDb }, ...OPEN_TASK } },
+      _count: { _all: true },
+    }),
+    db.taskAssignment.groupBy({
+      by: ["status"],
+      where: { userId: user.id, task: { dueDate: { gte: fromDb, lte: toDb }, ...FINISHED_TASK } },
       _count: { _all: true },
     }),
     db.taskAssignment.count({ where: overdueWhere }),
@@ -500,7 +551,10 @@ export async function getMemberProgress(
         reviewedAt: true,
         reviewNote: true,
         reviewedBy: { select: { name: true } },
-        task: { select: { id: true, title: true, subteam: true, priority: true, dueDate: true, createdById: true } },
+        finishedWithTask: true,
+        task: {
+          select: { id: true, title: true, subteam: true, priority: true, dueDate: true, createdById: true, completedAt: true },
+        },
       },
       orderBy: [{ task: { dueDate: "desc" } }, { createdAt: "desc" }, { id: "asc" }],
       take: MEMBER_ASSIGNMENTS_MAX + 1,
@@ -509,6 +563,7 @@ export async function getMemberProgress(
 
   const counts = emptyCounts();
   for (const g of groups) addStatus(counts, g.status, g._count._all);
+  for (const g of finishedGroups) addStatus(counts, g.status, g._count._all, true);
 
   const assignments: MemberAssignment[] = rows.slice(0, MEMBER_ASSIGNMENTS_MAX).map((row) => {
     const dueDate = dbToDateOnly(row.task.dueDate);
@@ -519,7 +574,9 @@ export async function getMemberProgress(
       reviewedAt: row.reviewedAt,
       reviewNote: row.reviewNote,
       reviewerName: row.reviewedBy?.name ?? null,
-      overdue: OPEN_STATUSES.includes(row.status) && dueDate < today,
+      overdue: OPEN_STATUSES.includes(row.status) && dueDate < today && row.task.completedAt === null,
+      closed: isClosedItem(row.status, row.task.completedAt),
+      finishedWithTask: row.finishedWithTask && row.status === "APPROVED",
       inRange: dueDate >= from && dueDate <= to,
       task: { id: row.task.id, title: row.task.title, subteam: row.task.subteam, priority: row.task.priority, dueDate },
       canManageTask: canManageTask(actor, row.task),

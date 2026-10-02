@@ -1,6 +1,6 @@
 import { BadgeCheck, CalendarCheck, ChartColumn, ChevronRight, Inbox, PartyPopper, Plus } from "lucide-react";
 import Link from "next/link";
-import { PriorityBadge, SubteamBadge } from "@/components/app/badges";
+import { FinishedBadge, PriorityBadge, SubteamBadge } from "@/components/app/badges";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
@@ -85,6 +85,7 @@ export function TodaysTasksCard({
                       `${task.counts.approved} approved`,
                       task.counts.submitted > 0 ? `${task.counts.submitted} waiting for review` : null,
                       open > 0 ? `${open} still to do` : null,
+                      task.counts.closed > 0 ? `${task.counts.closed} closed (no credit)` : null,
                     ].filter((part): part is string => part !== null);
               return (
                 <li key={task.id}>
@@ -97,6 +98,7 @@ export function TodaysTasksCard({
                       <span className="min-w-0 basis-full break-words font-medium text-ink-900 sm:basis-0 sm:flex-1 sm:truncate">
                         {task.title}
                       </span>
+                      <FinishedBadge finished={task.finished} />
                       <SubteamBadge subteam={task.subteam} />
                       <PriorityBadge priority={task.priority} />
                     </div>

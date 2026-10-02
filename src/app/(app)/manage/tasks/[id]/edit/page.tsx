@@ -47,7 +47,7 @@ export default async function EditTaskPage({ params }: PageProps<"/manage/tasks/
     });
   }
 
-  const options = getTaskFormOptions(actor);
+  const options = getTaskFormOptions(actor, { createdById: task.createdBy.id });
   const today = todayInTimezone(env.teamTimezone);
   const minDate = addDays(today, -DUE_DATE_MAX_PAST_DAYS);
 
@@ -71,7 +71,9 @@ export default async function EditTaskPage({ params }: PageProps<"/manage/tasks/
           signupLimit: task.signupLimit,
         }}
         signupClosed={task.assignMode === "signup" && !task.signupOpen}
+        finished={task.completedAt !== null}
         subteamOptions={options.subteams}
+        newCategorySubteams={options.newCategorySubteams}
         categories={categories}
         groups={groupPeople(people)}
         minDate={task.dueDate < minDate ? task.dueDate : minDate}

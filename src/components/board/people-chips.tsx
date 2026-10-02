@@ -1,4 +1,4 @@
-import { Circle, CircleCheck, Clock, type LucideIcon } from "lucide-react";
+import { Circle, CircleCheck, CircleMinus, Clock, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
 import type { BoardPerson, PublicStatus } from "@/server/queries/board";
@@ -10,6 +10,7 @@ export const PUBLIC_STATUS_STYLES: Record<PublicStatus, { label: string; legend:
   done: { label: "Done", legend: "Done (approved)", icon: CircleCheck, className: "text-brand-600" },
   checked: { label: "Checked off", legend: "Checked off (waiting for review)", icon: Clock, className: "text-amber-700" },
   todo: { label: "To do", legend: "To do", icon: Circle, className: "text-ink-500" },
+  closed: { label: "Closed", legend: "Closed (task finished without it)", icon: CircleMinus, className: "text-ink-500" },
 };
 
 /** Small status icon with its meaning for screen readers (and a tooltip). */
@@ -19,11 +20,12 @@ export function PublicStatusIcon({ status, className }: { status: PublicStatus; 
   return <Icon className={cn("size-3.5 shrink-0", s.className, className)} aria-hidden />;
 }
 
-/** Legend for the status icons used on the dashboard. */
-export function PublicStatusLegend({ className }: { className?: string }) {
+/** Legend for the status icons used on the dashboard ("Closed" only where finished tasks can show: Past). */
+export function PublicStatusLegend({ className, showClosed = false }: { className?: string; showClosed?: boolean }) {
+  const statuses: PublicStatus[] = showClosed ? ["done", "checked", "todo", "closed"] : ["done", "checked", "todo"];
   return (
     <p className={cn("flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-500", className)}>
-      {(["done", "checked", "todo"] as const).map((status) => (
+      {statuses.map((status) => (
         <span key={status} className="inline-flex items-center gap-1">
           <PublicStatusIcon status={status} />
           {PUBLIC_STATUS_STYLES[status].legend}

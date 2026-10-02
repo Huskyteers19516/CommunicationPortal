@@ -11,18 +11,21 @@ import type { FormAction } from "./types";
 
 /**
  * Approve / Send back for one submission. "Send back" opens an inline panel that requires a note.
- * `extra` renders more buttons in the same row (e.g. Remove on the task page).
+ * `extra` renders more buttons in the same row (e.g. Remove on the task page). `allowSendBack={false}` (a task
+ * marked finished: nobody can check it off again) leaves only Approve.
  */
 export function ReviewActions({
   assignmentId,
   personName,
   action,
   extra,
+  allowSendBack = true,
 }: {
   assignmentId: string;
   personName: string;
   action: FormAction;
   extra?: ReactNode;
+  allowSendBack?: boolean;
 }) {
   const panelId = useId();
   const noteId = `${panelId}-note`;
@@ -43,16 +46,18 @@ export function ReviewActions({
             Approve
           </SubmitButton>
         </form>
-        <Button
-          variant="secondary"
-          aria-expanded={open}
-          aria-controls={panelId}
-          aria-label={`Send back ${personName}'s submission`}
-          onClick={() => setOpen((o) => !o)}
-        >
-          <Undo2 className="size-4" aria-hidden />
-          Send back
-        </Button>
+        {allowSendBack && (
+          <Button
+            variant="secondary"
+            aria-expanded={open}
+            aria-controls={panelId}
+            aria-label={`Send back ${personName}'s submission`}
+            onClick={() => setOpen((o) => !o)}
+          >
+            <Undo2 className="size-4" aria-hidden />
+            Send back
+          </Button>
+        )}
         {extra}
       </div>
       {approveState && !approveState.ok && approveState.message && (
@@ -60,7 +65,7 @@ export function ReviewActions({
           {approveState.message}
         </p>
       )}
-      {open && (
+      {open && allowSendBack && (
         <form id={panelId} action={rejectAction} className="space-y-2 rounded-lg border border-ink-200 bg-ink-50 p-3">
           <input type="hidden" name="assignmentId" value={assignmentId} />
           <input type="hidden" name="decision" value="reject" />

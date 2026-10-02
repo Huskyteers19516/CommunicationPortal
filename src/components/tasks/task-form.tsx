@@ -1,7 +1,7 @@
 "use client";
 
 import { LoaderCircle } from "lucide-react";
-import { type FormEvent, startTransition, useActionState, useState } from "react";
+import { type FormEvent, startTransition, useActionState, useMemo, useState } from "react";
 import type { Priority, Subteam } from "@/generated/prisma/enums";
 import { initialActionState } from "@/lib/action-state";
 import { cn } from "@/lib/cn";
@@ -46,6 +46,24 @@ const MODES: { value: AssignMode; label: string; description: (subteamLabel: str
   },
 ];
 
+/**
+ * People the actor may put only on whole-team tasks (`wholeTeamOnly`, the Business leader's view of other subteams)
+ * are left out of the picker while the task is for a subteam — except anyone picked (or already on the task), who
+ * stays listed with a note so nothing is dropped silently (the service then explains).
+ */
+function pickerGroups(groups: AssigneeGroup[], subteam: "" | Subteam, keep: Set<string>): AssigneeGroup[] {
+  if (subteam === "") return groups;
+  const note = `Not in ${SUBTEAM_LABELS[subteam]} — only on whole-team tasks`;
+  return groups
+    .map((g) => ({
+      ...g,
+      people: g.people
+        .filter((p) => !p.wholeTeamOnly || keep.has(p.id))
+        .map((p) => (p.wholeTeamOnly ? { ...p, note: p.note ?? note } : p)),
+    }))
+    .filter((g) => g.people.length > 0);
+}
+
 /** Create / edit a task. Used by /manage/tasks/new and /manage/tasks/[id]/edit. */
 export function TaskForm({
   action,
@@ -53,26 +71,33 @@ export function TaskForm({
   taskId,
   initial,
   subteamOptions,
+  newCategorySubteams,
   categories,
   groups,
   minDate,
   maxDate,
   cancelHref,
   signupClosed = false,
+  finished = false,
 }: {
   action: FormAction;
   mode: "create" | "edit";
   taskId?: string;
   initial: TaskFormInitial;
   subteamOptions: SubteamOption[];
+  /** Subteam values whose categories the actor may add to ("New category…"). */
+  newCategorySubteams: ("" | Subteam)[];
   /** Categories per subteam value ("" = whole team). */
   categories: TaskFormCategories;
+  /** Everyone the actor may put on some task (see AssignablePerson.wholeTeamOnly). */
   groups: AssigneeGroup[];
   minDate: DateOnly;
   maxDate: DateOnly;
   cancelHref: string;
   /** Editing a sign-up task whose sign-ups are closed right now. */
   signupClosed?: boolean;
+  /** Editing a task that's marked finished (nobody new can be added). */
+  finished?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, initialActionState);
   const [subteam, setSubteam] = useState<"" | Subteam>(
@@ -84,6 +109,17 @@ export function TaskForm({
   );
   const [assignMode, setAssignMode] = useState<AssignMode>(initial.assignMode);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(initial.assigneeIds));
+  // Whole-team-only people who stay listed on a subteam task: the ones picked when the subteam last changed.
+  const [kept, setKept] = useState<Set<string>>(() => new Set(initial.assigneeIds));
+  const hasWholeTeamOnly = useMemo(() => groups.some((g) => g.people.some((p) => p.wholeTeamOnly)), [groups]);
+  const shownGroups = useMemo(() => {
+    const base = hasWholeTeamOnly ? pickerGroups(groups, subteam, kept) : groups;
+    if (!finished) return base;
+    // A finished task takes nobody new (updateTask refuses): only the people already on it can be (un)checked.
+    const onIt = new Set(initial.assigneeIds);
+    return base.map((g) => ({ ...g, people: g.people.map((p) => (onIt.has(p.id) ? p : { ...p, frozen: true })) }));
+  }, [groups, hasWholeTeamOnly, subteam, kept, finished, initial.assigneeIds]);
+  const canAddCategory = newCategorySubteams.includes(subteam);
   // Spots as typed, so the picker's "Select all" doesn't offer more people than there are spots.
   const [spots, setSpots] = useState(initial.signupLimit === null ? "" : String(initial.signupLimit));
   const spotLimit = /^\d+$/.test(spots.trim()) && Number(spots) >= 1 ? Number(spots) : null;
@@ -103,12 +139,24 @@ export function TaskForm({
 
   function changeSubteam(next: "" | Subteam) {
     setSubteam(next);
-    // Categories belong to one subteam; a new one is created wherever the task goes.
-    if (categoryId !== NEW_CATEGORY) setCategoryId("");
+    // Categories belong to one subteam; a new one is created wherever the task goes (if the actor may add one there).
+    if (categoryId !== NEW_CATEGORY || !newCategorySubteams.includes(next)) setCategoryId("");
+    setKept(new Set([...initial.assigneeIds, ...selected]));
   }
 
   const onlySubteam = subteamOptions.length === 1 ? subteamOptions[0] : null;
   const subteamLabel = subteam ? SUBTEAM_LABELS[subteam] : null;
+  // The Business leader on a Business task: people from other subteams only fit whole-team tasks — say how.
+  const wholeTeamHint =
+    hasWholeTeamOnly && subteam !== "" && !finished && subteamOptions.some((o) => o.value === "")
+      ? "Need people from other subteams? Choose Whole team."
+      : undefined;
+  const signupHint = signup
+    ? mode === "edit"
+      ? "People who sign up while you edit stay on the task."
+      : "Add anyone who's already doing it. Everyone else signs up themselves."
+    : undefined;
+  const pickerHint = [signupHint, wholeTeamHint].filter(Boolean).join(" ") || undefined;
 
   return (
     <form onSubmit={onSubmit} className="space-y-4">
@@ -224,10 +272,10 @@ export function TaskForm({
                     {c.name}
                   </option>
                 ))}
-                <option value={NEW_CATEGORY}>New category…</option>
+                {canAddCategory && <option value={NEW_CATEGORY}>New category…</option>}
               </Select>
             </Field>
-            {categoryId === NEW_CATEGORY && (
+            {categoryId === NEW_CATEGORY && canAddCategory && (
               <Field
                 label="New category name"
                 htmlFor="newCategory"
@@ -293,6 +341,13 @@ export function TaskForm({
             <FieldError id="assignMode-error">{errors?.assignMode}</FieldError>
           </fieldset>
 
+          {finished && (
+            <Alert tone="info">
+              This task is marked finished. You can still change it and take people off, but nobody new can be added until
+              it&apos;s reopened.
+            </Alert>
+          )}
+
           {signup && signupClosed && (
             <Alert tone="info">Sign-ups for this task are closed right now, and saving keeps them closed. Use “Open sign-ups” on the task page to reopen them.</Alert>
           )}
@@ -325,20 +380,16 @@ export function TaskForm({
 
           <div className="border-t border-ink-100 pt-4">
             <AssigneePicker
-              groups={groups}
-              defaultSelected={initial.assigneeIds}
+              // Remount when people outside the subteam come or go, starting from who's picked now.
+              key={hasWholeTeamOnly && subteam !== "" ? "subteam" : "team"}
+              groups={shownGroups}
+              defaultSelected={[...selected]}
               taskSubteam={onlySubteam ? undefined : subteam}
               error={errors?.assigneeIds}
               label={signup ? "Already on it" : "Assign to"}
               optional={signup}
               maxSelected={signup ? spotLimit : null}
-              hint={
-                signup
-                  ? mode === "edit"
-                    ? "People who sign up while you edit stay on the task."
-                    : "Add anyone who's already doing it. Everyone else signs up themselves."
-                  : undefined
-              }
+              hint={pickerHint}
               onSelectionChange={setSelected}
             />
           </div>

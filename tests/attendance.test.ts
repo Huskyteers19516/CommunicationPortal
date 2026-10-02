@@ -49,7 +49,7 @@ import {
 } from "@/lib/attendance";
 import { LIMITS } from "@/lib/constants";
 import { addDays, dateOnlyToDb } from "@/lib/dates";
-import { parsePeopleParam, prefillAssigneeIds, prefillBackHref, prefillDueDate } from "@/lib/task-prefill";
+import { parsePeopleParam, prefillAssigneeIds, prefillBackHref, prefillDueDate, prefillSubteam } from "@/lib/task-prefill";
 import type { Actor } from "@/server/actor";
 import {
   CODE_SLOT_MS,
@@ -1011,6 +1011,26 @@ describe("?people= prefill on New task", () => {
     expect(prefillAssigneeIds(requested, captainGroups)).toEqual([p.member.id, p.member2.id, p.bizMember.id]);
     // People shown only with a note (e.g. not active) aren't picked.
     expect(prefillAssigneeIds(["x", "y"], [{ people: [{ id: "x" }, { id: "y", note: "Not active" }] }])).toEqual(["x"]);
+  });
+
+  it("the Business leader can assign everyone coming: the task then starts as a whole-team task", async () => {
+    const requested = [p.member.id, p.member2.id, p.bizMember.id];
+    const groups = await getAssignableUsers(p.bizLead, t.db);
+    const people = prefillAssigneeIds(requested, groups);
+    expect(people).toEqual(requested);
+    const options = { allowed: ["BUSINESS", ""] as ("" | "BUSINESS")[], defaultSubteam: "BUSINESS" as const, groups };
+    expect(prefillSubteam({ ...options, requested: undefined, people })).toBe("");
+    // Only Business people: their own subteam as usual. An explicit choice they may use wins…
+    expect(prefillSubteam({ ...options, requested: undefined, people: [p.bizMember.id] })).toBe("BUSINESS");
+    expect(prefillSubteam({ ...options, requested: "BUSINESS", people: [p.bizMember.id] })).toBe("BUSINESS");
+    expect(prefillSubteam({ ...options, requested: "", people: [p.bizMember.id] })).toBe("");
+    // …unless it couldn't take the people picked: ?subteam=BUSINESS with Build people starts whole-team.
+    expect(prefillSubteam({ ...options, requested: "BUSINESS", people })).toBe("");
+    // Someone who can't make whole-team tasks never gets one.
+    const buildGroups = await getAssignableUsers(p.buildLead, t.db);
+    expect(prefillSubteam({ requested: "", allowed: ["BUILD"], defaultSubteam: "BUILD", people: [p.member.id], groups: buildGroups })).toBe(
+      "BUILD",
+    );
   });
 });
 

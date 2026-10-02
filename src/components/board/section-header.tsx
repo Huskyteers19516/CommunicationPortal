@@ -14,7 +14,8 @@ const iconButton =
 /**
  * A dashboard section's heading. Managers also get a row of controls: "Category" (add one inline),
  * a link to manage the categories, and "New task". Focus moves into the form when it opens and back
- * to "Category" when it closes.
+ * to "Category" when it closes. People who create tasks here without managing its categories (the Business
+ * leader on Whole team) get just "New task".
  *
  * `reserveControlsRow`: in the 3-column layout, sections without controls keep an empty row of the
  * same height on wide screens so every column's first category lines up.
@@ -25,6 +26,7 @@ export function BoardSectionHeader({
   label,
   taskCount,
   canManage,
+  canCreateTasks = canManage,
   reserveControlsRow = false,
 }: {
   headingId: string;
@@ -32,7 +34,10 @@ export function BoardSectionHeader({
   sectionKey: Subteam | "TEAM";
   label: string;
   taskCount: number;
+  /** Add, rename, and delete this section's categories. */
   canManage: boolean;
+  /** Create tasks in this section. */
+  canCreateTasks?: boolean;
   reserveControlsRow?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -87,10 +92,12 @@ export function BoardSectionHeader({
             >
               <Settings2 className="size-5" aria-hidden />
             </Link>
-            <ButtonLink href={`/manage/tasks/new?subteam=${sectionKey}`} variant="secondary" className="ml-auto">
-              <Plus className="size-4" aria-hidden />
-              New task
-            </ButtonLink>
+            {canCreateTasks && (
+              <ButtonLink href={`/manage/tasks/new?subteam=${sectionKey}`} variant="secondary" className="ml-auto">
+                <Plus className="size-4" aria-hidden />
+                New task
+              </ButtonLink>
+            )}
           </div>
           <p role="status" className="sr-only">
             {announcement}
@@ -110,6 +117,13 @@ export function BoardSectionHeader({
             </div>
           )}
         </>
+      ) : canCreateTasks ? (
+        <div className="mt-1 flex">
+          <ButtonLink href={`/manage/tasks/new?subteam=${sectionKey}`} variant="secondary" className="ml-auto">
+            <Plus className="size-4" aria-hidden />
+            New task
+          </ButtonLink>
+        </div>
       ) : (
         reserveControlsRow && <div aria-hidden className="mt-1 hidden h-10 xl:block" />
       )}
