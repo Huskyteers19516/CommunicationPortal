@@ -427,6 +427,17 @@ export function canManageLeagueTeams(actor: ActorLike): boolean {
   return canAdminister(actor);
 }
 
+// ── Team website ──────────────────────────────────────────────────────────────
+
+/**
+ * The team website's public progress page (Admin → Approvals → Team website): turn it on/off, how names are shown,
+ * task titles, and where the season starts. Everyone with admin access. Each person decides for themselves whether
+ * they're listed (Settings).
+ */
+export function canManagePublicProgress(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
 // ── Announcements ─────────────────────────────────────────────────────────────
 // Everyone ACTIVE reads every announcement; who it's "for" (whole team or one subteam) drives badges and Today.
 

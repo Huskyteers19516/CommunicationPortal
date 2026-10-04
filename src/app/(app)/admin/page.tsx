@@ -4,16 +4,18 @@ import { PendingList } from "@/components/admin/pending-list";
 import type { SeatInfo } from "@/components/admin/position-fields";
 import { RecentDecisions } from "@/components/admin/recent-decisions";
 import { SeatUsageCard } from "@/components/admin/seat-usage-card";
+import { TeamWebsiteCard } from "@/components/admin/team-website-card";
 import { ResourceApprovalsCard } from "@/components/resources/resource-approvals-card";
 import { PageHeader } from "@/components/ui/page-header";
 import type { Role } from "@/generated/prisma/enums";
-import { formatDateTime, timeAgo } from "@/lib/dates";
+import { formatDateTime, timeAgo, todayInTimezone } from "@/lib/dates";
 import { requireAdminUser } from "@/server/auth/session";
 import { canManageAccount, grantableRoles } from "@/server/permissions";
 import { env } from "@/server/env";
 import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { getPendingUsers, getRecentDecisions, getSeatUsage } from "@/server/queries/admin";
 import { getFileStorageOverview } from "@/server/queries/files";
+import { getPublicProgressAdminView } from "@/server/queries/public-progress";
 import { countPendingResources } from "@/server/queries/resources";
 
 export const metadata: Metadata = { title: "Approvals" };
@@ -23,12 +25,13 @@ export const maxDuration = 60;
 
 export default async function ApprovalsPage() {
   const actor = await requireAdminUser();
-  const [pending, seats, decisions, pendingResources, storage] = await Promise.all([
+  const [pending, seats, decisions, pendingResources, storage, teamWebsite] = await Promise.all([
     getPendingUsers(actor),
     getSeatUsage(actor),
     getRecentDecisions(actor, 10),
     countPendingResources(actor),
     getFileStorageOverview(actor),
+    getPublicProgressAdminView(actor),
   ]);
   // An owner looking at the storage card: delete R2 objects of removed files that are still waiting (after the page).
   if (storage?.owner && storage.location === "r2" && storage.owner.waitingDeletions > 0) scheduleFileCleanup();
@@ -70,6 +73,14 @@ export default async function ApprovalsPage() {
           <ResourceApprovalsCard count={pendingResources} />
           <SeatUsageCard seats={seats} />
           {storage && <FileStorageCard overview={storage} />}
+          {teamWebsite && (
+            <TeamWebsiteCard
+              settings={teamWebsite.settings}
+              defaultSince={teamWebsite.defaultSince}
+              hiddenPeople={teamWebsite.hiddenPeople}
+              today={todayInTimezone(env.teamTimezone, now)}
+            />
+          )}
           <RecentDecisions decisions={decisions} now={now} timeZone={env.teamTimezone} />
         </aside>
       </div>

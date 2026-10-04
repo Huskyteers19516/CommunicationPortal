@@ -23,6 +23,7 @@ import {
   moveResultMessage,
   testFileStorage,
 } from "@/server/services/file-storage";
+import { updatePublicProgressSettings } from "@/server/services/public-progress";
 import {
   approveUser,
   deleteUser,
@@ -109,6 +110,21 @@ export async function deleteUserAction(_prev: ActionState, formData: FormData): 
       await deleteUser(ctx, formDataToObject(formData));
       revalidatePath("/", "layout");
       redirect("/admin/users?deleted=1");
+    },
+    { formData },
+  );
+}
+
+/** Admin → Approvals → Team website: the public progress page's settings. */
+export async function updatePublicProgressSettingsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      const { enabled } = await updatePublicProgressSettings(ctx, formDataToObject(formData));
+      revalidatePath("/", "layout");
+      return enabled
+        ? "Saved. The team website shows the new settings within a minute."
+        : "Saved. The team website now says progress is private (within a minute).";
     },
     { formData },
   );

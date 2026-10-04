@@ -26,6 +26,7 @@ The team communication app for **FTC 19516 The Huskyteers**. Leaders assign task
 | **Business leader** (also) | **Whole-team tasks** for fundraising and outreach: create them and put **anyone** on them (any subteam), then edit, review, finish, or delete the ones they created (questions about them come to them, not the captain). Their Business tasks stay Business-only (a Business task someone else created can't be made whole-team by them). They pick from the whole-team categories but don't add to them. |
 | **Captain, Mentor, Teacher** | Same as leaders, for **every subteam**, plus whole-team tasks (and their categories), plus **admin access** |
 | **Admin access** (every leader, the captain, mentors, and teachers) | **Approve or reject** sign-ups (seat limits: 1 captain, 1 software, 3 build, 1 business leader) · **approve members' resources** · manage people (change position, disable, email a password reset, sign out devices). Guardrails: leaders manage members and approve sign-ups up to leader level; the captain, mentors, and teachers also manage leaders. Nobody but an owner can change an owner's account, someone else's email, or see the email log. |
+| **Guests** (no account) | The team website's **Progress** page ([huskyteers19516.github.io/progress](https://huskyteers19516.github.io/progress)) shows the portal's live progress: the team's and each subteam's checklist items done and open, each student's (name, position, items done/open — never emails, notes, due dates, or questions; mentors and teachers aren't listed), tasks finished, a "Recently done" feed, and the last 8 weeks. It reads `GET /api/public/progress` (no sign-in, cached 15 s). Everyone can leave themselves off the list in *Settings → Team website* (their items still count in the totals). People with admin access turn it off and on and choose how names are shown (full, "Ethan C.", initials, or none), whether task titles show, and where counting starts in *Admin → Approvals → Team website*. |
 | **Owner** (you, the site owner) | Everything, for everyone: all accounts (including making someone else an owner), the **email log** + test email/Discord message. |
 
 Members' accounts work right after sign-up. Leader, captain, mentor, and teacher accounts wait on a "waiting for approval" page until someone with admin access approves them.
@@ -50,6 +51,7 @@ The app needs a server and a database, so **GitHub Pages can't run it** (it only
    | `TEAM_JOIN_CODE` | a code you'll tell the team (e.g. `go-huskies`) so strangers can't sign up. Set this |
    | `TEAM_TIMEZONE` | `America/Los_Angeles` |
    | `APP_URL` | optional: your site URL, e.g. `https://communication-portal.vercel.app`. Email links use Vercel's production URL if you leave it out |
+   | `PUBLIC_PROGRESS_EXTRA_ORIGINS` | optional, usually left out: other sites (comma-separated, e.g. `http://localhost:4321`) whose pages may read the public progress data besides `https://huskyteers19516.github.io` — only needed while working on the team website on your computer against the live portal |
 
 4. **Email (Gmail).** Turn on 2-Step Verification for the Gmail account, then create an **App Password** (Google Account → Security → App passwords). Add `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, `SMTP_USER=<the gmail address>`, `SMTP_PASS=<the 16-character app password>`, `EMAIL_FROM="Huskyteers Portal <the gmail address>"`. Without these the app still works, but emails are only recorded in *Admin → Email log*.
    *(Alternative: [Resend](https://resend.com). Set `RESEND_API_KEY` and an `EMAIL_FROM` on a domain you verified there. Its free tier allows 100 emails/day, which a busy 35-person team can exceed; Gmail allows ~500/day.)*
@@ -90,6 +92,8 @@ npm run dev                   # http://localhost:3000
 ```
 
 Demo sign-ins (password `huskyteers123`): `admin@example.com` (captain + admin), `marcus.johnson@example.com` (build leader), `priya.raman@example.com` (software leader), `maya.patel@example.com` (software member). Without an email server configured, emails are printed in the terminal and recorded in *Admin → Email log*. Reset the demo data with `npm run db:seed -- --reset`.
+
+Working on the team website's Progress page against this local portal? Add `PUBLIC_PROGRESS_EXTRA_ORIGINS="http://localhost:4321"` (the Astro dev server) to `.env`, restart `npm run dev`, and point the website at `http://localhost:3000` (its `PUBLIC_PORTAL_URL`). The data is at [localhost:3000/api/public/progress](http://localhost:3000/api/public/progress).
 
 ## Tests
 

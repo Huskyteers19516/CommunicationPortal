@@ -5,6 +5,12 @@ import { type NextRequest, NextResponse } from "next/server";
 const SESSION_COOKIE = "hk_session";
 const PUBLIC_PREFIXES = ["/login", "/register", "/forgot-password", "/reset-password"];
 
+/**
+ * Public, read-only endpoints for the team website (src/app/api/public/**). They answer without a session — only
+ * aggregate, non-sensitive data, see src/server/public-api.ts.
+ */
+const PUBLIC_API_PREFIX = "/api/public/";
+
 /** Request header telling pages where they are (read by requireActiveUser). Keep in sync with auth/session.ts. */
 const PATH_HEADER = "x-hk-path";
 
@@ -36,6 +42,8 @@ export function proxy(request: NextRequest) {
   const isPublic = PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
   if (isPublic) return NextResponse.next();
   if (pathname.startsWith("/planner/") && !isPlannerPage(pathname)) return NextResponse.next();
+  // Public JSON for the team website (/api/public/progress): no session needed, and the route never reads one.
+  if (pathname.startsWith(PUBLIC_API_PREFIX)) return NextResponse.next();
   // The planner's JSON API answers for itself (a JSON 401, never the sign-in page's HTML).
   if (pathname === "/api" || pathname.startsWith("/api/")) {
     if (request.cookies.has(SESSION_COOKIE)) return NextResponse.next();

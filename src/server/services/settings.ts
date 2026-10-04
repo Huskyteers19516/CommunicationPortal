@@ -1,4 +1,4 @@
-// Settings: the signed-in user's own profile, password, email preferences, and devices.
+// Settings: the signed-in user's own profile, password, email preferences, team website listing, and devices.
 // Everything here acts on `ctx.actor` only — no ids come from the client.
 import { z } from "zod";
 import type { Subteam } from "@/generated/prisma/enums";
@@ -55,6 +55,8 @@ export interface SettingsData {
   prefs: NotificationPrefs;
   /** Signed-in sessions (not expired) other than the current device. */
   otherSessionCount: number;
+  /** "Show me on the team website's progress page" (the opposite of User.hideFromPublicProgress). */
+  showOnPublicProgress: boolean;
 }
 
 /** Loader for the Settings page: the actor's own preferences and how many other devices are signed in. */
@@ -63,12 +65,13 @@ export async function getSettings(
   actor: Pick<Actor, "id">,
   options: { currentSessionTokenHash: string | null; now: Date },
 ): Promise<SettingsData | null> {
-  const [prefs, otherSessionCount] = await Promise.all([
-    db.user.findUnique({ where: { id: actor.id }, select: prefsSelect }),
+  const [row, otherSessionCount] = await Promise.all([
+    db.user.findUnique({ where: { id: actor.id }, select: { ...prefsSelect, hideFromPublicProgress: true } }),
     db.session.count({ where: { ...otherSessionsWhere(actor.id, options.currentSessionTokenHash), expiresAt: { gt: options.now } } }),
   ]);
-  if (!prefs) return null;
-  return { prefs, otherSessionCount };
+  if (!row) return null;
+  const { hideFromPublicProgress, ...prefs } = row;
+  return { prefs, otherSessionCount, showOnPublicProgress: !hideFromPublicProgress };
 }
 
 function otherSessionsWhere(userId: string, keepTokenHash: string | null) {
@@ -182,6 +185,25 @@ export async function updateNotificationPrefs(ctx: ServiceContext, raw: unknown)
   for (const key of editablePrefKeys(ctx.actor)) data[key] = parsed[key];
   const { count } = await ctx.db.user.updateMany({ where: { id: ctx.actor.id }, data });
   if (count === 0) throw new UnauthorizedError();
+}
+
+// ── Team website ──────────────────────────────────────────────────────────────
+
+const publicProgressInput = z.object({ show: checkbox });
+
+/**
+ * "Show me on the team website's progress page": off leaves you out of its list of people and unnamed in its
+ * recent feed (your items still count toward the team's and your subteam's totals). Your own account only.
+ */
+export async function updatePublicProgressVisibility(ctx: ServiceContext, raw: unknown): Promise<{ show: boolean }> {
+  const { show } = parseInput(publicProgressInput, asRecord(raw));
+  assertActive(ctx.actor);
+  const { count } = await ctx.db.user.updateMany({
+    where: { id: ctx.actor.id, status: "ACTIVE" },
+    data: { hideFromPublicProgress: !show },
+  });
+  if (count === 0) throw new UnauthorizedError();
+  return { show };
 }
 
 // ── Devices ───────────────────────────────────────────────────────────────────

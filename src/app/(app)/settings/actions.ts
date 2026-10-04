@@ -5,7 +5,13 @@ import type { ActionState } from "@/lib/action-state";
 import { formDataToObject, runAction } from "@/server/action";
 import { getCurrentSessionTokenHash } from "@/server/auth/session";
 import { getServiceContext } from "@/server/context";
-import { changePassword, signOutOtherDevices, updateNotificationPrefs, updateProfile } from "@/server/services/settings";
+import {
+  changePassword,
+  signOutOtherDevices,
+  updateNotificationPrefs,
+  updateProfile,
+  updatePublicProgressVisibility,
+} from "@/server/services/settings";
 
 export async function updateProfileAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(
@@ -27,6 +33,15 @@ export async function updateNotificationPrefsAction(_prev: ActionState, formData
     },
     { success: "Email preferences saved.", formData },
   );
+}
+
+export async function updatePublicProgressVisibilityAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await getServiceContext();
+    const { show } = await updatePublicProgressVisibility(ctx, formDataToObject(formData));
+    revalidatePath("/", "layout");
+    return show ? "You're shown on the team website." : "You're no longer listed on the team website.";
+  });
 }
 
 export async function changePasswordAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

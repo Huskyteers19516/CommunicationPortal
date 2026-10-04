@@ -5,22 +5,26 @@ import { RoleBadge, SubteamBadge } from "@/components/app/badges";
 import { UserChip } from "@/components/app/user-chip";
 import { NotificationPrefsForm } from "@/components/settings/notification-prefs-form";
 import { PasswordForm } from "@/components/settings/password-form";
+import { PublicProgressSwitch } from "@/components/settings/public-progress-switch";
 import { ProfileForm } from "@/components/settings/profile-form";
 import { SignOutOthersForm } from "@/components/settings/sign-out-others-form";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { SubmitButton } from "@/components/ui/submit-button";
+import { TEAM_SITE_PROGRESS_URL } from "@/lib/public-progress";
 import { logoutAction } from "@/server/auth/actions";
 import { getCurrentSessionTokenHash, requireActiveUser } from "@/server/auth/session";
 import { prisma } from "@/server/db";
 import { canAdminister, isStaff } from "@/server/permissions";
+import { getPublicProgressConfig, PUBLIC_PROGRESS_EXCLUDED_ROLES } from "@/server/queries/public-progress";
 import { editablePrefKeys, getSettings, resourceEmailScope } from "@/server/services/settings";
 import {
   changePasswordAction,
   signOutOtherDevicesAction,
   updateNotificationPrefsAction,
   updateProfileAction,
+  updatePublicProgressVisibilityAction,
 } from "./actions";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -28,7 +32,12 @@ export const metadata: Metadata = { title: "Settings" };
 export default async function SettingsPage() {
   const actor = await requireActiveUser();
   const currentSessionTokenHash = await getCurrentSessionTokenHash();
-  const settings = await getSettings(prisma, actor, { currentSessionTokenHash, now: new Date() });
+  // Mentors and teachers are never on the team website's progress page, so they get no switch for it.
+  const listable = !PUBLIC_PROGRESS_EXCLUDED_ROLES.includes(actor.role);
+  const [settings, publicPage] = await Promise.all([
+    getSettings(prisma, actor, { currentSessionTokenHash, now: new Date() }),
+    listable ? getPublicProgressConfig() : null,
+  ]);
   if (!settings) notFound();
   const others = settings.otherSessionCount;
 
@@ -73,6 +82,39 @@ export default async function SettingsPage() {
             />
           </CardBody>
         </Card>
+
+        {publicPage && (
+          <Card>
+            <CardHeader
+              title="Team website"
+              description={
+                <>
+                  Our{" "}
+                  <a
+                    href={TEAM_SITE_PROGRESS_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-brand-700 underline underline-offset-2"
+                  >
+                    progress page
+                    <span className="sr-only"> (opens in a new tab)</span>
+                  </a>{" "}
+                  shows guests the team&apos;s live progress from the portal.
+                </>
+              }
+            />
+            <CardBody className="space-y-2">
+              <PublicProgressSwitch action={updatePublicProgressVisibilityAction} show={settings.showOnPublicProgress} />
+              {!publicPage.settings.enabled ? (
+                <p className="text-sm text-ink-500">The progress page is turned off right now, so nobody is shown.</p>
+              ) : (
+                publicPage.settings.nameStyle === "hidden" && (
+                  <p className="text-sm text-ink-500">Right now the page shows team and subteam totals only, no names.</p>
+                )
+              )}
+            </CardBody>
+          </Card>
+        )}
 
         <Card>
           <CardHeader title="Password" description="Changing it signs you out on your other devices." />

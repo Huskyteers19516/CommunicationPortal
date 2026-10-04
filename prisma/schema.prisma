@@ -102,15 +102,17 @@ model User {
   emailOnSignup     Boolean @default(true) // admins: someone registered and needs approval
   emailOnResource   Boolean @default(true) // admins: a member shared a resource that needs approval
 
-  approvedById        String?
-  approvedBy          User?     @relation("UserApprovals", fields: [approvedById], references: [id], onDelete: SetNull)
-  approved            User[]    @relation("UserApprovals")
-  approvedAt          DateTime?
-  lastSeenAt          DateTime?
+  approvedById           String?
+  approvedBy             User?     @relation("UserApprovals", fields: [approvedById], references: [id], onDelete: SetNull)
+  approved               User[]    @relation("UserApprovals")
+  approvedAt             DateTime?
+  lastSeenAt             DateTime?
   /// Last time they opened Announcements (announcements after it, for them, count as new).
-  announcementsSeenAt DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  announcementsSeenAt    DateTime?
+  /// Leave me off the public team progress page (Huskyteers19516.github.io). Still counted in team/subteam totals.
+  hideFromPublicProgress Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   sessions               Session[]
   passwordResetTokens    PasswordResetToken[]
@@ -162,6 +164,7 @@ model User {
   plannerPathsCreated    PlannerPath[]         @relation("PlannerPathCreator")
   plannerPathsEdited     PlannerPath[]         @relation("PlannerPathEditor")
   tasksCompleted         Task[]                @relation("TaskCompleter")
+  sponsorLogosUploaded   SponsorshipLogo[]     @relation("SponsorshipLogoUploader")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -426,12 +429,17 @@ model Sponsorship {
   /// Application deadline.
   closesOn       DateTime?        @db.Date
   notes          String           @default("")
+  /// Thank them on the team website (Huskyteers19516.github.io → Thank You) once they're Accepted or Finished.
+  showOnWebsite  Boolean          @default(true)
+  /// Name to show on the team website. Empty = use `name`.
+  publicName     String           @default("")
   createdById    String?
   createdBy      User?            @relation("SponsorshipCreator", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
   files SponsorshipFile[]
+  logo  SponsorshipLogo?
 
   @@index([stage, closesOn])
   @@index([ownerId])
@@ -942,29 +950,32 @@ enum CalendarEventKind {
 
 /// One thing on the Team calendar: a league meet, the ILT, a scrimmage, outreach, a deadline…
 model CalendarEvent {
-  id          String            @id @default(cuid())
-  title       String
-  kind        CalendarEventKind @default(MEET)
+  id              String            @id @default(cuid())
+  title           String
+  kind            CalendarEventKind @default(MEET)
   /// First day (team timezone). Multi-day events also have `endsOn`.
-  startsOn    DateTime          @db.Date
+  startsOn        DateTime          @db.Date
   /// Last day, inclusive. Null = one day.
-  endsOn      DateTime?         @db.Date
+  endsOn          DateTime?         @db.Date
   /// "HH:MM" (24 h, team timezone). Null = all day / time not known yet.
-  startTime   String?
-  endTime     String?
+  startTime       String?
+  endTime         String?
   /// Venue name and/or address.
-  location    String            @default("")
+  location        String            @default("")
   /// FTC Events page, sign-up form… (http(s) only). Empty = none.
-  link        String            @default("")
-  notes       String            @default("")
+  link            String            @default("")
+  notes           String            @default("")
   /// Set on events loaded from a built-in season schedule so loading it again never duplicates them.
-  sourceKey   String?           @unique
-  createdById String?
-  createdBy   User?             @relation("CalendarEventCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  updatedById String?
-  updatedBy   User?             @relation("CalendarEventEditor", fields: [updatedById], references: [id], onDelete: SetNull)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  sourceKey       String?           @unique
+  /// Keep this event off the team website's Events page even though its kind is public (meets, ILT, scrimmages,
+  /// competitions, outreach). Team meetings, team events, deadlines, and "other" are never published.
+  hideFromWebsite Boolean           @default(false)
+  createdById     String?
+  createdBy       User?             @relation("CalendarEventCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById     String?
+  updatedBy       User?             @relation("CalendarEventEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   @@index([startsOn])
   @@index([kind, startsOn])
@@ -1123,4 +1134,24 @@ model PlannerPath {
   @@index([updatedAt])
   @@index([teamId, updatedAt])
   @@index([createdById])
+}
+
+/// A sponsor's brand logo for the team website's Thank You page (one per sponsor). Stored like other uploads
+/// (Postgres bytes or Cloudflare R2 via storageKey) and counted toward the same storage cap.
+model SponsorshipLogo {
+  id            String      @id @default(cuid())
+  sponsorshipId String      @unique
+  sponsorship   Sponsorship @relation(fields: [sponsorshipId], references: [id], onDelete: Cascade)
+  filename      String
+  contentType   String
+  size          Int
+  /// The image's bytes when stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data          Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there. Null = in Postgres.
+  storageKey    String?     @unique
+  width         Int?
+  height        Int?
+  uploadedById  String?
+  uploadedBy    User?       @relation("SponsorshipLogoUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime    @default(now())
 }

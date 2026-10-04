@@ -357,7 +357,8 @@ with 400 / 401 / 403 / 404 / 409 / 413 / 429. An id that isn't `PLANNER_PATH_ID`
 planner's `?path=` check) is a 404 before the database is asked (a NUL byte used to be a 500), here and on the Paths
 tab's download and edit pages.
 Rules: JSON only, `Cache-Control: no-store`, `nosniff`; ACTIVE people only — everyone else a JSON 401, never a redirect
-(the proxy answers `/api/*` without a session cookie with that 401 itself); every POST/PUT/DELETE needs
+(the proxy answers `/api/*` without a session cookie with that 401 itself — except `/api/public/*`, see Public
+progress); every POST/PUT/DELETE needs
 `Content-Type: application/json` **and** `X-Planner: 1`, and when present `Origin` must be this site
 (`request.nextUrl.origin`, `APP_URL`, or the forwarded host) and `Sec-Fetch-Site` must be `same-origin` — otherwise 403
 before anything is read; bodies are read up to `PLANNER_API_BODY_MAX_BYTES` (300 KB, 413 past it, by `Content-Length`
@@ -829,6 +830,69 @@ one (`DiscussionThread`: title, text shown with `RichText`, `category` from `DIS
   `demo-thread-autos`, `demo-thread-intake`) and read marks, so some people start with unread ones; e2e and the tour
   open them by id.
 
+## Public progress (team website)
+
+The team website (`https://huskyteers19516.github.io/progress`, its own repo, a static Astro site on GitHub Pages)
+shows guests the team's live progress by polling **`GET /api/public/progress`** every 30 s
+(`src/app/api/public/progress/route.ts` → `publicProgressResponse` in `src/server/public-api.ts` →
+`getPublicProgress` in `src/server/queries/public-progress.ts`; types and client-safe helpers in
+`src/lib/public-progress.ts`). It's the portal's **only** endpoint without a session: the proxy lets `/api/public/*`
+through (everything else under `/api` still gets the JSON 401), and the route never reads cookies, so it can be cached
+publicly. Never add anything personal to it.
+
+- **Answer**: `{ enabled: true, team: { name, number }, since, updatedAt, totals: { itemsDone, itemsOpen, completion,
+  doneLast7Days, tasksFinished, tasksActive, people }, subteams: [{ key, name, itemsDone, itemsOpen, completion,
+  doneLast7Days, tasksActive, people }] (always SOFTWARE, BUILD, BUSINESS), people: [{ id, name, subteam, role,
+  itemsDone, itemsOpen, completion, doneLast7Days, lastDoneAt }], recent: [{ title, subteam, who, at }], weekly:
+  [{ weekStart, itemsDone }] }`, or just `{ enabled: false }` while it's turned off.
+- **Who counts**: ACTIVE accounts that aren't mentors or teachers (`publicStudentsWhere`: members, subteam leaders, the
+  captain; owners by their position). Pending, turned-down, and disabled accounts never appear anywhere in it.
+  `User.hideFromPublicProgress` ("Show me on the team website's progress page" off, in Settings —
+  `updatePublicProgressVisibility`, your own account only) takes a person off `people` and makes them `who: null` in
+  `recent`, but their items still count in `totals`, `subteams`, and `weekly` (and `people` counts in `totals` /
+  `subteams` include them). Mentors and teachers get no switch (they're never listed).
+- **What counts**: the checklist items (`TaskAssignment`) of tasks whose **due date is on or after `since`** (future
+  due dates included). `itemsDone` = APPROVED (including "counted with the whole task", `finishedWithTask`);
+  `itemsOpen` = TODO / SUBMITTED / REJECTED on tasks **not** marked finished; closed items (not approved on a finished
+  task) count as neither. `completion` = `round(100 × done / (done + open))`, 0 when both are 0 (the page shows "—").
+  "Done when" = `reviewedAt` (the finish time for whole-task credit): `doneLast7Days` = approved on today or the 6 days
+  before (team timezone), `lastDoneAt` = the newest, `weekly` = approvals per Monday–Sunday week (team timezone,
+  `AT TIME ZONE` in SQL, so daylight saving is right), the last 8 weeks with the current one last, zero-filled.
+  Subteams go by the **person's** subteam (the captain counts in `totals` only); a subteam's `tasksActive` = tasks
+  with an open item of someone in it. Team `tasksActive` = tasks with an open counted item; `tasksFinished` = the other
+  tasks with counted items (marked finished, or every counted item approved). Tasks with no counted items (only a
+  mentor on it, nobody) aren't counted.
+- **`recent`**: the newest `PUBLIC_RECENT_MAX` (15) approvals, newest first, without whole-task credit (one finished
+  task could fill it — the same rule as the overview's Recent activity). `title` = the task's title (null when task
+  titles are off), `subteam` = the person's, `who` = their name as the page shows names (null when names are hidden or
+  they hid themselves).
+- **Names and positions**: `nameStyle` `full` ("Ethan Chen", the default — the team page already lists full names),
+  `first-initial` ("Ethan C."), `initials` ("E.C."), or `hidden` (`people: []`, every `who` null) — `publicName`.
+  Positions in the team website's words (`publicRoleLabel`): Captain, Software/Build/Business Lead, Software/Build/
+  Business Team. `people` is sorted by subteam (Software, Build, Business, then none) and name — not ranked.
+- **Ids**: `id` = HMAC-SHA256(salt, `person:<account id>`), base64url, 16 characters (`publicPersonId`): stable,
+  never the account id. The salt is 32 random bytes in the TeamNote `public-progress-id-salt`, made on the first
+  request (`createMany … skipDuplicates`, then read back, so two first requests agree; one that's missing or too short
+  is replaced). Changing it gives everyone new ids.
+- **Never in it**: emails, submission or review notes, due dates or overdue/late info, questions, task or account ids,
+  anything about mentors, teachers, or accounts that aren't ACTIVE. `tests/public-progress.test.ts` checks each.
+- **Settings** (TeamNote `public-progress`, JSON, `parsePublicProgressSettings` falls back to the defaults field by
+  field): `enabled` (true), `nameStyle` ("full"), `showTaskTitles` (true), `since` (null = the attendance schedule's
+  `reportStart`, default 2026-08-31). Changed in **Admin → Approvals → Team website** (`TeamWebsiteCard`, everyone with
+  admin access — `canManagePublicProgress`; `updatePublicProgressSettings`: unchecked boxes = off, an empty date =
+  null, a date within 5 years back / 1 year ahead, `PUBLIC_PROGRESS_SETTINGS_RATE_LIMIT` 60 saves an hour), which
+  also links to the page and the JSON and says how many people hid themselves (a count only).
+- **HTTP**: GET / HEAD / OPTIONS (Next.js answers 405 to the rest). `Access-Control-Allow-Origin` = the request's
+  `Origin` when it's `https://huskyteers19516.github.io` or in `PUBLIC_PROGRESS_EXTRA_ORIGINS` (comma-separated, e.g.
+  `http://localhost:4321` for working on the website; only http(s) origins, `*` is ignored), **otherwise the team
+  website** — never another site, never `*`, never credentials (so a CDN copy that ignored `Vary` still works for the
+  team website). Always `Vary: Origin`, `Cache-Control: public, s-maxage=15, stale-while-revalidate=45` (Vercel's
+  CDN answers most polls; a settings change shows within about a minute), `X-Content-Type-Options: nosniff`. A
+  failure is a 503 `{ error }` with `no-store`. OPTIONS (preflight) is a 204 with `Access-Control-Allow-Methods`.
+- **Cost**: one settings read, then five queries at once (people, per-person counts, tasks per subteam with `GROUPING
+  SETS`, weekly buckets, recent) — the counts are SQL aggregates with enum values as literals, never one query per
+  person.
+
 ## Dates
 
 Due dates are calendar days in the team timezone (`TEAM_TIMEZONE`, default America/Los_Angeles), stored as `@db.Date`.
@@ -850,6 +914,7 @@ src/server/                     server-only code
   auth/password.ts              hashPassword / verifyPassword / getDummyHash
   auth/password-reset.ts        issuePasswordReset(ctx, userId)
   rate-limit.ts                 enforceRateLimit(db, key, limit, windowMs)
+  public-api.ts                 the team website's public JSON (/api/public/*): CORS, caching (see Public progress)
   env.ts                        typed env access
   notifications/events.ts       NotificationEvent union, Notifier, CollectingNotifier
   email/transport.ts            sendEmail(db, message, transport?) — logs to EmailLog

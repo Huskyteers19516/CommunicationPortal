@@ -127,6 +127,13 @@ export const env = {
     return process.env.NODE_ENV === "production";
   },
   /**
+   * Origins (comma-separated) besides the team website that may read GET /api/public/progress from a browser, e.g.
+   * `http://localhost:4321` while working on the team website locally. Optional; parsed by parseExtraOrigins.
+   */
+  get publicProgressExtraOrigins(): string {
+    return process.env.PUBLIC_PROGRESS_EXTRA_ORIGINS ?? "";
+  },
+  /**
    * Cloudflare R2 for uploaded files: on only when R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET
    * are all set (and look right). Otherwise files stay in Postgres. Read on every call, so a redeploy with new
    * settings (or a test) takes effect right away.
