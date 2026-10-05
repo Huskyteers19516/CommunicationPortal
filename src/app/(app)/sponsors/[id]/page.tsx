@@ -6,12 +6,14 @@ import { NoSponsorshipAccess } from "@/components/sponsors/no-access";
 import { type SponsorFileView, SponsorshipFilesCard } from "@/components/sponsors/sponsorship-files-card";
 import { StageBadge } from "@/components/sponsors/stage-badge";
 import { SponsorshipForm } from "@/components/sponsors/sponsorship-form";
+import { SponsorshipLogoField } from "@/components/sponsors/sponsorship-logo-field";
 import { ActionForm } from "@/components/tasks/action-form";
 import { BackLink } from "@/components/tasks/back-link";
 import { PageHeader } from "@/components/ui/page-header";
 import { timeAgo } from "@/lib/dates";
 import { env } from "@/server/env";
 import { getFileStorageUsage } from "@/server/queries/files";
+import { publicSponsorsShown } from "@/server/queries/public-sponsors";
 import { getSponsorship, getSponsorshipOwnerOptions } from "@/server/queries/sponsorships";
 import { getSponsorshipUser } from "../access";
 import { deleteSponsorshipAction, updateSponsorshipAction } from "../actions";
@@ -37,7 +39,7 @@ export default async function SponsorshipPage({ params }: PageProps<"/sponsors/[
   const { actor, sponsorship: s } = await loadSponsorship(id);
   if (!actor) return <NoSponsorshipAccess />;
   if (!s) notFound();
-  const [owners, storage] = await Promise.all([getSponsorshipOwnerOptions(actor), getFileStorageUsage(actor)]);
+  const [owners, storage, onWebsite] = await Promise.all([getSponsorshipOwnerOptions(actor), getFileStorageUsage(actor), publicSponsorsShown()]);
   const now = new Date();
   const tz = env.teamTimezone;
   const listed = s.owner && [...owners.business, ...owners.staff].some((o) => o.id === s.owner!.id);
@@ -98,6 +100,7 @@ export default async function SponsorshipPage({ params }: PageProps<"/sponsors/[
         action={updateSponsorshipAction}
         owners={{ ...owners, current: s.owner && !listed ? s.owner : null }}
         submitLabel="Save changes"
+        websiteOff={!onWebsite}
         initial={{
           id: s.id,
           // Saving checks nobody changed it since this page loaded (e.g. its stage, from the list).
@@ -114,7 +117,30 @@ export default async function SponsorshipPage({ params }: PageProps<"/sponsors/[
           acceptedOn: s.acceptedOn ?? "",
           closesOn: s.closesOn ?? "",
           notes: s.notes,
+          showOnWebsite: s.showOnWebsite,
+          publicName: s.publicName,
         }}
+        logoField={
+          <SponsorshipLogoField
+            sponsorshipId={s.id}
+            sponsorName={s.name}
+            logo={
+              s.logo
+                ? {
+                    id: s.logo.id,
+                    previewHref: s.logo.previewHref,
+                    filename: s.logo.filename,
+                    size: s.logo.size,
+                    width: s.logo.width,
+                    height: s.logo.height,
+                    addedLabel: `Added by ${s.logo.uploadedByName ?? "a former member"} · ${timeAgo(s.logo.createdAt, now, tz)}`,
+                  }
+                : null
+            }
+            logoNeeded={s.logoNeeded}
+            logoFromSameName={s.logoFromSameName}
+          />
+        }
       />
     </div>
   );

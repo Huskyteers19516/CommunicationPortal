@@ -36,6 +36,7 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
         { href: "/orders", label: "Order list", icon: "orders" },
         { href: "/resources", label: "Resources", icon: "resources", count: counts.pendingResources },
         { href: "/posters", label: "Posters", icon: "posters" },
+        { href: "/workshop", label: "Workshop", icon: "workshop", count: counts.pendingWorkshop },
       ],
     },
     {

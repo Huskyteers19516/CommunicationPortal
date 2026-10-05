@@ -28,6 +28,7 @@ import {
   SquareKanban,
   UserCheck,
   Users,
+  Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -47,6 +48,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   parts: Printer,
   sponsors: HandCoins,
   posters: ImageIcon,
+  workshop: Wrench,
   fundraising: HandHeart,
   attendance: CalendarCheck,
   calendar: CalendarDays,

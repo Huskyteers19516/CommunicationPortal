@@ -7,6 +7,7 @@ import { calendarDateBounds } from "@/lib/calendar";
 import { todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { getPublicEventsWebsite } from "@/server/queries/public-events";
 import { getCalendarEvent } from "@/server/queries/calendar";
 import { updateCalendarEventAction } from "../../actions";
 
@@ -24,7 +25,7 @@ function latest(...dates: (string | null)[]): string {
 export default async function EditCalendarEventPage({ params }: PageProps<"/calendar/[id]/edit">) {
   const actor = await requireActiveUser();
   const { id } = await params;
-  const event = await getCalendarEvent(actor, id);
+  const [event, website] = await Promise.all([getCalendarEvent(actor, id), getPublicEventsWebsite()]);
   if (!event || !event.canManage) notFound();
 
   // The days it has now stay pickable even when they're outside the usual range.
@@ -40,6 +41,7 @@ export default async function EditCalendarEventPage({ params }: PageProps<"/cale
         cancelHref={back}
         minDate={earliest(bounds.min, event.startsOn, event.endsOn)}
         maxDate={latest(bounds.max, event.startsOn, event.endsOn)}
+        websiteOff={!website.showEvents}
         initial={{
           id: event.id,
           version: event.version,
@@ -52,6 +54,7 @@ export default async function EditCalendarEventPage({ params }: PageProps<"/cale
           location: event.location,
           link: event.link,
           notes: event.notes,
+          hideFromWebsite: event.hideFromWebsite,
         }}
       />
     </div>

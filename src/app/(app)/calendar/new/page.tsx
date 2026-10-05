@@ -8,6 +8,7 @@ import { CALENDAR_EVENT_KINDS } from "@/lib/constants";
 import { todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { getPublicEventsWebsite } from "@/server/queries/public-events";
 import { canManageCalendar } from "@/server/permissions";
 import { createCalendarEventAction } from "../actions";
 
@@ -26,7 +27,7 @@ function first(v: string | string[] | undefined) {
 export default async function NewCalendarEventPage({ searchParams }: PageProps<"/calendar/new">) {
   const actor = await requireActiveUser();
   if (!canManageCalendar(actor)) notFound();
-  const sp = await searchParams;
+  const [sp, website] = await Promise.all([searchParams, getPublicEventsWebsite()]);
   const bounds = calendarDateBounds(todayInTimezone(env.teamTimezone));
   const picked = parseDateParam(first(sp.date));
   const date = picked && picked >= bounds.min && picked <= bounds.max ? picked : "";
@@ -45,6 +46,7 @@ export default async function NewCalendarEventPage({ searchParams }: PageProps<"
         from={from}
         minDate={bounds.min}
         maxDate={bounds.max}
+        websiteOff={!website.showEvents}
         initial={{
           title: "",
           kind,
@@ -55,6 +57,7 @@ export default async function NewCalendarEventPage({ searchParams }: PageProps<"
           location: "",
           link: "",
           notes: "",
+          hideFromWebsite: false,
         }}
       />
     </div>

@@ -1,15 +1,17 @@
 "use client";
 
-import { useActionState, useRef } from "react";
+import { Globe } from "lucide-react";
+import { type ReactNode, useActionState, useRef } from "react";
 import { useFocusFirstError } from "@/components/auth/use-focus-first-error";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { Field, Input, Select, Textarea } from "@/components/ui/field";
+import { CheckboxField, Field, Input, Select, Textarea } from "@/components/ui/field";
 import { FormMessage } from "@/components/ui/form-message";
 import { SubmitButton } from "@/components/ui/submit-button";
 import type { SponsorshipStage } from "@/generated/prisma/enums";
 import { type ActionState, initialActionState } from "@/lib/action-state";
 import { LIMITS, SPONSORSHIP_STAGE_LABELS, SPONSORSHIP_STAGES } from "@/lib/constants";
+import { TEAM_SITE_ORIGIN } from "@/lib/public-progress";
 import type { OwnerOption } from "@/lib/sponsorships";
 
 export interface SponsorshipFormValues {
@@ -31,6 +33,10 @@ export interface SponsorshipFormValues {
   acceptedOn: string;
   closesOn: string;
   notes: string;
+  /** "Thank them on the team website". */
+  showOnWebsite: boolean;
+  /** "Name on the website" ("" = the sponsor's name). */
+  publicName: string;
 }
 
 export interface OwnerChoices {
@@ -49,11 +55,17 @@ export function SponsorshipForm({
   initial,
   owners,
   submitLabel,
+  logoField,
+  websiteOff = false,
 }: {
   action: (prev: ActionState, formData: FormData) => Promise<ActionState>;
   initial: SponsorshipFormValues;
   owners: OwnerChoices;
   submitLabel: string;
+  /** Editing: the logo picker for the "Team website" section (it saves on its own, right away). */
+  logoField?: ReactNode;
+  /** The team website's Sponsors page is turned off right now (Admin → Approvals → Team website): the section says so. */
+  websiteOff?: boolean;
 }) {
   const [state, formAction] = useActionState(action, initialActionState);
   const formRef = useRef<HTMLFormElement>(null);
@@ -63,7 +75,9 @@ export function SponsorshipForm({
     <form ref={formRef} action={formAction} className="space-y-5">
       {initial.id && <input type="hidden" name="sponsorshipId" value={initial.id} />}
       {initial.version && <input type="hidden" name="version" value={initial.version} />}
-      <SponsorshipFields key={state?.nonce ?? 0} state={state} initial={initial} owners={owners} />
+      {/* This form has the "Team website" section, so its checkbox and name are saved (the import has neither). */}
+      <input type="hidden" name="websiteFields" value="1" />
+      <SponsorshipFields key={state?.nonce ?? 0} state={state} initial={initial} owners={owners} logoField={logoField} websiteOff={websiteOff} />
       {/* Next to the button people just pressed (the form is long on phones). Success goes to the list. */}
       <FormMessage state={state && !state.ok ? state : null} />
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -76,7 +90,19 @@ export function SponsorshipForm({
   );
 }
 
-function SponsorshipFields({ state, initial, owners }: { state: ActionState; initial: SponsorshipFormValues; owners: OwnerChoices }) {
+function SponsorshipFields({
+  state,
+  initial,
+  owners,
+  logoField,
+  websiteOff,
+}: {
+  state: ActionState;
+  initial: SponsorshipFormValues;
+  owners: OwnerChoices;
+  logoField?: ReactNode;
+  websiteOff: boolean;
+}) {
   const v = state?.values;
   const errors = state?.fieldErrors ?? {};
   const value = (key: keyof SponsorshipFormValues) => v?.[key] ?? String(initial[key] ?? "");
@@ -97,7 +123,13 @@ function SponsorshipFields({ state, initial, owners }: { state: ActionState; ini
           <Field label="Name" htmlFor="name" error={errors.name}>
             <Input {...control("name")} required maxLength={LIMITS.sponsorNameMax} placeholder="e.g. Polymaker" autoComplete="off" />
           </Field>
-          <Field label="Website" htmlFor="website" error={errors.website} optional hint="Their site or the application page.">
+          <Field
+            label="Website"
+            htmlFor="website"
+            error={errors.website}
+            optional
+            hint="Their site or the application page. The team website only ever links to its homepage (e.g. https://rev.example.com/), never the rest of the address."
+          >
             <Input {...control("website")} inputMode="url" autoComplete="off" spellCheck={false} placeholder="https://" />
           </Field>
           <div className="grid gap-5 sm:grid-cols-2">
@@ -170,6 +202,42 @@ function SponsorshipFields({ state, initial, owners }: { state: ActionState; ini
           <Field label="Closes" htmlFor="closesOn" error={errors.closesOn} optional hint="The application deadline.">
             <Input {...control("closesOn")} type="date" />
           </Field>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Team website"
+          description={`Accepted and finished sponsors are thanked on the team's site (${TEAM_SITE_ORIGIN.replace("https://", "")}/sponsors) with their name, logo, website's homepage, and years — never amounts, contacts, or notes.`}
+        />
+        <CardBody className="space-y-5">
+          {websiteOff && (
+            <p className="flex items-start gap-2 text-sm text-ink-500">
+              <Globe className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span className="min-w-0">
+                The Sponsors page is turned off on the team website right now (Admin → Approvals → Team website): nothing here is
+                shown until it&apos;s turned on.
+              </span>
+            </p>
+          )}
+          <CheckboxField
+            name="showOnWebsite"
+            defaultChecked={v ? v.showOnWebsite === "on" : initial.showOnWebsite}
+            label="Thank them on the team website"
+            description="Once they're Accepted or Finished. Turn it off for donors who'd rather not be named."
+          />
+          <Field
+            label="Name on the website"
+            htmlFor="publicName"
+            error={errors.publicName}
+            optional
+            hint="Leave it empty to use the sponsor's name. Sponsors with the same name are shown once, with all their years."
+          >
+            <Input {...control("publicName")} maxLength={LIMITS.sponsorNameMax} autoComplete="off" placeholder="e.g. The Home Depot" />
+          </Field>
+          {logoField ?? (
+            <p className="text-sm text-ink-500">You can add their brand logo once the sponsor is saved (on its page).</p>
+          )}
         </CardBody>
       </Card>
 

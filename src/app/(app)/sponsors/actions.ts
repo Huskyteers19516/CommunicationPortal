@@ -11,6 +11,7 @@ import { ConflictError } from "@/server/errors";
 import { scheduleFileCleanup } from "@/server/files/cleanup";
 import { readFormFile } from "@/server/files/upload";
 import { deleteSponsorshipFile, uploadSponsorshipFile } from "@/server/services/sponsorship-files";
+import { removeSponsorshipLogo, uploadSponsorshipLogo } from "@/server/services/sponsorship-logos";
 import {
   createSponsorship,
   deleteSponsorship,
@@ -150,6 +151,36 @@ export async function deleteSponsorshipFileAction(_prev: ActionState, formData: 
       scheduleFileCleanup();
       revalidatePath("/", "layout");
       return `Removed “${filename}”.`;
+    },
+    { formData },
+  );
+  return refreshOnFailure(state);
+}
+
+/** Upload or replace a sponsor's logo for the team website (its page stays open; the section says what happened). */
+export async function uploadSponsorshipLogoAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const state = await runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      const { replaced } = await uploadSponsorshipLogo(ctx, { ...formDataToObject(formData), file: await readFormFile(formData) });
+      if (replaced) scheduleFileCleanup(); // the old logo's file
+      revalidatePath("/", "layout");
+      return replaced ? "Logo replaced." : "Logo added.";
+    },
+    { formData },
+  );
+  return refreshOnFailure(state);
+}
+
+/** Remove a sponsor's logo. */
+export async function removeSponsorshipLogoAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const state = await runAction(
+    async () => {
+      const ctx = await getServiceContext();
+      await removeSponsorshipLogo(ctx, formDataToObject(formData));
+      scheduleFileCleanup();
+      revalidatePath("/", "layout");
+      return "Logo removed.";
     },
     { formData },
   );

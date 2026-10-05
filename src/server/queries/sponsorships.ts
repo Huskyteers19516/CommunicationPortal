@@ -11,11 +11,14 @@ import {
   SPONSORSHIP_FILTERS,
   type SponsorshipFilter,
 } from "@/lib/sponsorships";
+import { isPublicSponsor, PUBLIC_SPONSORS_ROW_CAP, publicSponsorKey } from "@/lib/public-sponsors";
 import { parseHttpUrl } from "@/lib/urls";
 import type { Actor } from "../actor";
 import { type Db, prisma } from "../db";
 import { STORED_FILE_SELECT } from "../files/respond";
-import { canDeleteSponsorship, canDeleteSponsorshipFile, canUseSponsorships } from "../permissions";
+import { canDeleteSponsorship, canDeleteSponsorshipFile, canUseSponsorships, ledSubteam } from "../permissions";
+import { getPublicProgressConfig } from "./public-progress";
+import { publicSponsorsWhere } from "./public-sponsors";
 import { previewKind } from "../resources/serve";
 import { loadExistingSponsors, SPONSORSHIP_INFO_KEY, sponsorshipPeopleWhere } from "../services/sponsorships";
 
@@ -48,6 +51,17 @@ export interface SponsorshipItem {
   fileCount: number;
   /** The viewer can remove it (whoever added it, the Business leader, all-scope staff). */
   canDelete: boolean;
+  /** "Thank them on the team website" (shown there once it's Accepted or Finished). */
+  showOnWebsite: boolean;
+  /** "Name on the website" ("" = its name). */
+  publicName: string;
+  /** It has a logo for the team website. */
+  hasLogo: boolean;
+  /**
+   * On the team website (Accepted / Finished, thanked there) without a logo — and no other public sponsor with the
+   * same public name has one: the list's "Logo needed" badge (loadSponsorsNeedingLogo).
+   */
+  logoNeeded: boolean;
 }
 
 export interface SponsorshipSummary {
@@ -62,6 +76,8 @@ export interface SponsorshipSummary {
   closingSoon: number;
   /** Submitted, waiting to hear back. */
   waiting: number;
+  /** On the team website without a logo (the "Logo needed" filter). */
+  logoNeeded: number;
 }
 
 export interface SponsorshipList {
@@ -86,12 +102,15 @@ const itemSelect = {
   closesOn: true,
   createdById: true,
   owner: { select: { id: true, name: true } },
+  showOnWebsite: true,
+  publicName: true,
+  logo: { select: { id: true } },
   _count: { select: { files: true } },
 } as const satisfies Prisma.SponsorshipSelect;
 
 type ItemRow = Prisma.SponsorshipGetPayload<{ select: typeof itemSelect }>;
 
-function toItem(r: ItemRow, actor: Actor): SponsorshipItem {
+function toItem(r: ItemRow, actor: Actor, needingLogo: ReadonlySet<string>): SponsorshipItem {
   return {
     id: r.id,
     name: r.name,
@@ -108,7 +127,27 @@ function toItem(r: ItemRow, actor: Actor): SponsorshipItem {
     closesOn: dateOrNull(r.closesOn),
     fileCount: r._count.files,
     canDelete: canDeleteSponsorship(actor, r),
+    showOnWebsite: r.showOnWebsite,
+    publicName: r.publicName,
+    hasLogo: !!r.logo,
+    logoNeeded: needingLogo.has(r.id),
   };
+}
+
+/**
+ * "Logo needed": sponsors on the team website (Accepted / Finished, thanked there) without a logo, unless another
+ * public sponsor with the same public name has one (the website shows that one: the same sponsor in another year).
+ * Read in full and worked out here, since the grouping ignores case and spacing (a team has dozens of sponsors).
+ */
+export async function loadSponsorsNeedingLogo(db: Db = prisma): Promise<{ id: string; ownerId: string | null }[]> {
+  const rows = await db.sponsorship.findMany({
+    where: publicSponsorsWhere,
+    select: { id: true, name: true, publicName: true, ownerId: true, logo: { select: { id: true } } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: PUBLIC_SPONSORS_ROW_CAP,
+  });
+  const withLogo = new Set(rows.filter((r) => r.logo).map(publicSponsorKey));
+  return rows.filter((r) => !r.logo && !withLogo.has(publicSponsorKey(r))).map((r) => ({ id: r.id, ownerId: r.ownerId }));
 }
 
 const collator = new Intl.Collator("en", { sensitivity: "base", numeric: true });
@@ -156,8 +195,16 @@ export async function listSponsorships(
 ): Promise<SponsorshipList | null> {
   if (!allowed(actor)) return null;
   const filter = SPONSORSHIP_FILTERS[opts.filter];
+  const needing = await loadSponsorsNeedingLogo(db);
+  const needingIds = new Set(needing.map((n) => n.id));
   const where: Prisma.SponsorshipWhereInput = {
-    ...(filter.closing ? closingSoonWhere(opts.today) : filter.stages ? { stage: { in: [...filter.stages] } } : {}),
+    ...(filter.logoNeeded
+      ? { id: { in: [...needingIds] } }
+      : filter.closing
+        ? closingSoonWhere(opts.today)
+        : filter.stages
+          ? { stage: { in: [...filter.stages] } }
+          : {}),
     ...(opts.mine ? { ownerId: actor.id } : {}),
   };
   const [rows, byStage, closingSoon, paying] = await Promise.all([
@@ -186,11 +233,11 @@ export async function listSponsorships(
 
   const items = rows
     .slice(0, LIST_LIMIT)
-    .map((r) => toItem(r, actor))
+    .map((r) => toItem(r, actor, needingIds))
     .sort(filter.closing ? compareByDeadline : compareSponsorships);
   return {
     items,
-    summary: { total, totalReceived, paying, counts, closingSoon, waiting: counts.SUBMITTED },
+    summary: { total, totalReceived, paying, counts, closingSoon, waiting: counts.SUBMITTED, logoNeeded: needingIds.size },
     truncated: rows.length > LIST_LIMIT,
     canBulkRemove: items.some((i) => i.canDelete),
   };
@@ -211,6 +258,19 @@ export interface SponsorshipFileItem {
   downloadHref: string;
 }
 
+/** A sponsor's logo for the team website, for its page (never the bytes). */
+export interface SponsorshipLogoItem {
+  id: string;
+  filename: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  uploadedByName: string | null;
+  createdAt: Date;
+  /** Shown on the sponsor's page (signed in; works before the sponsor is public). */
+  previewHref: string;
+}
+
 export interface SponsorshipDetail extends SponsorshipItem {
   notes: string;
   createdByName: string | null;
@@ -218,6 +278,14 @@ export interface SponsorshipDetail extends SponsorshipItem {
   updatedAt: Date;
   /** Oldest first (the order they were added). */
   files: SponsorshipFileItem[];
+  logo: SponsorshipLogoItem | null;
+  /** No logo of its own, but the website shows the logo of another public sponsor with the same public name. */
+  logoFromSameName: boolean;
+}
+
+/** The route that shows a sponsor's logo to people who can use Sponsorships (src/app/(app)/sponsors/logos/[id]/route.ts). */
+export function sponsorshipLogoHref(id: string): string {
+  return `/sponsors/logos/${encodeURIComponent(id)}`;
 }
 
 /** The route that sends a sponsor's file (src/app/(app)/sponsors/files/[id]/route.ts). */
@@ -241,11 +309,18 @@ export async function getSponsorship(actor: Actor, id: string, db: Db = prisma):
         select: { id: true, filename: true, size: true, contentType: true, createdAt: true, uploadedById: true, uploadedBy: { select: { name: true } } },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
+      logo: {
+        // Never the bytes.
+        select: { id: true, filename: true, size: true, width: true, height: true, createdAt: true, uploadedBy: { select: { name: true } } },
+      },
     },
   });
   if (!r) return null;
+  const needing = r.logo || !isPublicSponsor(r) ? [] : await loadSponsorsNeedingLogo(db);
+  const logoNeeded = needing.some((n) => n.id === r.id);
   return {
-    ...toItem(r, actor),
+    ...toItem(r, actor, new Set(logoNeeded ? [r.id] : [])),
+    logoFromSameName: !r.logo && isPublicSponsor(r) && !logoNeeded,
     notes: r.notes,
     createdByName: r.createdBy?.name ?? null,
     createdAt: r.createdAt,
@@ -261,7 +336,42 @@ export async function getSponsorship(actor: Actor, id: string, db: Db = prisma):
       viewHref: previewKind(f.filename, f.contentType) === "other" ? null : sponsorshipFileHref(f.id),
       downloadHref: sponsorshipFileHref(f.id, true),
     })),
+    logo: r.logo
+      ? {
+          id: r.logo.id,
+          filename: r.logo.filename,
+          size: r.logo.size,
+          width: r.logo.width,
+          height: r.logo.height,
+          uploadedByName: r.logo.uploadedBy?.name ?? null,
+          createdAt: r.logo.createdAt,
+          previewHref: sponsorshipLogoHref(r.logo.id),
+        }
+      : null,
   };
+}
+
+/**
+ * A sponsor's logo with its bytes, for the signed-in preview route. Null when it's missing or the viewer can't use
+ * Sponsorships (including accounts that aren't active), so both look the same.
+ */
+export async function getSponsorshipLogo(actor: Actor, id: string, db: Db = prisma) {
+  if (!allowed(actor) || !id || id.length > 64) return null;
+  return db.sponsorshipLogo.findUnique({ where: { id }, select: STORED_FILE_SELECT });
+}
+
+/**
+ * Today's "N sponsors need a logo for the team website": every one for the Business leader, the ones they're the person
+ * on for everyone else who can use Sponsorships. 0 while the owner has turned the website's sponsors off, and for
+ * everyone outside Sponsorships.
+ */
+export async function countSponsorsNeedingLogo(actor: Actor, db: Db = prisma): Promise<number> {
+  if (!allowed(actor)) return 0;
+  const { settings } = await getPublicProgressConfig(db);
+  if (!settings.showSponsors) return 0;
+  const needing = await loadSponsorsNeedingLogo(db);
+  const everyone = ledSubteam(actor) === "BUSINESS";
+  return everyone ? needing.length : needing.filter((n) => n.ownerId === actor.id).length;
 }
 
 /**

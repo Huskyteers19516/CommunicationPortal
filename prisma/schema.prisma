@@ -165,6 +165,9 @@ model User {
   plannerPathsEdited     PlannerPath[]         @relation("PlannerPathEditor")
   tasksCompleted         Task[]                @relation("TaskCompleter")
   sponsorLogosUploaded   SponsorshipLogo[]     @relation("SponsorshipLogoUploader")
+  workshopCreated        WorkshopProject[]     @relation("WorkshopProjectCreator")
+  workshopReviewed       WorkshopProject[]     @relation("WorkshopProjectReviewer")
+  workshopCredits        WorkshopCredit[]
 
   @@index([status, role])
   @@index([subteam, status])
@@ -1154,4 +1157,129 @@ model SponsorshipLogo {
   uploadedById  String?
   uploadedBy    User?       @relation("SponsorshipLogoUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
   createdAt     DateTime    @default(now())
+}
+
+/// What a Workshop project is: the team website's sections (3D prints & CAD first).
+enum WorkshopKind {
+  PART // a printed, cut, or machined part, with its CAD
+  SOFTWARE // an app, tool, or program the team wrote
+  OTHER // a field element, a pit display…
+}
+
+/// Where a Workshop project is on its way to the team website.
+/// DRAFT (being put together) -> PENDING (sent for approval) -> APPROVED (on the website) or REJECTED (needs changes).
+/// People with admin access publish straight to APPROVED. A change by anyone else to an APPROVED project that adds
+/// or rewrites something sends it back to PENDING.
+enum WorkshopStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Something the team designed and built, shown (once approved) on the team website's Workshop page.
+model WorkshopProject {
+  id           String         @id @default(cuid())
+  kind         WorkshopKind   @default(PART)
+  title        String
+  /// Parts: what it does on the robot. Software and other builds: what it is / does.
+  summary      String         @default("")
+  /// Parts: the material ("PETG"). Software: what it's built with.
+  material     String         @default("")
+  /// e.g. "2025–26".
+  season       String         @default("")
+  /// Credited people without a portal account (alumni…), comma-separated.
+  extraCredits String         @default("")
+  /// Parts: the CAD (Onshape, Printables…). Software: the website or app. http(s) only; empty = none.
+  link         String         @default("")
+  /// Source code (GitHub…). http(s) only; empty = none.
+  codeLink     String         @default("")
+  status       WorkshopStatus @default(DRAFT)
+  /// Shown first on the team website (people with admin access set it).
+  featured     Boolean        @default(false)
+  /// The photo the website shows first. Null = a part's newest version (last photo), other kinds' first photo.
+  coverPhotoId String?        @unique
+  coverPhoto   WorkshopPhoto? @relation("WorkshopCover", fields: [coverPhotoId], references: [id], onDelete: SetNull)
+  /// Why it was sent back (shown to the people who can edit it).
+  reviewNote   String         @default("")
+  reviewedById String?
+  reviewedBy   User?          @relation("WorkshopProjectReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt   DateTime?
+  /// When it first went on the website (kept when it's taken off and put back).
+  publishedAt  DateTime?
+  createdById  String?
+  createdBy    User?          @relation("WorkshopProjectCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  credits WorkshopCredit[]
+  photos  WorkshopPhoto[]  @relation("WorkshopPhotos")
+  files   WorkshopFile[]
+
+  @@index([status, kind])
+  @@index([createdById])
+}
+
+/// A person (with a portal account) credited as a designer or builder of a Workshop project. They can edit it too.
+model WorkshopCredit {
+  projectId String
+  project   WorkshopProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Order the names are shown in.
+  position  Int             @default(0)
+
+  @@id([projectId, userId])
+  @@index([userId])
+}
+
+/// A photo of one version of a Workshop project (or a screenshot), in story order (first version first).
+/// Stored like other uploads (Postgres bytes or Cloudflare R2 via storageKey), counted toward the same cap.
+model WorkshopPhoto {
+  id           String           @id @default(cuid())
+  projectId    String
+  project      WorkshopProject  @relation("WorkshopPhotos", fields: [projectId], references: [id], onDelete: Cascade)
+  coverOf      WorkshopProject? @relation("WorkshopCover")
+  /// e.g. "Version 1".
+  label        String           @default("")
+  /// What changed, or what failed and why.
+  note         String           @default("")
+  position     Int
+  filename     String
+  contentType  String
+  size         Int
+  /// The photo's bytes when stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data         Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there. Null = in Postgres.
+  storageKey   String?          @unique
+  width        Int
+  height       Int
+  /// Who uploaded it (counts toward their allowance). Not a relation: the photo stays if they leave.
+  uploadedById String?
+  createdAt    DateTime         @default(now())
+
+  @@index([projectId, position])
+  @@index([uploadedById])
+}
+
+/// A design file (STL, STEP, 3MF…) anyone can download from the team website once the project is approved.
+model WorkshopFile {
+  id           String          @id @default(cuid())
+  projectId    String
+  project      WorkshopProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// e.g. "Print-ready STL".
+  label        String          @default("")
+  filename     String
+  contentType  String
+  size         Int
+  /// The file's bytes when stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data         Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there. Null = in Postgres.
+  storageKey   String?         @unique
+  /// Who uploaded it (counts toward their allowance). Not a relation: the file stays if they leave.
+  uploadedById String?
+  createdAt    DateTime        @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([uploadedById])
 }

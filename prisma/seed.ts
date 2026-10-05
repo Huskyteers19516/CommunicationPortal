@@ -24,6 +24,7 @@ import {
 import { ROLE_LABELS, STATUS_LABELS, SUBTEAM_LABELS } from "../src/lib/constants";
 import { addDays, dateOnlyToDb, type DateOnly, formatDateOnly, todayInTimezone } from "../src/lib/dates";
 import { STANDARD_NOTEBOOKS } from "../src/lib/notebook";
+import { DEFAULT_PUBLIC_PROGRESS_SETTINGS, PUBLIC_PROGRESS_KEY, serializePublicProgressSettings } from "../src/lib/public-progress";
 import { hashPassword } from "../src/server/auth/password";
 import { createPrismaClient, type Db } from "../src/server/db";
 
@@ -786,9 +787,27 @@ interface SponsorshipSpec {
   accepted?: number;
   closes?: number;
   notes?: string;
+  /** "Name on the website" (empty = the name). */
+  publicName?: string;
+  /** "Thank them on the team website" (default on). */
+  showOnWebsite?: boolean;
+  /** A tiny generated PNG logo (base64) for the team website's Sponsors page. */
+  logo?: string;
 }
 
-/** Demo asks in every stage: public company names with placeholder links and contacts (no real team info). */
+/** Demo logos: small generated pictures (no real brands' artwork). */
+const DEMO_LOGOS = {
+  rev: "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAcCAYAAADRJblSAAAAQklEQVR42u3QUQkAIAxAwWVxrewfwAbzbwg2GPfgFbgISXrKzJo8AAAAAAAAAAAAAAAAAAAAAODv7FWTBwAAgCR1FzC+CgpPbc31AAAAAElFTkSuQmCC",
+  homeDepot: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAX0lEQVR42mNgGAVQ8DOZ6T8yhgF0cWrJ43UArS0HAZwOoIflOB1AL8uxRgE9LcfpAHpZTjAR0iNBEuUAWkbLaDkwWg6MlgOj5cBoOTBaDoyWA6PlwGg5MFoOjHaGYQAAlPp8pHy9HbsAAAAASUVORK5CYII=",
+  rotary: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeElEQVR42mNgGAVDCXxfIf2fWDxgFlPdIZRYTrEjqGE52Y4g1mBx1x7qO4KQhYQwRY6g1HKKHUENywk5gi6Wk+UIaluOzxGjDhgaDqCG5bgcMRoFow4YnCXhgNcFg6I2HPD2wKBoEQ2KNuGgaBUPin7BoOgZDWsAANB8qtsjpxbnAAAAAElFTkSuQmCC",
+};
+
+/**
+ * Demo asks in every stage: public company names with placeholder links and contacts (no real team info). Accepted
+ * and Finished ones are on the team website's Sponsors page: REV Robotics, Home Depot (two years: last year's "The Home
+ * Depot" shares its name on the website), and the Anaheim Rotary Club have logos; Fresh Prints (Ava's) still needs
+ * one; Bright Futures Fund asked not to be named.
+ */
 const SPONSORSHIPS: SponsorshipSpec[] = [
   {
     name: "Polymaker",
@@ -814,6 +833,7 @@ const SPONSORSHIPS: SponsorshipSpec[] = [
     submitted: -24,
     accepted: -3,
     notes: "Send a thank-you card and tag them in our next post.",
+    logo: DEMO_LOGOS.rev,
   },
   {
     name: "Bambu Lab",
@@ -846,6 +866,55 @@ const SPONSORSHIPS: SponsorshipSpec[] = [
     creator: "ava",
     submitted: -60,
     accepted: -41,
+    logo: DEMO_LOGOS.homeDepot,
+  },
+  {
+    name: "The Home Depot",
+    publicName: "Home Depot",
+    website: "https://sponsors.example.com/home-depot",
+    asking: "$500 gift card",
+    amountReceived: 500,
+    stage: "FINISHED",
+    owner: "amara",
+    creator: "amara",
+    submitted: -420,
+    accepted: -400,
+    notes: "Last season's grant. Same store, same contact.",
+  },
+  {
+    name: "Anaheim Rotary Club",
+    website: "https://sponsors.example.com/anaheim-rotary",
+    asking: "Registration fee",
+    amountReceived: 275,
+    stage: "FINISHED",
+    owner: "amara",
+    creator: "amara",
+    submitted: -390,
+    accepted: -380,
+    logo: DEMO_LOGOS.rotary,
+  },
+  {
+    name: "Fresh Prints Anaheim",
+    website: "https://sponsors.example.com/fresh-prints",
+    asking: "Team shirts at cost",
+    stage: "ACCEPTED",
+    owner: "ava",
+    creator: "ava",
+    submitted: -12,
+    accepted: -2,
+    notes: "Ask for their logo (PNG) for the website.",
+  },
+  {
+    name: "Bright Futures Fund",
+    asking: "$300 for competition fees",
+    amountReceived: 300,
+    stage: "FINISHED",
+    owner: "amara",
+    creator: "amara",
+    submitted: -50,
+    accepted: -30,
+    showOnWebsite: false,
+    notes: "They asked not to be named publicly.",
   },
   {
     name: "Lockheed Martin",
@@ -899,6 +968,8 @@ function sponsorshipRows(
     acceptedOn: day(s.accepted),
     closesOn: day(s.closes),
     notes: s.notes ?? "",
+    publicName: s.publicName ?? "",
+    showOnWebsite: s.showOnWebsite ?? true,
     createdById: uid(s.creator),
     // Added a few days before it was sent (or a couple of weeks ago).
     createdAt: ago(24 * Math.max(14, 3 - (s.submitted ?? 0)) + i),
@@ -1477,6 +1548,101 @@ const NOTEBOOK_ENTRIES: Record<string, NotebookEntrySpec[]> = {
   ],
 };
 
+// ── Team calendar ─────────────────────────────────────────────────────────────
+
+interface CalendarEventSpec {
+  title: string;
+  kind: NonNullable<Prisma.CalendarEventCreateManyInput["kind"]>;
+  /** Days from today. */
+  day: number;
+  start?: string;
+  end?: string;
+  location?: string;
+  link?: string;
+  notes?: string;
+  hideFromWebsite?: boolean;
+  creator: PersonKey;
+}
+
+/**
+ * Demo events besides the season's scrimmages (a migration loads those) and the extra meeting (with Attendance):
+ * outreach coming up and just past (on the team website's Events page), one outreach hidden from the website, and a
+ * team event (never published). Placeholder links only.
+ */
+export const DEMO_CALENDAR_EVENTS: CalendarEventSpec[] = [
+  {
+    title: "Robot demo at the library",
+    kind: "OUTREACH",
+    day: 9,
+    start: "15:00",
+    end: "17:00",
+    location: "Anaheim Central Library, 500 W Broadway",
+    link: "https://events.example.com/library-robot-demo",
+    notes: "Bring the practice bot, two driver hubs, and flyers. Ava has the poster.",
+    creator: "amara",
+  },
+  {
+    title: "STEM night at Brookhurst Elementary",
+    kind: "OUTREACH",
+    day: 23,
+    start: "18:00",
+    end: "20:00",
+    location: "Brookhurst Elementary School",
+    notes: "Three tables: driving, CAD on a laptop, and a build station.",
+    creator: "amara",
+  },
+  {
+    title: "Farmers market booth",
+    kind: "OUTREACH",
+    day: -10,
+    start: "09:00",
+    end: "13:00",
+    location: "Downtown Anaheim Farmers Market",
+    creator: "jordan",
+  },
+  {
+    title: "Mentoring the middle school FLL team",
+    kind: "OUTREACH",
+    day: 5,
+    start: "16:00",
+    end: "17:30",
+    location: "Robotics room",
+    notes: "Kept off the team website: the younger team's names and school aren't ours to post.",
+    hideFromWebsite: true,
+    creator: "amara",
+  },
+  {
+    title: "Team pizza night",
+    kind: "TEAM",
+    day: 12,
+    start: "18:00",
+    end: "20:00",
+    location: "Robotics room",
+    creator: "jordan",
+  },
+];
+
+function calendarEventRows(
+  today: DateOnly,
+  ago: (hours: number) => Date,
+  uid: (key: PersonKey) => string,
+): Prisma.CalendarEventCreateManyInput[] {
+  return DEMO_CALENDAR_EVENTS.map((e, i) => ({
+    title: e.title,
+    kind: e.kind,
+    startsOn: dateOnlyToDb(addDays(today, e.day)),
+    startTime: e.start ?? null,
+    endTime: e.start ? (e.end ?? null) : null,
+    location: e.location ?? "",
+    link: e.link ?? "",
+    notes: e.notes ?? "",
+    hideFromWebsite: e.hideFromWebsite ?? false,
+    createdById: uid(e.creator),
+    createdAt: ago(24 * 20 + i),
+    updatedAt: ago(24 * 20 + i),
+  }));
+}
+
 // ── Attendance ────────────────────────────────────────────────────────────────
 
 /** Who's on the team for attendance (active students: members, leaders, the captain). */
@@ -1968,6 +2134,7 @@ async function wipeAppData(tx: Tx): Promise<void> {
   await tx.taskAssignment.deleteMany();
   await tx.task.deleteMany();
   await tx.taskCategory.deleteMany();
+  await tx.workshopProject.deleteMany(); // credits, photos, and design files cascade
   await tx.passwordResetToken.deleteMany();
   await tx.session.deleteMany();
   await tx.user.deleteMany();
@@ -2221,8 +2388,41 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
 
       // Sponsorships (Business): every stage, money in on two, deadlines coming up, one missed.
       await tx.sponsorship.createMany({ data: sponsorshipRows(today, ago, uid) });
+      // Their logos for the team website (SponsorshipLogo; stored in Postgres like every seeded file).
+      const sponsorIds = new Map(
+        (await tx.sponsorship.findMany({ select: { id: true, name: true } })).map((r) => [r.name, r.id] as const),
+      );
+      for (const sp of SPONSORSHIPS) {
+        if (!sp.logo) continue;
+        const png = Buffer.from(sp.logo, "base64");
+        const bytes = Uint8Array.from(png);
+        const slug = sp.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+        await tx.sponsorshipLogo.create({
+          data: {
+            sponsorshipId: sponsorIds.get(sp.name)!,
+            filename: `${slug}-logo.png`,
+            contentType: "image/png",
+            size: bytes.byteLength,
+            data: bytes,
+            // The PNG header's size (IHDR).
+            width: png.readUInt32BE(16),
+            height: png.readUInt32BE(20),
+            uploadedById: uid(sp.creator),
+            createdAt: ago(24 * 2),
+          },
+        });
+      }
       // Key "sponsorship-info" = SPONSORSHIP_INFO_KEY in src/server/services/sponsorships.ts (not imported: server-only).
       await tx.teamNote.create({ data: { key: "sponsorship-info", body: SPONSORSHIP_INFO, updatedById: uid("amara") } });
+      // The demo team has already checked its sponsors and events: the website's Sponsors and Events pages are on (a
+      // real team starts with them off, Admin → Team website).
+      await tx.teamNote.create({
+        data: {
+          key: PUBLIC_PROGRESS_KEY,
+          body: serializePublicProgressSettings({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showSponsors: true, showEvents: true }),
+          updatedById: uid("david"),
+        },
+      });
 
       // Posters (whole team): pictures for upcoming, undated, and past events, and one link-only.
       for (const p of POSTERS) {
@@ -2422,6 +2622,9 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
 
       // Attendance: two weeks of sessions and check-ins, "Coming?" answers, and the next team day's plan.
       await seedAttendance(tx, today, uid);
+
+      // Team calendar: outreach (on the team website's Events page, one hidden from it) and a team event.
+      await tx.calendarEvent.createMany({ data: calendarEventRows(today, ago, uid) });
 
       // Announcements: a pinned welcome, one each for Build and Business, and an older one everyone has seen.
       await seedAnnouncements(tx, ago, uid);

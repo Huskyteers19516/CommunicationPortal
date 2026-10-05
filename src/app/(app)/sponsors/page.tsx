@@ -1,5 +1,6 @@
 import { BadgeDollarSign, CalendarClock, CircleCheck, FileSpreadsheet, HandCoins, Hourglass, Plus, SearchX } from "lucide-react";
 import type { Metadata } from "next";
+import { KeepChipInView } from "@/components/discussion/keep-chip-in-view";
 import { BulkSelectToggle, SponsorBulkRemove } from "@/components/sponsors/bulk-remove";
 import { FocusAlert } from "@/components/sponsors/focus-alert";
 import { NoSponsorshipAccess } from "@/components/sponsors/no-access";
@@ -60,6 +61,7 @@ function emptyText(filter: SponsorshipFilter, mine: boolean): string {
     accepted: ["No accepted sponsors yet.", "None of yours have been accepted yet."],
     finished: ["No finished sponsors yet.", "None of yours are finished yet."],
     declined: ["No declined sponsors.", "None of yours were declined."],
+    logo: ["Every sponsor on the team website has a logo.", "None of yours need a logo."],
   };
   return texts[filter][mine ? 1 : 0];
 }
@@ -190,16 +192,22 @@ export default async function SponsorshipsPage({ searchParams }: PageProps<"/spo
               <h2 id="sponsor-list-heading" className="sr-only">
                 Sponsors
               </h2>
-              <div className="space-y-2 md:flex md:items-center md:gap-2 md:space-y-0">
-                <FilterChips
-                  label="Filter by stage"
-                  className="md:flex-1"
-                  chips={SPONSORSHIP_FILTER_KEYS.map((key) => ({
-                    href: hrefFor(key, mine),
-                    label: SPONSORSHIP_FILTERS[key].label,
-                    active: filter === key,
-                  }))}
-                />
+              {/* Flex gaps, not space-y: KeepChipInView adds no box of its own. */}
+              <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                {/* The strip is wider than the screen on phones (and on laptops with "Logo needed"): scroll the active
+                    chip into view, e.g. after Today's "N sponsors need a logo" link. */}
+                <KeepChipInView active={filter}>
+                  <FilterChips
+                    label="Filter by stage"
+                    className="md:min-w-0 md:flex-1"
+                    chips={SPONSORSHIP_FILTER_KEYS.filter((key) => key !== "logo" || summary.logoNeeded > 0 || filter === "logo").map((key) => ({
+                      href: hrefFor(key, mine),
+                      // "Logo needed" only while some do (or it's the filter picked), with how many.
+                      label: key === "logo" ? `${SPONSORSHIP_FILTERS[key].label} (${summary.logoNeeded})` : SPONSORSHIP_FILTERS[key].label,
+                      active: filter === key,
+                    }))}
+                  />
+                </KeepChipInView>
                 <div className="flex items-center gap-2">
                   <ToggleChip href={hrefFor(filter, !mine)} label="Mine" active={mine} />
                   <BulkSelectToggle className="ml-auto md:ml-0" />

@@ -27,7 +27,15 @@ import { actorSelect } from "@/server/actor";
 import { canFixAttendance, canGiveExtraCredit } from "@/server/permissions";
 import { countUnreadAnnouncements } from "@/server/queries/announcements";
 import { countUnreadDiscussions, getDiscussionThread } from "@/server/queries/discussion";
-import { checkSeedSafety, DEMO_PASSWORD, isLocalDatabaseUrl, seed, seedExtraMeetingDay, SeedRefusedError } from "../prisma/seed";
+import {
+  checkSeedSafety,
+  DEMO_CALENDAR_EVENTS,
+  DEMO_PASSWORD,
+  isLocalDatabaseUrl,
+  seed,
+  seedExtraMeetingDay,
+  SeedRefusedError,
+} from "../prisma/seed";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeUser, TEST_NOW, TEST_PASSWORD, TEST_TODAY, TEST_TZ } from "./helpers/factories";
 
@@ -1041,6 +1049,10 @@ describe("demo seed", () => {
     const seasonEventsBefore = await s.db.calendarEvent.count({ where: { sourceKey: { not: null } } });
 
     await s.db.announcement.create({ data: { title: "Leftover", body: "Old news", authorId: someone.id } });
+    // Workshop projects outlive their accounts (createdById is set null), so the reset removes them itself.
+    await s.db.workshopProject.create({
+      data: { title: "Leftover servo mount", summary: "Old", createdById: someone.id, credits: { create: { userId: someone.id } } },
+    });
     await s.db.plannerPath.create({ data: { name: "Leftover path", data: "{}", size: 2, createdById: someone.id } });
     await s.db.attendanceChange.create({
       data: { sessionDate: TEST_NOW, sessionKind: "REGULAR", userName: "Extra", changedById: someone.id, action: "REMOVED" },
@@ -1053,6 +1065,8 @@ describe("demo seed", () => {
     // Announcements are replaced, not duplicated.
     expect(await s.db.announcement.count()).toBe(4);
     expect(await s.db.announcement.count({ where: { title: "Leftover" } })).toBe(0);
+    expect(await s.db.workshopProject.count()).toBe(0);
+    expect(await s.db.workshopCredit.count()).toBe(0);
     // Strategies (and their files, which cascade) are replaced, not duplicated.
     expect(await s.db.strategy.count({ where: { teamId: null } })).toBe(ourStrategiesBefore);
     expect(ourStrategiesBefore).toBe(3);
@@ -1069,7 +1083,8 @@ describe("demo seed", () => {
     expect(ordersBefore).toBeGreaterThan(0);
     expect(await s.db.fundraiserVolunteer.count()).toBe(helpersBefore);
     expect(fundraisersBefore).toBeGreaterThan(0);
-    expect(await s.db.teamNote.count()).toBe(4); // sponsorship info + fundraising season goal and start + attendance schedule
+    // Sponsorship info + fundraising season goal and start + attendance schedule + the team website's settings.
+    expect(await s.db.teamNote.count()).toBe(5);
     expect(await s.db.attendanceSession.count()).toBe(sessionsBefore);
     expect(await s.db.attendanceRecord.count()).toBe(checkInsBefore);
     expect(await s.db.attendancePlan.count()).toBe(1);
@@ -1082,8 +1097,11 @@ describe("demo seed", () => {
     expect(await s.db.emailLog.count()).toBe(0);
     expect(await s.db.rateLimit.count()).toBe(0);
     expect(await s.db.user.findUnique({ where: { email: "extra@example.com" } })).toBeNull();
-    // Only the demo's extra meeting (added again, not duplicated).
-    expect(await s.db.calendarEvent.count({ where: { sourceKey: null } })).toBe(1);
+    // Only the demo's extra meeting and its other events (added again, not duplicated).
+    expect(await s.db.calendarEvent.count({ where: { sourceKey: null } })).toBe(1 + DEMO_CALENDAR_EVENTS.length);
+    expect(await s.db.calendarEvent.count({ where: { title: "Leftover test meet" } })).toBe(0);
+    // Sponsor logos go with their sponsors and come back with the demo ones.
+    expect(await s.db.sponsorshipLogo.count()).toBe(3);
     expect(await s.db.calendarEvent.count({ where: { sourceKey: null, kind: "MEETING", title: "Extra build day" } })).toBe(1);
     expect(await s.db.calendarEvent.count({ where: { sourceKey: { not: null } } })).toBe(seasonEventsBefore);
     expect(seasonEventsBefore).toBe(4);

@@ -9,7 +9,7 @@ import { CALENDAR_EVENT_KIND_LABELS, LIMITS } from "./constants";
 import { addDays, type DateOnly, dateOnlyToDb, daysBetween, formatDateOnly, isDateOnly } from "./dates";
 import { withHttps } from "./sponsorships";
 import { parseHttpUrl } from "./urls";
-import { dateOnlySchema, optionalText, text } from "./validation";
+import { checkbox, dateOnlySchema, optionalText, text } from "./validation";
 
 // ---------- field checks (the add / edit form) ----------
 
@@ -112,6 +112,8 @@ export const calendarEventFieldSchema = z.object({
   location: optionalText("Location", LIMITS.calendarLocationMax),
   link: linkField,
   notes: optionalText("Notes", LIMITS.calendarNotesMax),
+  /** "Hide from the team website" (a checkbox: missing = off). Only matters for the kinds the website lists. */
+  hideFromWebsite: checkbox,
 });
 
 /** A checked event, ready to save. `endsOn` is null for a one-day event (a last day equal to the first counts as one day). */
@@ -125,6 +127,8 @@ export interface CalendarEventFields {
   location: string;
   link: string;
   notes: string;
+  /** Keep it off the team website's Events page (src/lib/public-events.ts). */
+  hideFromWebsite: boolean;
 }
 
 export type CalendarFieldCheck = { ok: true; value: CalendarEventFields } | { ok: false; fieldErrors: Record<string, string> };
@@ -187,6 +191,7 @@ export function checkCalendarEventFields(
       location: f.location ?? "",
       link: f.link,
       notes: f.notes ?? "",
+      hideFromWebsite: f.hideFromWebsite,
     },
   };
 }

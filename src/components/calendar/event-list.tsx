@@ -3,9 +3,17 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { eventCountdown, formatEventWhen, formatMonth, type MonthKey, monthOf } from "@/lib/calendar";
 import { type DateOnly, dateOnlyToDb } from "@/lib/dates";
+import { publicEventStatus } from "@/lib/public-events";
 import type { CalendarEventItem } from "@/server/queries/calendar";
 import { CALENDAR_KIND_STYLES, CalendarKindBadge } from "./kind-styles";
+import { TeamWebsiteMarker } from "./website-marker";
 import { WhenText } from "./when-text";
+
+/** The team website's Events settings, for the "On the team website" marker (none given: no marker). */
+export interface WebsiteEvents {
+  showEvents: boolean;
+  since: DateOnly;
+}
 
 const blockFormat = {
   weekday: new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short" }),
@@ -31,7 +39,7 @@ function DateBlock({ date, kind, muted }: { date: DateOnly; kind: CalendarEventI
 }
 
 /** One event as a row that links to its page: day block, title, when, where, kind, and a countdown. */
-export function EventRow({ event, today, id }: { event: CalendarEventItem; today: DateOnly; id?: string }) {
+export function EventRow({ event, today, id, website }: { event: CalendarEventItem; today: DateOnly; id?: string; website?: WebsiteEvents }) {
   const countdown = eventCountdown(event, today);
   return (
     <li id={id} className="scroll-mt-24">
@@ -66,6 +74,7 @@ export function EventRow({ event, today, id }: { event: CalendarEventItem; today
             >
               {countdown.label}
             </span>
+            {website && <TeamWebsiteMarker status={publicEventStatus(event, website)} />}
           </span>
         </span>
       </Link>
@@ -78,10 +87,12 @@ export function EventsByMonth({
   events,
   today,
   headingLevel = "h2",
+  website,
 }: {
   events: CalendarEventItem[];
   today: DateOnly;
   headingLevel?: "h2" | "h3";
+  website?: WebsiteEvents;
 }) {
   const groups: { month: MonthKey; items: CalendarEventItem[] }[] = [];
   for (const e of events) {
@@ -100,7 +111,7 @@ export function EventsByMonth({
           </Heading>
           <ul className="space-y-2">
             {g.items.map((e) => (
-              <EventRow key={e.id} event={e} today={today} />
+              <EventRow key={e.id} event={e} today={today} website={website} />
             ))}
           </ul>
         </section>

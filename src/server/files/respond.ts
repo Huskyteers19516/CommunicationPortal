@@ -1,5 +1,5 @@
 // Responses for the routes that send uploaded files (Resources files, sponsor files, posters, notebook pictures,
-// strategy files). The bytes come from Postgres (`data`) or Cloudflare R2 (`storageKey`, streamed through here —
+// strategy files, sponsor logos, Workshop photos and files). The bytes come from Postgres (`data`) or Cloudflare R2 (`storageKey`, streamed through here —
 // never a redirect to R2, whose bucket stays private); the headers are the same either way.
 import "server-only";
 import { type NextRequest, NextResponse } from "next/server";

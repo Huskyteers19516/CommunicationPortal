@@ -671,22 +671,25 @@ describe("the team's file storage", () => {
   });
 
   it("the full sentence (and who can remove posters) leaves posters out when there are none", () => {
-    expect(posterCleanupSentence({ resources: 1, sponsors: 1, posters: 0, notebook: 0, strategy: 0, used: 2, max: 1 })).toBe("");
-    expect(posterCleanupSentence({ resources: 0, sponsors: 0, posters: 1, notebook: 0, strategy: 0, used: 1, max: 1 })).toBe(
+    expect(posterCleanupSentence({ resources: 1, sponsors: 1, posters: 0, notebook: 0, strategy: 0, logos: 0, workshop: 0, used: 2, max: 1 })).toBe("");
+    expect(posterCleanupSentence({ resources: 0, sponsors: 0, posters: 1, notebook: 0, strategy: 0, logos: 0, workshop: 0, used: 1, max: 1 })).toBe(
       " Old posters can be removed by whoever added them, or by leaders, the captain, mentors, and teachers.",
     );
-    expect(storageFullSentence({ resources: 1024 * 1024, sponsors: 2048, posters: 0, notebook: 0, strategy: 0, used: 1024 * 1024 + 2048, max: 1 })).toBe(
+    expect(storageFullSentence({ resources: 1024 * 1024, sponsors: 2048, posters: 0, notebook: 0, strategy: 0, logos: 0, workshop: 0, used: 1024 * 1024 + 2048, max: 1 })).toBe(
       "The team's file storage is full: 1.0 MB of Resources files and 2.0 KB of sponsor files.",
     );
-    expect(storageFullSentence({ resources: 0, sponsors: 0, posters: 5 * 1024 * 1024, notebook: 0, strategy: 0, used: 5 * 1024 * 1024, max: 1 })).toBe(
+    expect(storageFullSentence({ resources: 0, sponsors: 0, posters: 5 * 1024 * 1024, notebook: 0, strategy: 0, logos: 0, workshop: 0, used: 5 * 1024 * 1024, max: 1 })).toBe(
       "The team's file storage is full: 0 bytes of Resources files, 0 bytes of sponsor files, and 5.0 MB of posters.",
     );
-    // Notebook pictures and strategy files are named too, only when there are some.
+    // Notebook pictures, strategy files, and sponsor logos are named too, only when there are some.
     expect(
-      storageFullSentence({ resources: 0, sponsors: 0, posters: 0, notebook: 2048, strategy: 1024, used: 3072, max: 1 }),
+      storageFullSentence({ resources: 0, sponsors: 0, posters: 0, notebook: 2048, strategy: 1024, logos: 0, workshop: 0, used: 3072, max: 1 }),
     ).toBe(
       "The team's file storage is full: 0 bytes of Resources files, 0 bytes of sponsor files, 2.0 KB of notebook pictures, and 1.0 KB of strategy files.",
     );
+    expect(
+      storageFullSentence({ resources: 0, sponsors: 0, posters: 0, notebook: 0, strategy: 0, logos: 4096, workshop: 0, used: 4096, max: 1 }),
+    ).toBe("The team's file storage is full: 0 bytes of Resources files, 0 bytes of sponsor files, and 4.0 KB of sponsor logos.");
   });
 });
 

@@ -5,6 +5,7 @@ import { prisma } from "../db";
 import { canAccessManage, canAdminister, canReviewResources } from "../permissions";
 import { countUnreadAnnouncements } from "./announcements";
 import { countUnreadDiscussions } from "./discussion";
+import { countPendingWorkshop } from "./workshop";
 import { questionInboxWhere, resourceReviewQueueWhere, reviewQueueWhere } from "../scopes";
 
 export interface NavCounts {
@@ -22,13 +23,15 @@ export interface NavCounts {
   unreadAnnouncements: number;
   /** Everyone: Discussion threads with activity from others since I last opened them. */
   unreadDiscussions: number;
+  /** Admin access: Workshop projects waiting for approval for the team website. */
+  pendingWorkshop: number;
 }
 
 /** Badge counts for the navigation. Cached per request. */
 export const getNavCounts = cache(async (actor: Actor): Promise<NavCounts> => {
   const staff = canAccessManage(actor);
   const admin = canAdminister(actor);
-  const [reviewQueue, openQuestions, answeredForMe, pendingApprovals, pendingResources, unreadAnnouncements, unreadDiscussions] = await Promise.all([
+  const [reviewQueue, openQuestions, answeredForMe, pendingApprovals, pendingResources, unreadAnnouncements, unreadDiscussions, pendingWorkshop] = await Promise.all([
     staff ? prisma.taskAssignment.count({ where: reviewQueueWhere(actor) }) : 0,
     staff ? prisma.question.count({ where: { AND: [questionInboxWhere(actor), { status: "OPEN" }] } }) : 0,
     prisma.question.count({ where: { askerId: actor.id, status: "ANSWERED" } }),
@@ -36,6 +39,7 @@ export const getNavCounts = cache(async (actor: Actor): Promise<NavCounts> => {
     canReviewResources(actor) ? prisma.resource.count({ where: resourceReviewQueueWhere(actor) }) : 0,
     countUnreadAnnouncements(actor),
     countUnreadDiscussions(actor),
+    countPendingWorkshop(actor),
   ]);
-  return { reviewQueue, openQuestions, answeredForMe, pendingApprovals, pendingResources, unreadAnnouncements, unreadDiscussions };
+  return { reviewQueue, openQuestions, answeredForMe, pendingApprovals, pendingResources, unreadAnnouncements, unreadDiscussions, pendingWorkshop };
 });

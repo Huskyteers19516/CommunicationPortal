@@ -13,16 +13,20 @@ export function isOpenStage(stage: SponsorshipStage): boolean {
 /** "Closing soon" = still to do, with a deadline between today and this many days from now. */
 export const SPONSORSHIP_CLOSING_DAYS = 14;
 
-/** The filter chips on the Sponsorships page (`closing`: only asks whose deadline is in the next SPONSORSHIP_CLOSING_DAYS). */
+/**
+ * The filter chips on the Sponsorships page (`closing`: only asks whose deadline is in the next
+ * SPONSORSHIP_CLOSING_DAYS; `logoNeeded`: Accepted / Finished sponsors thanked on the team website without a logo).
+ */
 export const SPONSORSHIP_FILTERS = {
-  all: { label: "All", stages: null, closing: false },
-  todo: { label: "To do", stages: OPEN_SPONSORSHIP_STAGES, closing: false },
-  closing: { label: "Closing soon", stages: OPEN_SPONSORSHIP_STAGES, closing: true },
-  submitted: { label: "Submitted", stages: ["SUBMITTED"], closing: false },
-  accepted: { label: "Accepted", stages: ["ACCEPTED"], closing: false },
-  finished: { label: "Finished", stages: ["FINISHED"], closing: false },
-  declined: { label: "Declined", stages: ["DECLINED"], closing: false },
-} as const satisfies Record<string, { label: string; stages: readonly SponsorshipStage[] | null; closing: boolean }>;
+  all: { label: "All", stages: null, closing: false, logoNeeded: false },
+  todo: { label: "To do", stages: OPEN_SPONSORSHIP_STAGES, closing: false, logoNeeded: false },
+  closing: { label: "Closing soon", stages: OPEN_SPONSORSHIP_STAGES, closing: true, logoNeeded: false },
+  submitted: { label: "Submitted", stages: ["SUBMITTED"], closing: false, logoNeeded: false },
+  accepted: { label: "Accepted", stages: ["ACCEPTED"], closing: false, logoNeeded: false },
+  finished: { label: "Finished", stages: ["FINISHED"], closing: false, logoNeeded: false },
+  declined: { label: "Declined", stages: ["DECLINED"], closing: false, logoNeeded: false },
+  logo: { label: "Logo needed", stages: ["ACCEPTED", "FINISHED"], closing: false, logoNeeded: true },
+} as const satisfies Record<string, { label: string; stages: readonly SponsorshipStage[] | null; closing: boolean; logoNeeded: boolean }>;
 
 export type SponsorshipFilter = keyof typeof SPONSORSHIP_FILTERS;
 export const SPONSORSHIP_FILTER_KEYS = Object.keys(SPONSORSHIP_FILTERS) as SponsorshipFilter[];

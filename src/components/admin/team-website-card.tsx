@@ -1,6 +1,7 @@
 "use client";
 
 import { ExternalLink, Globe } from "lucide-react";
+import Link from "next/link";
 import { useActionState } from "react";
 import { updatePublicProgressSettingsAction } from "@/app/(app)/admin/actions";
 import { Badge } from "@/components/ui/badge";
@@ -10,25 +11,47 @@ import { FormMessage } from "@/components/ui/form-message";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { initialActionState } from "@/lib/action-state";
 import { addDays, type DateOnly, formatDateOnly } from "@/lib/dates";
+import { PUBLIC_EVENTS_PATH, PUBLIC_SPONSORS_PATH, PUBLIC_WORKSHOP_PATH } from "@/lib/public-api";
+import { PUBLIC_EVENT_KINDS_SENTENCE } from "@/lib/public-events";
 import {
   NAME_STYLE_LABELS,
   NAME_STYLES,
+  PUBLIC_HIDDEN_MIN_GROUP,
   PUBLIC_PROGRESS_PATH,
   type PublicProgressSettings,
+  TEAM_SITE_ORIGIN,
   TEAM_SITE_PROGRESS_URL,
 } from "@/lib/public-progress";
+import type { TeamWebsitePreview } from "@/server/queries/team-website";
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** "Shown now: 7 sponsors (2 without a logo)." / "Off. Turning it on shows 7 sponsors … — check them in Sponsorships first." */
+function sponsorsPreview(p: TeamWebsitePreview, on: boolean): string {
+  const what = `${plural(p.sponsors, "sponsor", "sponsors")}${p.sponsorsWithoutLogo > 0 ? ` (${p.sponsorsWithoutLogo} without a logo)` : ""}`;
+  return on ? `Shown now: ${what}.` : `Off. Turning it on shows ${what} — check them in Sponsorships first.`;
+}
+
+function eventsPreview(p: TeamWebsitePreview, on: boolean): string {
+  const what = plural(p.events, "event", "events");
+  return on ? `Shown now: ${what}.` : `Off. Turning it on shows ${what} — check their locations and links first.`;
+}
 
 const linkClass =
   "inline-flex min-h-10 items-center gap-1.5 rounded-md text-sm font-medium text-brand-700 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600";
 
 /**
- * Admin → Approvals → Team website: the public progress page on huskyteers19516.github.io (on/off, how names are
- * shown, task titles, where counting starts), with links to the page and the live JSON. Everyone with admin access.
+ * Admin → Approvals → Team website: what huskyteers19516.github.io shows from the portal — the progress page (on/off,
+ * how names are shown, task titles, where counting starts), the sponsors on the Sponsors page, and the Events page
+ * (each on/off) — with links to the pages and the live JSON, and how the Workshop page fills (projects go on it one at a
+ * time, once approved in the Workshop). Everyone with admin access.
  */
 export function TeamWebsiteCard({
   settings,
   defaultSince,
   hiddenPeople,
+  hiddenUncounted,
+  preview,
   today,
 }: {
   settings: PublicProgressSettings;
@@ -36,6 +59,10 @@ export function TeamWebsiteCard({
   defaultSince: DateOnly;
   /** People who turned off "Show me on the team website" (a count only). */
   hiddenPeople: number;
+  /** Of them: left out of the totals too (too few hidden in their subteam). */
+  hiddenUncounted: number;
+  /** What the Sponsors and Events pages list (or would list once turned on): counts only. */
+  preview: TeamWebsitePreview | null;
   today: DateOnly;
 }) {
   const [state, formAction] = useActionState(updatePublicProgressSettingsAction, initialActionState);
@@ -48,13 +75,20 @@ export function TeamWebsiteCard({
   const showTaskTitles = values ? values.showTaskTitles === "on" : settings.showTaskTitles;
   const nameStyle = values?.nameStyle ?? settings.nameStyle;
   const since = values ? (values.since ?? "") : (settings.since ?? "");
+  const showSponsors = values ? values.showSponsors === "on" : settings.showSponsors;
+  const showEvents = values ? values.showEvents === "on" : settings.showEvents;
 
   return (
     <Card role="region" aria-label="Team website">
       <CardHeader
         title="Team website"
-        description="Live progress for guests on the team's site — no sign-in."
-        actions={<Badge tone={settings.enabled ? "green" : "gray"}>{settings.enabled ? "On" : "Off"}</Badge>}
+        description="Live progress, sponsors, events, and Workshop projects for guests on the team's site — no sign-in."
+        actions={
+          // The progress page's switch (the main one); sponsors and events have their own boxes below.
+          <Badge tone={settings.enabled ? "green" : "gray"} title={settings.enabled ? "Live progress is on" : "Live progress is off"}>
+            {settings.enabled ? "On" : "Off"}
+          </Badge>
+        }
       />
       <CardBody className="space-y-4">
         <form action={formAction} className="space-y-4" noValidate>
@@ -65,7 +99,12 @@ export function TeamWebsiteCard({
             label="Show live progress on the team website"
             description="Off: the page says progress is private right now."
           />
-          <Field label="Names" htmlFor="public-progress-names" error={fieldErrors.nameStyle}>
+          <Field
+            label="Names"
+            htmlFor="public-progress-names"
+            error={fieldErrors.nameStyle}
+            hint="Also how designers are credited on the Workshop page."
+          >
             <Select
               key={`names-${key}`}
               id="public-progress-names"
@@ -84,15 +123,15 @@ export function TeamWebsiteCard({
             key={`titles-${key}`}
             name="showTaskTitles"
             defaultChecked={showTaskTitles}
-            label="Show task titles in “Recently done”"
-            description="Off: it only says which subteam finished something."
+            label="Show task titles in “Recent completions”"
+            description="Off: it shows “Checklist item completed” with the subteam (and the person, when names are shown) instead of the task title. Titles are public: keep names and sponsor details out of them."
           />
           <Field
             label="Count tasks due from"
             htmlFor="public-progress-since"
             optional
             error={fieldErrors.since}
-            hint={`Empty: from when attendance reports start (${formatDateOnly(defaultSince, today)}).`}
+            hint={`Empty: from when attendance reports start (${formatDateOnly(defaultSince, today)}). The Events page lists events from this day on too.`}
           >
             <Input
               key={`since-${key}`}
@@ -107,6 +146,34 @@ export function TeamWebsiteCard({
               className="sm:max-w-48"
             />
           </Field>
+          <div className="space-y-3 border-t border-ink-100 pt-4">
+            <CheckboxField
+              key={`sponsors-${key}`}
+              name="showSponsors"
+              defaultChecked={showSponsors}
+              label="Thank our sponsors on the team website"
+              description={
+                <>
+                  Accepted and finished sponsors (unless “Thank them on the team website” is off on one): name, logo,
+                  website&apos;s homepage, and years. Never amounts, contacts, or notes.
+                  {preview && <> {sponsorsPreview(preview, settings.showSponsors)}</>}
+                </>
+              }
+            />
+            <CheckboxField
+              key={`events-${key}`}
+              name="showEvents"
+              defaultChecked={showEvents}
+              label="List events on the team website"
+              description={
+                <>
+                  The Team calendar&apos;s {PUBLIC_EVENT_KINDS_SENTENCE} from the day above on (unless one is hidden from
+                  the website): title, days, times, location, and link. Never team meetings or notes.
+                  {preview && <> {eventsPreview(preview, settings.showEvents)}</>}
+                </>
+              }
+            />
+          </div>
           <SubmitButton pendingText="Saving…" className="w-full sm:w-auto">
             Save
           </SubmitButton>
@@ -115,14 +182,27 @@ export function TeamWebsiteCard({
 
         <div className="space-y-2 border-t border-ink-100 pt-4 text-sm text-ink-600">
           <p>
-            Guests see each person&apos;s name and position, how many checklist items they&apos;ve finished and have open,
-            and the subteams&apos; and team&apos;s totals. Never emails, notes, due dates, or questions. Mentors and
-            teachers aren&apos;t listed.
+            Guests see each person&apos;s name and position, how many checklist items they&apos;ve finished, have open, and
+            have checked off for review, when their items were approved (to the minute), the task titles in Recent
+            completions (when shown), and the subteams&apos; and team&apos;s totals. Never emails, notes, due dates, or
+            questions. Mentors and teachers aren&apos;t listed.
+          </p>
+          <p>
+            The Workshop page shows each project once a leader, the captain, a mentor, or a teacher approves it (
+            <Link href="/workshop?view=review" className="text-brand-700 underline underline-offset-2 hover:text-brand-800">
+              Workshop → Waiting for approval
+            </Link>
+            ): photos, what it does, the material, who designed it, and its design files to download.
           </p>
           {hiddenPeople > 0 && (
             <p>
               {hiddenPeople === 1 ? "1 person chose" : `${hiddenPeople} people chose`} not to be listed (in their
-              Settings). Their items still count in the totals.
+              Settings): they&apos;re left off the list and Recent completions. So nobody&apos;s numbers can be worked
+              out from the totals, their items count in them only where at least {PUBLIC_HIDDEN_MIN_GROUP} people in the
+              same subteam (or without one) are hidden
+              {hiddenUncounted > 0
+                ? ` — right now ${hiddenUncounted === 1 ? "1 of them isn't" : `${hiddenUncounted} of them aren't`} counted.`
+                : "."}
             </p>
           )}
           <div className="flex flex-wrap gap-x-4">
@@ -134,6 +214,36 @@ export function TeamWebsiteCard({
             <a href={PUBLIC_PROGRESS_PATH} target="_blank" rel="noopener noreferrer" className={linkClass}>
               <ExternalLink className="size-4" aria-hidden />
               See the live data (JSON)
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href={`${TEAM_SITE_ORIGIN}/sponsors`} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <Globe className="size-4" aria-hidden />
+              Sponsors page
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href={PUBLIC_SPONSORS_PATH} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <ExternalLink className="size-4" aria-hidden />
+              Sponsors JSON
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href={`${TEAM_SITE_ORIGIN}/events`} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <Globe className="size-4" aria-hidden />
+              Events page
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href={PUBLIC_EVENTS_PATH} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <ExternalLink className="size-4" aria-hidden />
+              Events JSON
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href={`${TEAM_SITE_ORIGIN}/workshop`} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <Globe className="size-4" aria-hidden />
+              Workshop page
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href={PUBLIC_WORKSHOP_PATH} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <ExternalLink className="size-4" aria-hidden />
+              Workshop JSON
               <span className="sr-only"> (opens in a new tab)</span>
             </a>
           </div>

@@ -310,6 +310,7 @@ describe("event fields", () => {
         location: "Anaheim High School",
         link: "https://example.com/",
         notes: "Bring the robot.",
+        hideFromWebsite: false,
       },
     });
     expect(checkCalendarEventFields({}, TEST_TODAY)).toEqual({

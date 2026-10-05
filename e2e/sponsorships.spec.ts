@@ -22,7 +22,8 @@ test.describe("sponsorships", () => {
     await expect(page).toHaveURL(/\/sponsors\/new$/);
     await expectNoHorizontalScroll(page);
     await page.getByLabel("Name", { exact: true }).fill(name);
-    await page.getByLabel("Website").fill("example.com/e2e-sponsor");
+    // Exact: "Thank them on the team website" and "Name on the website" are labels too.
+    await page.getByRole("textbox", { name: "Website (optional)", exact: true }).fill("example.com/e2e-sponsor");
     await page.getByLabel("What we're asking for").fill("$300 for competition fees");
     await page.getByLabel("Amount received ($)").fill("-5");
     await page.getByRole("button", { name: "Add sponsor" }).click();
@@ -295,7 +296,7 @@ test.describe("sponsorships", () => {
 
     // Adding a sponsor says files come after saving.
     await page.goto("/sponsors/new");
-    await expect(page.getByText("To attach forms and files, open the sponsor after you add it.")).toBeVisible();
+    await expect(page.getByText("To attach forms and files (or their logo for the team website), open the sponsor after you add it.")).toBeVisible();
 
     await page.goto(`/sponsors/${id}`);
     const card = page.getByRole("region", { name: "Forms and files" });

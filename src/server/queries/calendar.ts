@@ -29,6 +29,8 @@ export interface CalendarEventItem extends CalendarEventTiming {
   location: string;
   /** A safe http(s) link, or "". */
   link: string;
+  /** "Hide from the team website" (only matters for the kinds the website lists, src/lib/public-events.ts). */
+  hideFromWebsite: boolean;
 }
 
 export interface CalendarPerson {
@@ -59,6 +61,7 @@ const itemSelect = {
   endTime: true,
   location: true,
   link: true,
+  hideFromWebsite: true,
 } satisfies Prisma.CalendarEventSelect;
 
 type ItemRow = Prisma.CalendarEventGetPayload<{ select: typeof itemSelect }>;
@@ -74,6 +77,7 @@ function toItem(row: ItemRow): CalendarEventItem {
     endTime: row.endTime,
     location: row.location,
     link: row.link,
+    hideFromWebsite: row.hideFromWebsite,
   };
 }
 

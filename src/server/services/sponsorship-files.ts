@@ -15,6 +15,7 @@ import { ForbiddenError, NotFoundError } from "../errors";
 import {
   assertFileStorageRoom,
   checkFileStorageRoom,
+  type FileStorageUsage,
   lockFileStorage,
   perPersonFileCap,
   posterCleanupSentence,
@@ -33,8 +34,8 @@ const HOUR = 60 * 60 * 1000;
 export const SPONSORSHIP_FILE_UPLOADS_PER_HOUR = 30;
 
 /**
- * Sponsor files one person can have uploaded (all sponsors together; removing files frees it up again), so one
- * account can't fill the team's storage (10× with Cloudflare R2: perPersonFileCap). The Business leader and
+ * Sponsor files (and logos) one person can have uploaded (all sponsors together; removing files frees it up again),
+ * so one account can't fill the team's storage (10× with Cloudflare R2: perPersonFileCap). The Business leader and
  * all-scope staff aren't limited (canManageSponsorships).
  */
 export const SPONSOR_FILE_BYTES_PER_PERSON = 50 * 1024 * 1024;
@@ -50,34 +51,50 @@ function asRecord(raw: unknown): Record<string, unknown> {
 
 const uploadInput = z.object({ sponsorshipId: idSchema });
 
+/** The "storage is full" message for sponsor files and logos. */
+export function sponsorStorageFullMessage(usage: FileStorageUsage): string {
+  return `${storageFullSentence(usage)} Remove sponsor files you don't need, or ask the Business leader, captain, or a mentor to clear out old ones. Admins can remove old Resources files.${posterCleanupSentence(usage)}`;
+}
+
 /**
- * Room for one more file on a sponsor: at most LIMITS.sponsorFilesMax files, the uploader's sponsor files under their
- * allowance (unless they can manage Sponsorships), and every file under the team's cap. `locked`: in the upload's
- * transaction, after lockFileStorage (the real check); otherwise the quick look before uploading to Cloudflare R2.
+ * The uploader's sponsor files and logos stay under SPONSOR_FILE_BYTES_PER_PERSON together (10× with Cloudflare R2),
+ * unless they can manage Sponsorships. `exceptLogoOf`: a sponsor whose logo this upload replaces (its bytes don't
+ * count).
+ */
+export async function assertSponsorUploadAllowance(
+  db: Prisma.TransactionClient,
+  ctx: ServiceContext,
+  adding: number,
+  exceptLogoOf?: string,
+): Promise<void> {
+  if (canManageSponsorships(ctx.actor)) return;
+  const files = await db.sponsorshipFile.aggregate({ _sum: { size: true }, where: { uploadedById: ctx.actor.id } });
+  const logos = await db.sponsorshipLogo.aggregate({
+    _sum: { size: true },
+    where: { uploadedById: ctx.actor.id, ...(exceptLogoOf ? { sponsorshipId: { not: exceptLogoOf } } : {}) },
+  });
+  const used = (files._sum.size ?? 0) + (logos._sum.size ?? 0);
+  const allowance = perPersonFileCap(SPONSOR_FILE_BYTES_PER_PERSON, usesObjectStorage(ctx));
+  if (used + adding > allowance) {
+    throw fileError(
+      `You've uploaded ${formatFileSize(used)} of sponsor files and logos, and each person can have up to ${formatFileSize(allowance)}. Remove ones you don't need, or ask the Business leader to add this one.`,
+    );
+  }
+}
+
+/**
+ * Room for one more file on a sponsor: at most LIMITS.sponsorFilesMax files, the uploader's sponsor files (and logos)
+ * under their allowance (unless they can manage Sponsorships), and every file under the team's cap. `locked`: in the
+ * upload's transaction, after lockFileStorage (the real check); otherwise the quick look before uploading to
+ * Cloudflare R2.
  */
 async function checkSponsorFileRoom(db: Prisma.TransactionClient, ctx: ServiceContext, sponsorshipId: string, adding: number, locked: boolean) {
-  const objectStorage = usesObjectStorage(ctx);
   const count = await db.sponsorshipFile.count({ where: { sponsorshipId } });
   if (count >= LIMITS.sponsorFilesMax) {
     throw fileError(`This sponsor already has ${LIMITS.sponsorFilesMax} files, the most it can have. Remove one you don't need first.`);
   }
-  if (!canManageSponsorships(ctx.actor)) {
-    const mine = await db.sponsorshipFile.aggregate({ _sum: { size: true }, where: { uploadedById: ctx.actor.id } });
-    const used = mine._sum.size ?? 0;
-    const allowance = perPersonFileCap(SPONSOR_FILE_BYTES_PER_PERSON, objectStorage);
-    if (used + adding > allowance) {
-      throw fileError(
-        `You've uploaded ${formatFileSize(used)} of sponsor files, and each person can have up to ${formatFileSize(allowance)}. Remove ones you don't need, or ask the Business leader to add this one.`,
-      );
-    }
-  }
-  await (locked ? assertFileStorageRoom : checkFileStorageRoom)(
-    db,
-    { adding },
-    (usage) =>
-      `${storageFullSentence(usage)} Remove sponsor files you don't need, or ask the Business leader, captain, or a mentor to clear out old ones. Admins can remove old Resources files.${posterCleanupSentence(usage)}`,
-    objectStorage,
-  );
+  await assertSponsorUploadAllowance(db, ctx, adding);
+  await (locked ? assertFileStorageRoom : checkFileStorageRoom)(db, { adding }, sponsorStorageFullMessage, usesObjectStorage(ctx));
 }
 
 /**

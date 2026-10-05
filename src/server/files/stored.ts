@@ -1,5 +1,5 @@
 // Where a new file's bytes go, for every service that saves uploaded files (Resources, sponsor files, posters,
-// notebook pictures, strategy files):
+// notebook pictures, strategy files, sponsor logos, Workshop photos and files):
 // - Cloudflare R2 when it's set up (ctx.objectStore): the bytes are uploaded first under a new key, then the row is
 //   saved with `storageKey` (and `data` null);
 // - otherwise Postgres, as before: the row gets `data` (and `storageKey` null).

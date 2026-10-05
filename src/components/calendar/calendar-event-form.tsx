@@ -1,17 +1,18 @@
 "use client";
 
-import { CalendarCheck } from "lucide-react";
+import { CalendarCheck, Globe } from "lucide-react";
 import { useActionState, useEffect, useRef, useState } from "react";
 import type { CalendarEventKind } from "@/generated/prisma/enums";
 import { useFocusFirstError } from "@/components/auth/use-focus-first-error";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { Field, FieldError, Input, Textarea } from "@/components/ui/field";
+import { CheckboxField, Field, FieldError, Input, Textarea } from "@/components/ui/field";
 import { FormMessage } from "@/components/ui/form-message";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { type ActionState, initialActionState } from "@/lib/action-state";
 import { cn } from "@/lib/cn";
 import { CALENDAR_EVENT_KIND_LABELS, CALENDAR_EVENT_KINDS, LIMITS } from "@/lib/constants";
+import { isPublicEventKind, PUBLIC_EVENT_KINDS_SENTENCE } from "@/lib/public-events";
 import { CALENDAR_KIND_HINTS, CALENDAR_KIND_ICONS, KindDot } from "./kind-styles";
 
 export interface CalendarEventFormValues {
@@ -29,6 +30,8 @@ export interface CalendarEventFormValues {
   location: string;
   link: string;
   notes: string;
+  /** "Hide from the team website" (only offered for the kinds the website lists). */
+  hideFromWebsite: boolean;
 }
 
 /**
@@ -45,6 +48,7 @@ export function CalendarEventForm({
   minDate,
   maxDate,
   from,
+  websiteOff = false,
 }: {
   action: (prev: ActionState, formData: FormData) => Promise<ActionState>;
   initial: CalendarEventFormValues;
@@ -55,6 +59,8 @@ export function CalendarEventForm({
   maxDate: string;
   /** Adding from Attendance (`?from=plan|schedule`): sent along, so the new event's page leads back there. */
   from?: string | null;
+  /** The team website's Events page is turned off right now (Admin → Approvals → Team website): the website box says so. */
+  websiteOff?: boolean;
 }) {
   const [state, formAction] = useActionState(action, initialActionState);
   const formRef = useRef<HTMLFormElement>(null);
@@ -69,7 +75,7 @@ export function CalendarEventForm({
       {initial.id && <input type="hidden" name="eventId" value={initial.id} />}
       {initial.version && <input type="hidden" name="version" value={initial.version} />}
       {from && <input type="hidden" name="from" value={from} />}
-      <EventFields key={state?.nonce ?? 0} state={state} initial={initial} minDate={minDate} maxDate={maxDate} />
+      <EventFields key={state?.nonce ?? 0} state={state} initial={initial} minDate={minDate} maxDate={maxDate} websiteOff={websiteOff} />
       {state && !state.ok && state.message && (
         <div ref={messageRef} tabIndex={-1} className="rounded-lg">
           <FormMessage state={state} />
@@ -90,15 +96,17 @@ function EventFields({
   initial,
   minDate,
   maxDate,
+  websiteOff,
 }: {
   state: ActionState;
   initial: CalendarEventFormValues;
   minDate: string;
   maxDate: string;
+  websiteOff: boolean;
 }) {
   const v = state?.values;
   const errors = state?.fieldErrors ?? {};
-  const value = (key: keyof CalendarEventFormValues) => v?.[key] ?? initial[key] ?? "";
+  const value = (key: keyof CalendarEventFormValues) => v?.[key] ?? String(initial[key] ?? "");
   /** Props every text control shares: name, error state, and the error's id for screen readers. */
   const control = (key: keyof CalendarEventFormValues) => ({
     id: key,
@@ -107,8 +115,11 @@ function EventFields({
     "aria-describedby": errors[key] ? `${key}-error` : undefined,
     defaultValue: value(key),
   });
-  // The kind picked right now (the radios stay uncontrolled): the title's example and the Extra meeting note follow it.
+  // The kind picked right now (the radios stay uncontrolled): the title's example, the Extra meeting note, and the
+  // team website box follow it.
   const [kind, setKind] = useState(value("kind"));
+  const hideFromWebsite = v ? v.hideFromWebsite === "on" : initial.hideFromWebsite;
+  const publicKind = isPublicEventKind(kind as CalendarEventKind);
 
   return (
     <>
@@ -179,6 +190,36 @@ function EventFields({
               )}
             </div>
           </fieldset>
+
+          {/* Always in the form (so switching kinds back and forth keeps the choice); shown for the kinds the team
+              website lists. */}
+          <div className={cn("rounded-lg border border-ink-200 bg-ink-50/60 p-3", !publicKind && "hidden")}>
+            <CheckboxField
+              name="hideFromWebsite"
+              defaultChecked={hideFromWebsite}
+              label="Hide from the team website"
+              description={
+                <>
+                  The team website&apos;s Events page lists {PUBLIC_EVENT_KINDS_SENTENCE} from the Team calendar — the title,
+                  days, times, location, and link, never the notes. Team meetings never go on it.
+                </>
+              }
+            />
+            {websiteOff && (
+              <p className="mt-2 pl-7 text-sm text-ink-500">
+                The Events page is turned off on the team website right now (Admin → Approvals → Team website): no events are shown
+                there until it&apos;s turned on.
+              </p>
+            )}
+          </div>
+          {!publicKind && (
+            <p className="flex items-start gap-2 text-sm text-ink-500">
+              <Globe className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span className="min-w-0">
+                Not on the team website: only {PUBLIC_EVENT_KINDS_SENTENCE} are listed there (never team meetings).
+              </span>
+            </p>
+          )}
         </CardBody>
       </Card>
 
@@ -213,10 +254,30 @@ function EventFields({
       <Card>
         <CardHeader title="Details" />
         <CardBody className="space-y-5">
-          <Field label="Location" htmlFor="location" error={errors.location} optional hint="A venue name or an address (it opens in Maps).">
+          <Field
+            label="Location"
+            htmlFor="location"
+            error={errors.location}
+            optional
+            hint={
+              publicKind && !websiteOff
+                ? "A venue name or an address (it opens in Maps). Shown on the team website unless it's hidden above — never someone's home."
+                : "A venue name or an address (it opens in Maps)."
+            }
+          >
             <Input {...control("location")} maxLength={LIMITS.calendarLocationMax} placeholder="e.g. Anaheim High School, 811 W Lincoln Ave" autoComplete="off" />
           </Field>
-          <Field label="Link" htmlFor="link" error={errors.link} optional hint="The FTC Events page, a sign-up form, or a flyer.">
+          <Field
+            label="Link"
+            htmlFor="link"
+            error={errors.link}
+            optional
+            hint={
+              publicKind && !websiteOff
+                ? "The FTC Events page, a sign-up form, or a flyer. Shown on the team website unless it's hidden above — only links anyone may open."
+                : "The FTC Events page, a sign-up form, or a flyer."
+            }
+          >
             <Input
               {...control("link")}
               inputMode="url"

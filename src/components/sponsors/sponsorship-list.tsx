@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleCheck, Globe, Mail, Paperclip, TriangleAlert } from "lucide-react";
+import { CircleCheck, Globe, ImageOff, Mail, Paperclip, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
@@ -64,6 +64,23 @@ function FileCount({ count }: { count: number }) {
     >
       <Paperclip className="size-3" aria-hidden />
       {count}
+    </span>
+  );
+}
+
+/**
+ * "Logo needed": the sponsor is thanked on the team website (Accepted / Finished, "Thank them on the team website" on)
+ * but has no logo yet. The sponsor's page has the upload.
+ */
+function LogoNeeded({ needed }: { needed: boolean }) {
+  if (!needed) return null;
+  return (
+    <span
+      title="Thanked on the team website without a logo: add it on the sponsor's page."
+      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200"
+    >
+      <ImageOff className="size-3" aria-hidden />
+      Logo needed
     </span>
   );
 }
@@ -196,16 +213,18 @@ export function SponsorshipList({
                 <div className="min-w-0 flex-1 space-y-2">
                   {highlight && marked(item.id) && <HighlightNote highlight={highlight} id={`sponsor-note-phone-${item.id}`} name={item.name} />}
                   <div className="flex items-start justify-between gap-3">
-                    <div className="-my-1 flex min-w-0 items-center gap-1.5">
+                    {/* Wraps: the badges go under the name rather than squeeze it. */}
+                    <div className="-my-1 flex min-w-0 flex-wrap items-center gap-x-1.5">
                       <Link
                         href={sponsorHref(item.id)}
                         data-sponsor-link={item.id}
                         aria-describedby={marked(item.id) ? `sponsor-note-phone-${item.id}` : undefined}
-                        className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
+                        className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 break-words hover:text-brand-700"
                       >
                         {item.name}
                       </Link>
                       <FileCount count={item.fileCount} />
+                      <LogoNeeded needed={item.logoNeeded} />
                     </div>
                     {item.amountReceived !== null && (
                       <span className="shrink-0 pt-1.5 text-sm">
@@ -283,16 +302,18 @@ export function SponsorshipList({
                       </td>
                     )}
                     <td className="min-w-0 px-3 py-2 lg:px-4">
-                      <div className="flex min-w-0 items-center gap-1.5">
+                      {/* Wraps: "Logo needed" goes under the name rather than squeeze it (or break it mid-word). */}
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
                         <Link
                           href={sponsorHref(item.id)}
                           data-sponsor-link={item.id}
                           aria-describedby={marked(item.id) ? `sponsor-note-table-${item.id}` : undefined}
-                          className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 wrap-anywhere hover:text-brand-700"
+                          className="flex min-h-10 min-w-0 items-center font-semibold text-ink-900 break-words hover:text-brand-700"
                         >
                           {item.name}
                         </Link>
                         <FileCount count={item.fileCount} />
+                        <LogoNeeded needed={item.logoNeeded} />
                       </div>
                       <ContactLinks item={item} />
                       {folded.length > 0 && (

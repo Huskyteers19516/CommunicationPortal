@@ -16,16 +16,26 @@ export const PUBLIC_PROGRESS_ID_SALT_KEY = "public-progress-id-salt";
 export const TEAM_SITE_ORIGIN = "https://huskyteers19516.github.io";
 /** The progress page on the team website. */
 export const TEAM_SITE_PROGRESS_URL = `${TEAM_SITE_ORIGIN}/progress`;
-/** The public JSON endpoint (this site). */
-export const PUBLIC_PROGRESS_PATH = "/api/public/progress";
+/**
+ * The public JSON endpoint (this site), and every endpoint that answers without a session — kept in
+ * src/lib/public-api.ts (with PUBLIC_API_FILE_PREFIXES and isPublicApiPath, which the proxy uses) and re-exported
+ * here so older imports keep working.
+ */
+export { PUBLIC_API_PATHS, PUBLIC_PROGRESS_PATH } from "./public-api";
 
 /** Used when neither the settings nor the attendance schedule say where the season starts. */
 export const PUBLIC_PROGRESS_DEFAULT_SINCE: DateOnly = "2026-08-31";
 
 /** Most entries in `recent`. */
 export const PUBLIC_RECENT_MAX = 15;
-/** Weeks in `weekly` (Monday to Sunday, team timezone, the current one last). */
+/** Most weeks in `weekly` (Monday to Sunday, team timezone, the current one last; fewer when `since` is later). */
 export const PUBLIC_WEEKS = 8;
+/**
+ * People who left themselves off the list count in the totals only when at least this many in the same group (a
+ * subteam, or everyone without one) did: otherwise the group's total minus the listed people would be exactly their
+ * numbers. Below it they're left out of every number.
+ */
+export const PUBLIC_HIDDEN_MIN_GROUP = 2;
 
 export const NAME_STYLES = ["full", "first-initial", "initials", "hidden"] as const;
 export type NameStyle = (typeof NAME_STYLES)[number];
@@ -41,10 +51,21 @@ export interface PublicProgressSettings {
   /** Off: the endpoint answers {"enabled": false} and the page says progress is private. */
   enabled: boolean;
   nameStyle: NameStyle;
-  /** Off: `recent[].title` is null. */
+  /** Off: `recent[].title` is null. Titles are free text written for the team: they go to the open internet. */
   showTaskTitles: boolean;
-  /** Count tasks due on or after this day. Null = the attendance reports' start (`reportStart`). */
+  /**
+   * Count tasks due on or after this day. Null = the attendance reports' start (`reportStart`). The Events page
+   * (GET /api/public/events) starts there too.
+   */
   since: DateOnly | null;
+  /**
+   * Off: GET /api/public/sponsors answers {"enabled": false} and no logo is served. Independent of `enabled`. Off
+   * until someone with admin access turns it on (after the Business team has checked the list), so sponsors added
+   * before the website showed them — imported from a spreadsheet, say — never go public on their own.
+   */
+  showSponsors: boolean;
+  /** Off: GET /api/public/events answers {"enabled": false}. Independent of `enabled`. Off until turned on, like sponsors. */
+  showEvents: boolean;
 }
 
 export const DEFAULT_PUBLIC_PROGRESS_SETTINGS: PublicProgressSettings = {
@@ -52,6 +73,9 @@ export const DEFAULT_PUBLIC_PROGRESS_SETTINGS: PublicProgressSettings = {
   nameStyle: "full",
   showTaskTitles: true,
   since: null,
+  // Off until an admin turns them on (Admin → Team website): existing sponsors and events aren't published on their own.
+  showSponsors: false,
+  showEvents: false,
 };
 
 /** The saved settings with defaults for anything missing or unexpected (never throws). */
@@ -69,12 +93,14 @@ export function parsePublicProgressSettings(body: string | null | undefined): Pu
     nameStyle: NAME_STYLES.includes(r.nameStyle as NameStyle) ? (r.nameStyle as NameStyle) : d.nameStyle,
     showTaskTitles: typeof r.showTaskTitles === "boolean" ? r.showTaskTitles : d.showTaskTitles,
     since: typeof r.since === "string" && isDateOnly(r.since) ? r.since : d.since,
+    showSponsors: typeof r.showSponsors === "boolean" ? r.showSponsors : d.showSponsors,
+    showEvents: typeof r.showEvents === "boolean" ? r.showEvents : d.showEvents,
   };
 }
 
 export function serializePublicProgressSettings(settings: PublicProgressSettings): string {
-  const { enabled, nameStyle, showTaskTitles, since } = settings;
-  return JSON.stringify({ enabled, nameStyle, showTaskTitles, since });
+  const { enabled, nameStyle, showTaskTitles, since, showSponsors, showEvents } = settings;
+  return JSON.stringify({ enabled, nameStyle, showTaskTitles, since, showSponsors, showEvents });
 }
 
 /** The first character (a whole one: an emoji or accented letter isn't cut in half), upper-cased. */
@@ -154,6 +180,8 @@ export interface PublicCounts {
   itemsDone: number;
   /** To do, checked off and waiting for review, or sent back — on tasks that aren't marked finished. */
   itemsOpen: number;
+  /** Of `itemsOpen`: checked off and waiting for a leader's review. */
+  itemsSubmitted: number;
   /** itemsDone / (itemsDone + itemsOpen), whole percent; 0 when both are 0. */
   completion: number;
   /** Items approved on the last 7 days (today and the 6 before it, team timezone). */
@@ -165,7 +193,7 @@ export interface PublicSubteam extends PublicCounts {
   name: string;
   /** Tasks with an open item of someone in this subteam. */
   tasksActive: number;
-  /** Everyone counted in this subteam (people hidden from the list included). */
+  /** Everyone counted in this subteam (people hidden from the list included when they're counted). */
   people: number;
 }
 
@@ -175,6 +203,7 @@ export interface PublicPerson extends PublicCounts {
   name: string;
   subteam: Subteam | null;
   role: string;
+  /** Their newest approval, to the minute. */
   lastDoneAt: string | null;
 }
 
@@ -183,8 +212,10 @@ export interface PublicRecent {
   title: string | null;
   /** The person's subteam. */
   subteam: Subteam | null;
-  /** The person's name as the page shows names, or null (names hidden, or they left themselves off). */
+  /** The person's name as the page shows names, or null when names are hidden. (People who left themselves off the
+   * list aren't in `recent` at all.) */
   who: string | null;
+  /** When it was approved, to the minute. */
   at: string;
 }
 
@@ -198,7 +229,7 @@ export interface PublicProgress {
     tasksFinished: number;
     /** Tasks with at least one open counted item (and not marked finished). */
     tasksActive: number;
-    /** Everyone counted (people hidden from the list included). */
+    /** Everyone counted (people hidden from the list included when they're counted). */
     people: number;
   };
   subteams: PublicSubteam[];

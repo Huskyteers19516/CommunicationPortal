@@ -10,6 +10,7 @@ import { firstName, greetingFor, longDate } from "@/components/checklist/format"
 import { ReviewQueueLink, TodaySummary } from "@/components/checklist/today-summary";
 import { OrdersToOrderLink } from "@/components/orders/orders-to-order-link";
 import { PartsMakingLink } from "@/components/parts/parts-making-link";
+import { SponsorLogosLink } from "@/components/sponsors/sponsor-logos-link";
 import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -18,12 +19,13 @@ import { timeInTimezone } from "@/lib/calendar";
 import { todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
-import { canAccessManage } from "@/server/permissions";
+import { canAccessManage, ledSubteam } from "@/server/permissions";
 import { listUnreadAnnouncements } from "@/server/queries/announcements";
 import { getNextMeet } from "@/server/queries/calendar";
 import { getTodayView } from "@/server/queries/checklist";
 import { getNavCounts } from "@/server/queries/nav";
 import { countPartsImMaking } from "@/server/queries/parts";
+import { countSponsorsNeedingLogo } from "@/server/queries/sponsorships";
 
 export const metadata: Metadata = { title: "Today" };
 
@@ -39,13 +41,14 @@ export default async function TodayPage() {
   const today = todayInTimezone(timeZone, now);
   const nowIso = now.toISOString();
 
-  const [view, navCounts, partsMaking, nextMeet, unreadAnnouncements] = await Promise.all([
+  const [view, navCounts, partsMaking, nextMeet, unreadAnnouncements, logosNeeded] = await Promise.all([
     getTodayView(actor, today),
     // Cached per request — the layout already loaded these for the nav badges.
     canAccessManage(actor) ? getNavCounts(actor) : null,
     countPartsImMaking(actor),
     getNextMeet(today, timeInTimezone(timeZone, now)),
     listUnreadAnnouncements(actor),
+    countSponsorsNeedingLogo(actor),
   ]);
   const reviewCount = navCounts?.reviewQueue ?? 0;
 
@@ -68,6 +71,7 @@ export default async function TodayPage() {
         {!allEmpty && <TodaySummary summary={view.summary} />}
         <ReviewQueueLink count={reviewCount} />
         <PartsMakingLink count={partsMaking} />
+        <SponsorLogosLink count={logosNeeded} mine={ledSubteam(actor) !== "BUSINESS"} />
         <OrdersToOrderLink actor={actor} />
 
         {allEmpty ? (

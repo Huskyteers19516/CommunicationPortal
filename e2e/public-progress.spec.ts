@@ -6,6 +6,11 @@ import { PEOPLE, signIn } from "./helpers";
 // Team website turns it off ({"enabled": false}) and on again. Each person can leave themselves off in Settings.
 
 const TEAM_SITE = "https://huskyteers19516.github.io";
+/**
+ * The server reuses a built answer for PUBLIC_ANSWER_TTL_MS (10 s, src/server/public-api.ts), so a saved change shows
+ * up within that — not necessarily on the very next request. Poll for it.
+ */
+const FRESH = { timeout: 20_000 };
 
 interface Answer {
   enabled: boolean;
@@ -55,11 +60,12 @@ test.describe("public progress for the team website", () => {
     await card.getByRole("button", { name: "Save", exact: true }).click();
     await expect(card.getByText(/now says progress is private/)).toBeVisible();
     await expect(card.getByText("Off", { exact: true })).toBeVisible();
-    expect(await read()).toEqual({ enabled: false });
+    await expect.poll(read, FRESH).toEqual({ enabled: false });
 
     await enabled.check();
     await card.getByRole("button", { name: "Save", exact: true }).click();
     await expect(card.getByText(/shows the new settings/)).toBeVisible();
+    await expect.poll(async () => (await read()).enabled, FRESH).toBe(true);
     const back = await read();
     expect(back.enabled).toBe(true);
     expect(back.people?.length).toBeGreaterThan(0);
@@ -70,7 +76,7 @@ test.describe("public progress for the team website", () => {
     const guest = await playwright.request.newContext({ baseURL });
     const names = async () =>
       (((await (await guest.get("/api/public/progress")).json()) as Answer).people ?? []).map((p) => p.name);
-    expect(await names()).toContain("Ethan Chen");
+    await expect.poll(names, FRESH).toContain("Ethan Chen");
 
     await signIn(page, PEOPLE.buildMember);
     await page.goto("/settings");
@@ -79,12 +85,12 @@ test.describe("public progress for the team website", () => {
     await page.getByText("Show me on the team website's progress page").click();
     await expect(page.getByRole("status").filter({ hasText: "no longer listed" })).toBeVisible();
     await expect(show).not.toBeChecked();
-    expect(await names()).not.toContain("Ethan Chen");
+    await expect.poll(names, FRESH).not.toContain("Ethan Chen");
 
     await page.getByText("Show me on the team website's progress page").click();
     await expect(page.getByRole("status").filter({ hasText: "You're shown on the team website." })).toBeVisible();
     await expect(show).toBeChecked();
-    expect(await names()).toContain("Ethan Chen");
+    await expect.poll(names, FRESH).toContain("Ethan Chen");
     await guest.dispose();
   });
 });

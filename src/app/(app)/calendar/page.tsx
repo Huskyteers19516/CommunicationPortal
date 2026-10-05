@@ -32,6 +32,7 @@ import { type DateOnly, todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { canManageCalendar } from "@/server/permissions";
+import { getPublicEventsWebsite } from "@/server/queries/public-events";
 import {
   CALENDAR_PAST_LIMIT,
   countCalendarEvents,
@@ -289,7 +290,10 @@ async function UpcomingView({
   iltTbd: boolean;
   href: HrefFn;
 }) {
-  const { items, truncated } = await getUpcomingCalendarEvents({ today, kind: filters.kind });
+  const [{ items, truncated }, website] = await Promise.all([
+    getUpcomingCalendarEvents({ today, kind: filters.kind }),
+    getPublicEventsWebsite(),
+  ]);
   return (
     <section aria-label="Coming up" className="max-w-3xl space-y-4">
       {items.length === 0 ? (
@@ -309,7 +313,7 @@ async function UpcomingView({
         </Card>
       ) : (
         <>
-          <EventsByMonth events={items} today={today} />
+          <EventsByMonth events={items} today={today} website={website} />
           {truncated && <Alert>Showing the next {items.length} events.</Alert>}
         </>
       )}
@@ -318,7 +322,7 @@ async function UpcomingView({
 }
 
 async function PastView({ filters, today, href }: { filters: Filters; today: DateOnly; href: HrefFn }) {
-  const { items, total } = await getPastCalendarEvents({ today, kind: filters.kind });
+  const [{ items, total }, website] = await Promise.all([getPastCalendarEvents({ today, kind: filters.kind }), getPublicEventsWebsite()]);
   return (
     <section aria-label="Past events" className="max-w-3xl space-y-4">
       {items.length === 0 ? (
@@ -333,7 +337,7 @@ async function PastView({ filters, today, href }: { filters: Filters; today: Dat
       ) : (
         <>
           {total > items.length && <Alert>Showing the {CALENDAR_PAST_LIMIT} most recent events.</Alert>}
-          <EventsByMonth events={items} today={today} />
+          <EventsByMonth events={items} today={today} website={website} />
         </>
       )}
     </section>

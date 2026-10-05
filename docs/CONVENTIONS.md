@@ -184,6 +184,49 @@ page catches up. The list's **Select** mode removes several at once
 (`deleteSponsorships`: 1–200 ids in one transaction, only the ones the person `canDeleteSponsorship` — the rest are named back,
 ids that don't exist only counted — and one count toward the hourly write limit; "Select all" stops at `SPONSORSHIP_BULK_REMOVE_MAX`).
 
+**Team website** (the edit form's "Team website" section; the public side is in **Public API for the team website**):
+- `Sponsorship.showOnWebsite` ("Thank them on the team website", default on) and `publicName` ("Name on the website",
+  `LIMITS.sponsorNameMax`; empty = `name`). The form sends a hidden `websiteFields=1` with them
+  (`sponsorshipWebsiteFields` in `src/lib/sponsorship-fields.ts`, merged into the form's check so every error shows at
+  once); a save without it (the import, its "update existing", an older form) never changes them — an unchecked box
+  is only "off" when the section was sent. A sponsor is **public** while it's ACCEPTED or FINISHED with
+  `showOnWebsite` (`isPublicSponsor`, `PUBLIC_SPONSOR_STAGES` in `src/lib/public-sponsors.ts`) — and the website shows
+  it only once someone with admin access has turned the Sponsors page on (`showSponsors`, off by default); while it's
+  off, the section says so (`publicSponsorsShown`). The Website field's hint says only its homepage is ever linked
+  (`publicSponsorUrl`: the field also holds application pages, whose address can carry ids or tokens).
+- **Brand logo** (`SponsorshipLogo`, one per sponsor, `services/sponsorship-logos.ts`): everyone who can edit the sponsor
+  (`assertCanUseSponsorships`: the Business team and staff) uploads, replaces, or removes it on the sponsor's page. The
+  picker sits inside the edit form but saves on its own right away (`SponsorshipLogoField`: its file input has no
+  `name`, so the edit form never sends it; it calls the actions with its own `FormData`), and a logo change never
+  touches the sponsor's `updatedAt` (so an open edit form doesn't go stale). Checked like posters, by contents
+  (`checkSponsorLogo`, reusing `sniffPosterFile` / `posterImageSize` / `isHeicLike` / `withKindExtension` from
+  `services/posters.ts`): only PNG, JPG, or WebP (never SVG — it can carry script — nor GIF or PDF; HEIC gets the
+  iPhone hint; a file named or typed as a PNG / JPG / WebP that isn't really one gets `SPONSOR_LOGO_UNREADABLE_MESSAGE`,
+  a real SVG / GIF / PDF `SPONSOR_LOGO_TYPES_MESSAGE`), a readable pixel size within `POSTER_IMAGE_MAX_SIDE` / `_PIXELS`
+  (`sponsorLogoTooLargeMessage`), ≤ 4 MB, stored with its real type and a matching extension, plus `width`/`height`,
+  and **without its metadata** (`stripImageMetadata` in `src/server/files/image-metadata.ts`, by the file's structure,
+  never re-encoded: JPEG APP1 Exif/XMP, APP2 except the ICC profile, APP3–APP13, APP15, COM, and anything after the
+  end; PNG: every chunk except the picture's own (`PNG_KEEP_CHUNKS`: IHDR, PLTE, IDAT, IEND, colour and APNG chunks —
+  so text, `eXIf`, `tIME`, `dSIG`, `caBX`, and any private chunk go) and anything after `IEND`; WebP: every chunk except
+  `WEBP_KEEP_CHUNKS` (VP8, VP8L, VP8X, ALPH, ANIM, ANMF, ICCP — so `EXIF`, `XMP `, `C2PA`, and any unknown chunk go), with
+  their VP8X flags cleared — a JPEG / PNG orientation other than 1 is kept as an Exif block with only that). Logos are public:
+  a phone's picture can say where it was taken, on what, and by whom. The browser checks size and type first (`sponsorLogoProblem`). Uploads
+  share the sponsor files' hourly limit (`sponsorship-file:<id>`, 30) and per-person allowance
+  (`assertSponsorUploadAllowance`: sponsor files **and** logos together under `SPONSOR_FILE_BYTES_PER_PERSON`, not
+  counting the logo being replaced; the Business leader and all-scope staff aren't limited), and the team's cap. A
+  replacement is a **new row** (new id, so a new public address; the old row is deleted in the same transaction, the
+  sponsor row locked `FOR UPDATE` so two uploads take turns); removing one is `removeSponsorshipLogo` (the hourly write
+  limit). Shown on the sponsor's page by `src/app/(app)/sponsors/logos/[id]/route.ts` (Sponsorships people only, 404
+  for everyone else, poster headers with `immutable`); deleting a sponsor deletes its logo.
+- **Logo needed** (`loadSponsorsNeedingLogo` in `queries/sponsorships.ts`): a public sponsor without a logo, unless
+  another public sponsor with the same public name (`publicSponsorKey`: case and spacing ignored) has one — the
+  website shows that one, so last year's row of the same sponsor doesn't nag. The list shows a "Logo needed" badge, a
+  **Logo needed (N)** chip (`?filter=logo`, only while there are some; `SPONSORSHIP_FILTERS.logo`), and the sponsor's
+  page says so (or that the website already shows the same name's logo, `logoFromSameName`). Today's
+  `SponsorLogosLink` ("N sponsors need a logo for the team website", `countSponsorsNeedingLogo`): every one for the
+  Business leader (`ledSubteam === "BUSINESS"`), the ones they're the person on (`ownerId`) for everyone else in
+  Sponsorships (linking to `?filter=logo&mine=1`); nothing while the owner has sponsors turned off on the website.
+
 ## Parts queue (`src/server/services/parts.ts`, `/parts`)
 
 What needs to be 3D printed, laser cut, CNC'd, cut, or machined, in priority order (`Part.position`, smaller = sooner).
@@ -705,6 +748,18 @@ shortcut; a dotted grid plus that month's list on phones and tablets), List (`?v
 `/calendar/[id]/event.ics` (`buildIcs`: CRLF, 75-octet folding, TEXT escaping, all-day as DATE with exclusive DTEND, timed
 events converted to UTC with `zonedTimeToUtc`, UID `<id>@huskyteers-portal`) — signed-in ACTIVE users only, `text/calendar`,
 `attachment`, `private, no-store`, `nosniff`.
+**Team website**: league meets, the ILT, scrimmages, competitions, and outreach (`PUBLIC_EVENT_KINDS` in
+`src/lib/public-events.ts`) go on the team website's Events page (`GET /api/public/events`, see **Public API for the team
+website**) unless `CalendarEvent.hideFromWebsite` ("Hide from the team website") is on; Extra meetings, team events,
+deadlines, and "other" never do. The form's box is always in the form (so switching kinds back and forth keeps it) but
+only shown for those kinds, with a hint naming them and that team meetings never go on it; other kinds get a one-line
+note instead. It's a plain checkbox field (`hideFromWebsite: checkbox` in `calendarEventFieldSchema`: missing = off).
+For those kinds the Location and Link hints say they're shown on the team website (never someone's home, only links
+anyone may open); while the owner has events turned off (`websiteOff`, from `getPublicEventsWebsite`) the box says the
+Events page is off instead.
+The event page, and the List / Past rows, show **On the team website** / **Hidden from the team website**
+(`TeamWebsiteMarker`, `publicEventStatus(event, getPublicEventsWebsite())`: nothing for other kinds, while the owner has
+events turned off, or for an event that ended before the website's `since`).
 
 ## Announcements (`src/server/services/announcements.ts`, `/announcements`)
 
@@ -836,62 +891,231 @@ The team website (`https://huskyteers19516.github.io/progress`, its own repo, a 
 shows guests the team's live progress by polling **`GET /api/public/progress`** every 30 s
 (`src/app/api/public/progress/route.ts` → `publicProgressResponse` in `src/server/public-api.ts` →
 `getPublicProgress` in `src/server/queries/public-progress.ts`; types and client-safe helpers in
-`src/lib/public-progress.ts`). It's the portal's **only** endpoint without a session: the proxy lets `/api/public/*`
-through (everything else under `/api` still gets the JSON 401), and the route never reads cookies, so it can be cached
-publicly. Never add anything personal to it.
+`src/lib/public-progress.ts`). Which paths answer without a session, the CORS and caching rules, and the Sponsors and
+Events endpoints next to it are in **Public API for the team website** below. The route never reads cookies, so it can
+be cached publicly. Never add anything personal to it.
 
-- **Answer**: `{ enabled: true, team: { name, number }, since, updatedAt, totals: { itemsDone, itemsOpen, completion,
-  doneLast7Days, tasksFinished, tasksActive, people }, subteams: [{ key, name, itemsDone, itemsOpen, completion,
-  doneLast7Days, tasksActive, people }] (always SOFTWARE, BUILD, BUSINESS), people: [{ id, name, subteam, role,
-  itemsDone, itemsOpen, completion, doneLast7Days, lastDoneAt }], recent: [{ title, subteam, who, at }], weekly:
-  [{ weekStart, itemsDone }] }`, or just `{ enabled: false }` while it's turned off.
+- **Answer**: `{ enabled: true, team: { name, number }, since, updatedAt, totals: { itemsDone, itemsOpen,
+  itemsSubmitted, completion, doneLast7Days, tasksFinished, tasksActive, people }, subteams: [{ key, name, itemsDone,
+  itemsOpen, itemsSubmitted, completion, doneLast7Days, tasksActive, people }] (always SOFTWARE, BUILD, BUSINESS),
+  people: [{ id, name, subteam, role, itemsDone, itemsOpen, itemsSubmitted, completion, doneLast7Days, lastDoneAt }],
+  recent: [{ title, subteam, who, at }], weekly: [{ weekStart, itemsDone }] }`, or just `{ enabled: false }` while it's
+  turned off.
 - **Who counts**: ACTIVE accounts that aren't mentors or teachers (`publicStudentsWhere`: members, subteam leaders, the
   captain; owners by their position). Pending, turned-down, and disabled accounts never appear anywhere in it.
   `User.hideFromPublicProgress` ("Show me on the team website's progress page" off, in Settings —
-  `updatePublicProgressVisibility`, your own account only) takes a person off `people` and makes them `who: null` in
-  `recent`, but their items still count in `totals`, `subteams`, and `weekly` (and `people` counts in `totals` /
-  `subteams` include them). Mentors and teachers get no switch (they're never listed).
+  `updatePublicProgressVisibility`, your own account only) takes a person off `people` and out of `recent` entirely
+  (a title and a time could still point at them). Their items count in `totals`, `subteams`, `weekly`, the task
+  counts, and the `people` counts only when at least `PUBLIC_HIDDEN_MIN_GROUP` (2) people in the same group — a
+  subteam, or everyone without one (the captain) — are hidden; below that they're left out of every number
+  (`uncountedHiddenIds`), since the group's total minus its listed people would be exactly theirs. Admin → Team website
+  says how many are hidden and how many of them aren't counted. Mentors and teachers get no switch (never listed).
 - **What counts**: the checklist items (`TaskAssignment`) of tasks whose **due date is on or after `since`** (future
   due dates included). `itemsDone` = APPROVED (including "counted with the whole task", `finishedWithTask`);
   `itemsOpen` = TODO / SUBMITTED / REJECTED on tasks **not** marked finished; closed items (not approved on a finished
-  task) count as neither. `completion` = `round(100 × done / (done + open))`, 0 when both are 0 (the page shows "—").
+  task) count as neither. `itemsSubmitted` = the SUBMITTED part of `itemsOpen` (checked off, waiting for review — the
+  page shows it as its own segment). `completion` = `round(100 × done / (done + open))`, 0 when both are 0 (the page
+  shows "—").
   "Done when" = `reviewedAt` (the finish time for whole-task credit): `doneLast7Days` = approved on today or the 6 days
   before (team timezone), `lastDoneAt` = the newest, `weekly` = approvals per Monday–Sunday week (team timezone,
-  `AT TIME ZONE` in SQL, so daylight saving is right), the last 8 weeks with the current one last, zero-filled.
+  `AT TIME ZONE` in SQL, so daylight saving is right), zero-filled, the current week last: the last 8 weeks, but
+  starting at the week `since` falls in when that's later (no empty weeks from before the season), and at least the
+  current week (`firstPublicWeek`). Times (`lastDoneAt`, `recent[].at`) are to the minute (`publicTime`).
   Subteams go by the **person's** subteam (the captain counts in `totals` only); a subteam's `tasksActive` = tasks
   with an open item of someone in it. Team `tasksActive` = tasks with an open counted item; `tasksFinished` = the other
   tasks with counted items (marked finished, or every counted item approved). Tasks with no counted items (only a
   mentor on it, nobody) aren't counted.
 - **`recent`**: the newest `PUBLIC_RECENT_MAX` (15) approvals, newest first, without whole-task credit (one finished
-  task could fill it — the same rule as the overview's Recent activity). `title` = the task's title (null when task
-  titles are off), `subteam` = the person's, `who` = their name as the page shows names (null when names are hidden or
-  they hid themselves).
+  task could fill it — the same rule as the overview's Recent activity) and without anyone who hid themselves.
+  `title` = the task's title (null when task titles are off — titles are free text and go to the open internet, the
+  Admin card says so), `subteam` = the person's, `who` = their name as the page shows names (null when names are
+  hidden).
 - **Names and positions**: `nameStyle` `full` ("Ethan Chen", the default — the team page already lists full names),
   `first-initial` ("Ethan C."), `initials` ("E.C."), or `hidden` (`people: []`, every `who` null) — `publicName`.
   Positions in the team website's words (`publicRoleLabel`): Captain, Software/Build/Business Lead, Software/Build/
   Business Team. `people` is sorted by subteam (Software, Build, Business, then none) and name — not ranked.
-- **Ids**: `id` = HMAC-SHA256(salt, `person:<account id>`), base64url, 16 characters (`publicPersonId`): stable,
-  never the account id. The salt is 32 random bytes in the TeamNote `public-progress-id-salt`, made on the first
-  request (`createMany … skipDuplicates`, then read back, so two first requests agree; one that's missing or too short
-  is replaced). Changing it gives everyone new ids.
+- **Ids**: `id` = HMAC-SHA256(salt, `person:<name style>:<account id>`), base64url, 16 characters
+  (`publicPersonId`): stable between polls, never the account id, and new whenever the name style changes (a copy saved
+  with full names can't be matched up by id with later initials). The salt is 32 random bytes in the TeamNote
+  `public-progress-id-salt` (`publicProgressIdSalt`), made when the settings are saved, so the anonymous request
+  normally only reads; if it's still missing, the first request that needs ids makes it (`createMany …
+  skipDuplicates`, then read back, so two first requests agree; one that's too short is replaced). With names hidden
+  it isn't touched. Changing it gives everyone new ids.
 - **Never in it**: emails, submission or review notes, due dates or overdue/late info, questions, task or account ids,
   anything about mentors, teachers, or accounts that aren't ACTIVE. `tests/public-progress.test.ts` checks each.
 - **Settings** (TeamNote `public-progress`, JSON, `parsePublicProgressSettings` falls back to the defaults field by
   field): `enabled` (true), `nameStyle` ("full"), `showTaskTitles` (true), `since` (null = the attendance schedule's
-  `reportStart`, default 2026-08-31). Changed in **Admin → Approvals → Team website** (`TeamWebsiteCard`, everyone with
-  admin access — `canManagePublicProgress`; `updatePublicProgressSettings`: unchecked boxes = off, an empty date =
-  null, a date within 5 years back / 1 year ahead, `PUBLIC_PROGRESS_SETTINGS_RATE_LIMIT` 60 saves an hour), which
-  also links to the page and the JSON and says how many people hid themselves (a count only).
-- **HTTP**: GET / HEAD / OPTIONS (Next.js answers 405 to the rest). `Access-Control-Allow-Origin` = the request's
-  `Origin` when it's `https://huskyteers19516.github.io` or in `PUBLIC_PROGRESS_EXTRA_ORIGINS` (comma-separated, e.g.
-  `http://localhost:4321` for working on the website; only http(s) origins, `*` is ignored), **otherwise the team
-  website** — never another site, never `*`, never credentials (so a CDN copy that ignored `Vary` still works for the
-  team website). Always `Vary: Origin`, `Cache-Control: public, s-maxage=15, stale-while-revalidate=45` (Vercel's
-  CDN answers most polls; a settings change shows within about a minute), `X-Content-Type-Options: nosniff`. A
-  failure is a 503 `{ error }` with `no-store`. OPTIONS (preflight) is a 204 with `Access-Control-Allow-Methods`.
-- **Cost**: one settings read, then five queries at once (people, per-person counts, tasks per subteam with `GROUPING
-  SETS`, weekly buckets, recent) — the counts are SQL aggregates with enum values as literals, never one query per
-  person.
+  `reportStart`, default 2026-08-31; the Events page starts there too), `showSponsors` (**false**) and `showEvents`
+  (**false**) — the Sponsors and Events pages' own switches, independent of `enabled`, **off until someone with admin
+  access turns them on** (settings saved before they existed read as off), so sponsors and events already in the
+  portal — imported from a spreadsheet, written for the team — never go public on their own. Under each switch the card
+  says what it shows, or would show once on (`getTeamWebsitePreview` in `queries/team-website.ts`: how many sponsor
+  entries, how many without a logo, how many events — counts only). The demo seed turns both on. Changed in **Admin → Approvals → Team website** (`TeamWebsiteCard`, everyone with admin access —
+  `canManagePublicProgress`; `updatePublicProgressSettings`: unchecked boxes = off, an empty date = null, a date within
+  5 years back / 1 year ahead, `PUBLIC_PROGRESS_SETTINGS_RATE_LIMIT` 60 saves an hour), which also links to the pages
+  and the JSON and says how many people hid themselves (a count only). The card's On/Off badge is the progress switch.
+- **HTTP**: `publicProgressResponse` is a thin wrapper around `publicJsonResponse` (see **Public API for the team
+  website**: GET / HEAD / OPTIONS, CORS for the team website only, `public, s-maxage=15, stale-while-revalidate=45`, a
+  503 `{ error }` with `no-store`), so a settings change shows within about a minute.
+- **Cost**: one settings read, then five queries **one after another** (people, per-person counts, tasks per subteam
+  with `GROUPING SETS`, weekly buckets, recent), so a build holds one pool connection at a time — the counts are SQL
+  aggregates with enum values as literals, never one query per person. The built JSON is kept in memory for
+  `PUBLIC_ANSWER_TTL_MS` (10 s) per server instance (`cachedPublicAnswer`), so the database work doesn't depend on the
+  query string.
+
+## Public API for the team website
+
+The team website (its own repo, static Astro on GitHub Pages; its `PUBLIC_PORTAL_URL` points here) reads public JSON
+and images from `src/app/api/public/**` in the browser, without signing in: `/progress` (above), `/sponsors`,
+`/events`, and `/workshop` (see **Workshop (team website)**). Another feature adding a public endpoint follows exactly this.
+
+- **Which paths are public** (`src/lib/public-api.ts`, client-safe): `PUBLIC_API_PATHS: readonly string[]` (exact
+  paths: `PUBLIC_PROGRESS_PATH`, `PUBLIC_SPONSORS_PATH`, `PUBLIC_EVENTS_PATH`, `PUBLIC_WORKSHOP_PATH`; `src/lib/public-progress.ts` re-exports
+  `PUBLIC_API_PATHS` and `PUBLIC_PROGRESS_PATH` so older imports keep working), `PUBLIC_API_FILE_PREFIXES: readonly
+  string[]` (each ending with "/": `PUBLIC_SPONSOR_LOGOS_PREFIX` = `/api/public/sponsors/logos/`,
+  `PUBLIC_WORKSHOP_PHOTOS_PREFIX` = `/api/public/workshop/photos/`, `PUBLIC_WORKSHOP_FILES_PREFIX` =
+  `/api/public/workshop/files/`),
+  `PUBLIC_API_ID_RE = /^[A-Za-z0-9_-]{1,64}$/`, and `isPublicApiPath(pathname): boolean` — true for an exact
+  `PUBLIC_API_PATHS` entry, or a prefix followed by exactly one segment matching `PUBLIC_API_ID_RE` (so no further "/",
+  no "%" escapes such as `%2f` or `%2e`, no dots, nothing empty or longer than 64). The proxy (`src/proxy.ts`) uses it
+  on the path as sent (never decoded); anything else under `/api/public/` still gets the JSON 401 without a cookie.
+  `tests/public-progress.test.ts` walks `src/app/api/public`: a static route must be in `PUBLIC_API_PATHS`, an `[id]`
+  route only when its parent path + "/" is in `PUBLIC_API_FILE_PREFIXES` (and every listed path / prefix has its
+  route); each route must import `@/server/public-api` and never read the session, cookies, or headers.
+- **JSON** (`src/server/public-api.ts`): `publicJsonResponse(request, { extraOrigins, now, cache?, build,
+  unavailableMessage, logTag }): Promise<Response>` — `build: () => Promise<string>` returns the answer's JSON text.
+  GET / HEAD answer it (`Content-Type: application/json; charset=utf-8`), OPTIONS is the preflight (204,
+  `Access-Control-Allow-Methods: GET, HEAD, OPTIONS`, `Max-Age` a day), anything else 405 with `Allow`.
+  `Access-Control-Allow-Origin` = the request's `Origin` when it's `https://huskyteers19516.github.io`
+  (`TEAM_SITE_ORIGIN`) or in `PUBLIC_PROGRESS_EXTRA_ORIGINS` (comma-separated, e.g. `http://localhost:4321` for working
+  on the website; only http(s) origins, `*` is ignored), **otherwise the team website** — never another site, never `*`,
+  never credentials (so a CDN copy that ignored `Vary` still works for the team website). Always `Vary: Origin`,
+  `Cache-Control: public, s-maxage=15, stale-while-revalidate=45` (`PUBLIC_CACHE_CONTROL`: Vercel's CDN answers most
+  requests), `X-Content-Type-Options: nosniff`. A failed build is logged as `[<logTag>] couldn't build the answer` and
+  answered with a 503 `{ error: unavailableMessage }`, `no-store`.
+  `cachedPublicAnswer(cache: PublicAnswerCache | undefined, now: Date, build: () => Promise<string>): Promise<string>`
+  keeps a build for `PUBLIC_ANSWER_TTL_MS` (10 s): the CDN keys copies by the whole URL, so `?anything=<random>` always
+  reaches the server, and this makes the database work independent of the query string. One shared build per server
+  instance at a time (each route keeps its own `createPublicAnswerCache()` at module level); a failed build isn't kept;
+  no cache = build every time. `publicProgressResponse` / `publicSponsorsResponse` / `publicEventsResponse` /
+  `publicWorkshopResponse(request,
+  { db, now, teamTimezone, extraOrigins?, cache? })` are the thin wrappers the routes and tests call.
+- **Files** (`publicFileHeaders({ contentType, filename, inline, immutable }): Headers`, the caller adds
+  Content-Length): `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`
+  (`PUBLIC_FILE_CSP`), `Content-Disposition` inline or attachment with a safe filename (`contentDisposition`: an ASCII
+  fallback plus the UTF-8 name), `Cross-Origin-Resource-Policy: cross-origin` (the website embeds it; no CORS header is
+  needed for an `<img>`), and public caching: `immutable` → `PUBLIC_FILE_IMMUTABLE_CACHE` (only when the address
+  changes with the content; see below), else `public, max-age=60, s-maxage=60`. Only pictures (`PUBLIC_INLINE_TYPES`: PNG, JPEG, WebP, GIF) are ever inline, with
+  their own type; anything else (SVG, HTML, PDF — Chrome won't show a sandboxed PDF) is an `application/octet-stream`
+  attachment whatever `inline` says. `filename` is always a neutral public name (sponsor logos:
+  `publicSponsorLogoFilename` → "rev-robotics-logo.png"; Workshop photos "workshop-photo.jpg"), never the name it was
+  uploaded with (that can hold someone's name, a phone's or a folder's) — except Workshop design files, whose cleaned
+  name is part of what a reviewer approves (see **Workshop (team website)**).
+  A public file route is a thin wrapper around **`publicFileResponse(request, { id, load, filename, inline, immutable,
+  notFoundMessage, logTag, store? })`**, which: (1) answers an id that isn't `PUBLIC_API_ID_RE` with a plain 404;
+  (2) answers **any query string** with a `308` to the bare address (relative `Location`, `PUBLIC_FILE_REDIRECT_CACHE`)
+  **before touching the database or R2** — the CDN keys copies by the whole URL, so without this `?cb=1`, `?cb=2`, …
+  would each read the whole file again (the team website never adds a query to a file address); (3) calls `load(id)`,
+  which must read the row **only while its owner is public, in one query with the check in its WHERE** (null → plain
+  `404`, `private, no-store` — never cached, so it can come back; a database failure → plain 503
+  `PUBLIC_FILE_UNAVAILABLE`); (4) sends it with `sendStoredFile` (Postgres, or streamed from R2) and
+  `publicFileHeaders`, turning R2's own errors into the plain 404 (missing object) or 503 `PUBLIC_FILE_UNAVAILABLE`
+  (not set up / not answering) — never the signed-in pages' messages about R2's settings. HEAD sends the headers only.
+  `immutable` caching is `public, max-age=86400, s-maxage=300, immutable`: browsers a day, Vercel's CDN 5 minutes (so a
+  file taken off the website stops being served from the CDN within minutes, and the server reads each file about once
+  per 5 minutes per CDN region).
+- **Sponsors** (`GET /api/public/sponsors`, `getPublicSponsors` in `queries/public-sponsors.ts`, types in
+  `src/lib/public-sponsors.ts`): `{ enabled: true, updatedAt, sponsors: [{ name, url, years, logo }] }`, or
+  `{ enabled: false }` while `showSponsors` is off. Only public sponsors (ACCEPTED or FINISHED with `showOnWebsite`,
+  `publicSponsorsWhere`; the newest `PUBLIC_SPONSORS_ROW_CAP` = 1000 rows). Grouped by the public name
+  (`sponsorPublicName`: `publicName`, else `name`, spaces tidied; `publicSponsorKey` ignores case and spacing): `years`
+  = every row's year, merged, ascending — a row's year is its `acceptedOn` year, else `submittedOn`'s, else the year it
+  was added (`createdAt`, team timezone) (`sponsorPublicYear`); `name` = the newest row's spelling (by year, then when
+  it was added) unless it's all lower-case and another row's has capitals (`pickPublicSponsorName`: a hasty
+  "rev robotics" doesn't rename "REV Robotics"); `url` = the **homepage only** of the newest row's http(s) website
+  (`publicSponsorUrl`: origin + "/", never a path, query, or #fragment — the Website field also holds application
+  pages, whose address can carry ids or tokens), else null; `logo` =
+  `/api/public/sponsors/logos/<SponsorshipLogo.id>` of the group's newest logo (relative: the website puts its
+  `PUBLIC_PORTAL_URL` in front), or null. Sorted by latest year (newest first), then name (`Intl.Collator`). **Never**
+  amounts, what we asked for, contacts, the person on it, notes, stages, files, or ids other than the logo's —
+  `tests/public-sponsors.test.ts` checks each. **Logos**: `GET /api/public/sponsors/logos/[id]`
+  (`publicSponsorLogoResponse` → `publicFileResponse`; `getPublicSponsorLogo`: `showSponsors`, then one `findFirst`
+  with `publicSponsorsWhere` in its WHERE): inline, immutable (a replaced logo is a new row/id), named
+  `<public name>-logo.<ext>`, only while its sponsor is public and `showSponsors` is on, else 404. Logos are stored
+  without their metadata (see **Sponsorships**).
+- **Events** (`GET /api/public/events`, `getPublicEvents` in `queries/public-events.ts`, types in
+  `src/lib/public-events.ts`): `{ enabled: true, updatedAt, timezone, events: [{ id, title, kind, kindLabel, startsOn,
+  endsOn, startTime, endTime, location, link }] }`, or `{ enabled: false }` while `showEvents` is off. Only
+  `PUBLIC_EVENT_KINDS` (MEET, ILT, SCRIMMAGE, COMPETITION, OUTREACH — never MEETING "Extra meeting", TEAM, DEADLINE,
+  OTHER) with `hideFromWebsite` off whose last day is on or after the settings' `since` (else the attendance reports'
+  start), through the future; at most `PUBLIC_EVENTS_MAX` (300) — the latest by first day, so what's coming up is never
+  cut — ordered by first day, start time (all day first), title. `id` = the calendar event's id; `kindLabel` the
+  calendar's label ("League meet"); `endsOn` null for one day; times "HH:MM" in `timezone` (the team's, e.g.
+  America/Los_Angeles), `endTime` only with a start time; `link` http(s) or null. **Never** notes, who added or edited
+  it, or `sourceKey` — `tests/public-events.test.ts` checks each.
+
+## Workshop (team website) (`src/server/services/workshop.ts`, `/workshop`)
+
+What the team designs and builds — `WorkshopProject.kind` PART ("3D prints & CAD", first on the website), SOFTWARE, or
+OTHER ("Other builds") — with photos of each version (`WorkshopPhoto`) and design files anyone can download
+(`WorkshopFile`). Approved projects are shown to guests on the team website's Workshop page
+(`https://huskyteers19516.github.io/workshop`, deep link `#<project id>`). Client-safe labels, limits, checks, and the
+public types: `src/lib/workshop.ts`.
+
+- **Who**: everyone ACTIVE adds projects. Whoever added one, the people credited on it (`WorkshopCredit`, ACTIVE
+  accounts when added — one who has left stays credited), and everyone with admin access (`canReviewWorkshop`, the
+  reviewers) change it (`canEditWorkshopProject`): details, credits, photos, files. Removing a whole project: whoever
+  added it and reviewers (`canDeleteWorkshopProject`; credited people can take their own name off). Approved projects
+  are seen by everyone ACTIVE; the rest only by the people who can change them and reviewers (`visibleWorkshopWhere`).
+- **Status** (`WorkshopStatus`): a new project is a DRAFT. **Send for approval** (`submitWorkshopProject`, needs at
+  least one photo: DRAFT / REJECTED → PENDING); reviewers **Approve** (→ APPROVED, `publishedAt` set the first time) or
+  **Send back** with a required note (→ REJECTED, `reviewNote`) — `reviewWorkshopProject`, only while PENDING
+  (row-locked). For a reviewer, Send is **Publish** (straight to APPROVED, on any project they can open — their own or
+  someone's draft). Approve and Publish carry `version` (the
+  project's `updatedAt` as the reviewer saw it): if it changed since — someone added a photo or file while it waited —
+  the decision is refused (`WORKSHOP_CHANGED`) and the page refreshes, so nothing goes public unseen. A credited person
+  who takes their own name off a project they can no longer see is sent to `/workshop?left=1` (`stillVisible`).
+  **Take off the website / Withdraw**
+  (`unpublishWorkshopProject`: APPROVED / PENDING → DRAFT) by anyone who can change it. It's public, so a change by
+  someone who isn't a reviewer that **adds or rewrites** something on an APPROVED project — details or credits (saved
+  unchanged doesn't count), a new photo, a photo's caption, a new design file — sends it back to PENDING
+  (`touchProject`; the services return `sentForApproval`). Removing a photo or file, reordering photos, and picking the
+  cover don't. A project on the website (or waiting) keeps at least one photo. **Featured** (`setWorkshopFeatured`,
+  reviewers) puts it first in its section. Reviewers see a "Waiting for approval" tab and the nav count
+  (`countPendingWorkshop`); no emails.
+- **Photos**: PNG, JPG, or WebP by their bytes (`checkWorkshopPhoto`, reusing the poster sniffing and pixel limits;
+  HEIC gets its own message), stored **without their metadata** (`stripImageMetadata`: no GPS position, camera, or
+  comments — they go on the public website; a JPEG's or PNG's Exif orientation is kept, a WebP's isn't) with the
+  matching extension/type and the
+  `width`/`height` they're shown at (swapped for orientations 5–8, `imageOrientation`; the website uses them to avoid
+  layout shift), in story order (`position`, first version first; `moveWorkshopPhoto` renumbers 0..n-1), with
+  an optional `label` ("Version 1") and `note` (what failed / changed). `coverPhotoId` = the photo shown first (null or
+  removed = `defaultCoverIndex`: a part's newest version, the last photo; software's and other builds' first). The form
+  makes photos over 2000 px or 1.5 MB into a smaller JPG in the browser. At most
+  `WORKSHOP_LIMITS.photosPerProject` (12).
+- **Design files**: an allowlist of extensions (`WORKSHOP_FILE_EXTENSIONS`: STL, STEP, 3MF, OBJ, F3D, SolidWorks,
+  Inventor, IGES, DXF, G-code, PDF, ZIP…; PDFs and ZIP/3MF must start right), stored as `application/octet-stream`
+  (PDFs `application/pdf`) and always downloaded from the website. At most `filesPerProject` (8). Bigger than 4 MB →
+  the project's CAD link.
+- **Storage**: both are stored files (kinds `workshop-photos`, `workshop-files`; migration `20261004100000_workshop`
+  with the CHECKs and deletion triggers) under the shared cap, `FileStorageUsage.workshop`; each person's uploads stay
+  under `WORKSHOP_FILE_BYTES_PER_PERSON` (60 MB, 10× with R2) unless they have admin access; 60 uploads an hour,
+  30 new projects an hour. Signed-in routes: `/workshop/photos/[id]` (inline, `immutable`) and `/workshop/files/[id]`.
+- **Public** (see **Public API for the team website**): `GET /api/public/workshop` (`publicWorkshopResponse` →
+  `getPublicWorkshop` in `src/server/queries/public-workshop.ts`) → `PublicWorkshop` (`{ updatedAt, projects: [{ id,
+  kind, title, summary, material, season, designers, featured, link, codeLink, cover, photos, downloads, publishedAt,
+  updatedAt }] }`, APPROVED only, featured first then newest on the website, at most `PUBLIC_WORKSHOP_MAX` = 200; no
+  on/off switch: every project is approved one by one). Photo and download `path`s are relative to the portal:
+  `GET /api/public/workshop/photos/[id]` (`publicWorkshopPhotoResponse`: inline, immutable, under the neutral name
+  "workshop-photo.<ext>") and `GET /api/public/workshop/files/[id]` (`publicWorkshopFileResponse`: always an
+  attachment, under its cleaned uploaded name — reviewers saw it before approving, and the JSON lists it), both through
+  `publicFileResponse`, each `load` one `findFirst` with `project: { status: "APPROVED" }` in its WHERE.
+  `designers` = credited people then "Other people" (`extraCredits`, split on commas), each person once by full name,
+  then written with the website's name style (`publicCredit`: `publicName` with the Public progress `nameStyle`,
+  keeping a note in brackets: "Alex P. (2024 alum)"; `hidden` = none). `cover` = `coverPhotoId`, else
+  `defaultCoverIndex`. Links are re-checked (`parseHttpUrl`, else null); a part never has a `codeLink`. Never in
+  it: account ids, emails, who added or reviewed it, review notes, or anything not approved. `tests/workshop.test.ts`
+  checks each.
 
 ## Dates
 
@@ -914,7 +1138,8 @@ src/server/                     server-only code
   auth/password.ts              hashPassword / verifyPassword / getDummyHash
   auth/password-reset.ts        issuePasswordReset(ctx, userId)
   rate-limit.ts                 enforceRateLimit(db, key, limit, windowMs)
-  public-api.ts                 the team website's public JSON (/api/public/*): CORS, caching (see Public progress)
+  public-api.ts                 the team website's public JSON and files (/api/public/*): CORS, caching, file headers
+                                (see Public API for the team website; which paths are public: src/lib/public-api.ts)
   env.ts                        typed env access
   notifications/events.ts       NotificationEvent union, Notifier, CollectingNotifier
   email/transport.ts            sendEmail(db, message, transport?) — logs to EmailLog
@@ -1006,17 +1231,20 @@ below — ≤ `LIMITS.resourceFileMaxBytes` = 4 MB each and the team's storage c
 - Files are served only by `src/app/(app)/resources/files/[id]/route.ts` with the headers from `src/server/resources/serve.ts`:
   text as `text/plain`, png/jpeg/gif/webp and PDF inline, everything else (HTML, SVG, …) as an `application/octet-stream`
   download; always `nosniff`, a sandboxing CSP (PDFs skip `sandbox`, which Chrome's PDF viewer refuses), and `no-store`
-  (only poster files opt into browser caching, `immutable`).
+  (posters, notebook pictures, sponsor logos, and Workshop photos opt into browser caching, `immutable`: their address
+  never shows different bytes).
   Windows executables/scripts are refused at upload (`BLOCKED_EXTENSIONS`). Never render uploaded content as HTML.
 - Upload checks (`src/server/files/upload.ts`) and the storage cap (`src/server/files/storage.ts`) are shared with sponsor
   files and posters; any new kind of stored file must use `assertFileStorageRoom` so every file counts toward the same cap
   (and `withStoredFiles`, see **File storage**).
-  "Full" messages start with `storageFullSentence(usage)` (how much is Resources files vs sponsor files, plus posters when
-  there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
+  "Full" messages start with `storageFullSentence(usage)` (how much is Resources files vs sponsor files, plus posters,
+  notebook pictures, strategy files, sponsor logos, and Workshop photos and designs when there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
 
 ## File storage (`src/server/files/`)
 
-Every uploaded file (`ResourceFile`, `SponsorshipFile`, `PosterFile`, `NotebookImage`, `StrategyFile`) keeps its bytes in
+Every uploaded file (`ResourceFile`, `SponsorshipFile`, `PosterFile`, `NotebookImage`, `StrategyFile`, `SponsorshipLogo`,
+`WorkshopPhoto`, `WorkshopFile` — kinds `resources`, `sponsors`, `posters`, `notebook`, `strategy`, `logos`,
+`workshop-photos`, `workshop-files`) keeps its bytes in
 **Postgres** (`data`) or in **Cloudflare R2** (`storageKey`, the object's key; `data` null) — a CHECK constraint makes every
 row have one. R2 is used only when all four of `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` are set
 (`env.r2Status` / `readR2Status`: some missing = `partial`, a bad account id/bucket/endpoint = `invalid`, both mean Postgres;
@@ -1053,18 +1281,22 @@ before (Postgres, 300 MB), so the code is safe to deploy before the owner adds t
   real one.
 - **The cap** (`storage.ts`): `fileStorageCapBytes(usesObjectStorage(ctx))` = 300 MB (`LIMITS.resourceStorageMaxBytes`) in
   Postgres, 8 GB (`OBJECT_STORAGE_CAP_BYTES` = 8 GiB, over 1 GB under R2's free 10 GB however it's counted) with R2; each person's allowance
-  (`POSTER_FILE_BYTES_PER_PERSON`, `SPONSOR_FILE_BYTES_PER_PERSON`, `NOTEBOOK_IMAGE_BYTES_PER_PERSON`,
-  `STRATEGY_FILE_BYTES_PER_PERSON`, `MEMBER_UNAPPROVED_FILE_BYTES`) goes through `perPersonFileCap(base, objectStorage)`
+  (`POSTER_FILE_BYTES_PER_PERSON`, `SPONSOR_FILE_BYTES_PER_PERSON` — sponsor files and logos together —
+  `NOTEBOOK_IMAGE_BYTES_PER_PERSON`,
+  `STRATEGY_FILE_BYTES_PER_PERSON`, `WORKSHOP_FILE_BYTES_PER_PERSON` — Workshop photos and design files together —
+  `MEMBER_UNAPPROVED_FILE_BYTES`) goes through `perPersonFileCap(base, objectStorage)`
   (10× with R2) — messages show that number. `assertFileStorageRoom(tx, change, message, objectStorage)` still sums the rows'
   `size` under the one advisory lock, wherever the bytes are. `formatFileSize` shows GB ("8 GB").
 - **Reading**: file routes select `STORED_FILE_SELECT` and answer with `sendStoredFile(request, row, options)` (`respond.ts`):
   Postgres bytes as before, an R2 object **streamed through our response** with exactly the same headers (strategy files
-  pass `headers: strategyFileHeaders`). Never redirect to R2, hand out R2 URLs, or make the bucket public. R2 not set up →
+  pass `headers: strategyFileHeaders`; the public sponsor-logo route passes `publicFileHeaders`). Never redirect to R2,
+  hand out R2 URLs, or make the bucket public. R2 not set up →
   503, R2 failing → 502, object missing → 404 (plain text, `no-store`). Server-side reads (the Resources text preview —
   `reason: "unavailable"` when it can't be read — and the notebook's Word export via `loadNotebookImageBytes`) use
   `readStoredBytes`.
-- **Deleting**: database triggers (migration `20260928090000_object_storage`) put a row's `storageKey` into `FileDeletion`
-  whenever the row is deleted — directly or by any cascade (a sponsor, notebook, page, entry, poster, strategy, league team)
+- **Deleting**: database triggers (migration `20260928090000_object_storage`; `20261004080000_sponsor_logos` for logos) put a
+  row's `storageKey` into `FileDeletion` whenever the row is deleted — directly or by any cascade (a sponsor — its files and
+  logo — notebook, page, entry, poster, strategy, league team)
   — or its key changes. The app only drains that queue: actions that delete or replace files call `scheduleFileCleanup()`
   (`cleanup.ts`, `after()`: deletes from R2 after the response; never fails the action), the owner's storage card drains
   what's waiting when it's shown, and it has **Clean up**. `drainFileDeletions(db, { store, limit, budgetMs, includeStuck })`

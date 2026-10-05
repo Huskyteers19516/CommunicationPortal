@@ -6,6 +6,7 @@ export type NavIcon =
   | "parts"
   | "sponsors"
   | "posters"
+  | "workshop"
   | "fundraising"
   | "attendance"
   | "calendar"

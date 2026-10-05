@@ -51,8 +51,9 @@ export function PublicProgressSwitch({ action, show }: { action: FormAction; sho
             Show me on the team website&apos;s progress page
           </span>
           <span id={`${id}-desc`} className="mt-0.5 block text-sm text-ink-500">
-            Your name, position, and how many checklist items you&apos;ve finished. Off: you&apos;re left off the list, and
-            your items still count toward your subteam&apos;s and the team&apos;s totals.
+            Your name, position, and how many checklist items you&apos;ve finished. Off: you&apos;re left off the list and
+            out of recent completions. So nobody can work out your numbers from the totals, your items count in your
+            subteam&apos;s and the team&apos;s totals only while someone else in your subteam is off too.
           </span>
         </span>
         <span className="relative inline-flex shrink-0 items-center">

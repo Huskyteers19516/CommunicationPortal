@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 import { CalendarKindBadge } from "@/components/calendar/kind-styles";
+import { TeamWebsiteMarker } from "@/components/calendar/website-marker";
 import { WhenText } from "@/components/calendar/when-text";
 import { FocusAlert } from "@/components/sponsors/focus-alert";
 import { ActionForm } from "@/components/tasks/action-form";
@@ -26,10 +27,12 @@ import {
 import { cn } from "@/lib/cn";
 import { LIMITS } from "@/lib/constants";
 import { type DateOnly, timeAgo, todayInTimezone } from "@/lib/dates";
+import { publicEventStatus } from "@/lib/public-events";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { canPlanAttendance } from "@/server/permissions";
 import { type CalendarPerson, getCalendarEvent } from "@/server/queries/calendar";
+import { getPublicEventsWebsite } from "@/server/queries/public-events";
 import { deleteCalendarEventAction } from "../actions";
 
 // Shared by generateMetadata and the page so the event loads once per request.
@@ -67,6 +70,7 @@ export default async function CalendarEventPage({ params, searchParams }: PagePr
   const timeZone = env.teamTimezone;
   const today = todayInTimezone(timeZone, now);
   if (!event) notFound();
+  const website = publicEventStatus(event, await getPublicEventsWebsite());
 
   const flash = first(sp.added) === "1" ? "Added. The whole team can see it now." : first(sp.saved) === "1" ? "Changes saved." : null;
   const countdown = eventCountdown(event, today);
@@ -134,6 +138,7 @@ export default async function CalendarEventPage({ params, searchParams }: PagePr
         >
           {countdown.label}
         </span>
+        <TeamWebsiteMarker status={website} />
       </div>
 
       <Card>

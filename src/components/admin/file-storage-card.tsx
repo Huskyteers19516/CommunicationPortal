@@ -84,7 +84,8 @@ function OwnerSection({ overview, owner }: { overview: FileStorageOverview; owne
 
 /**
  * How much of the team's file storage is used, and by what: uploads stop when it's full, so this says where
- * the space is going and who can free it (Resources, sponsor files, posters, notebook pictures, strategy files).
+ * the space is going and who can free it (Resources, sponsor files, posters, notebook pictures, strategy files,
+ * sponsor logos, Workshop photos and design files).
  * Everyone who sees it also sees where new files go; owners also get the settings' state and the Cloudflare R2 tools
  * (`overview.owner`).
  */
@@ -143,6 +144,28 @@ export function FileStorageCard({ overview }: { overview: FileStorageOverview })
       bytes: usage.strategy,
       swatch: "bg-rose-500",
       note: "Path files, diagrams, and PDFs on the Strategy page. Whoever added them, and everyone with admin access, can remove them.",
+    },
+    {
+      key: "logos",
+      label: "Sponsor logos",
+      bytes: usage.logos,
+      swatch: "bg-teal-500",
+      note: "Brand logos for the team website's Sponsors page (one per sponsor). The Business team and leaders can replace or remove them on each sponsor's page.",
+    },
+    {
+      key: "workshop",
+      label: "Workshop",
+      bytes: usage.workshop,
+      swatch: "bg-indigo-500",
+      note: (
+        <>
+          Photos and design files in the{" "}
+          <Link href="/workshop" className="text-brand-700 underline underline-offset-2 hover:text-brand-800">
+            Workshop
+          </Link>
+          . Whoever added the project, the people credited on it, and everyone with admin access can remove them.
+        </>
+      ),
     },
   ];
 

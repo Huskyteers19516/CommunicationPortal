@@ -17,6 +17,7 @@ import { getPendingUsers, getRecentDecisions, getSeatUsage } from "@/server/quer
 import { getFileStorageOverview } from "@/server/queries/files";
 import { getPublicProgressAdminView } from "@/server/queries/public-progress";
 import { countPendingResources } from "@/server/queries/resources";
+import { getTeamWebsitePreview } from "@/server/queries/team-website";
 
 export const metadata: Metadata = { title: "Approvals" };
 // The owners' file storage tools (Server Actions on this page) stop starting new work after 25 s, with at most 10 s per
@@ -25,13 +26,14 @@ export const maxDuration = 60;
 
 export default async function ApprovalsPage() {
   const actor = await requireAdminUser();
-  const [pending, seats, decisions, pendingResources, storage, teamWebsite] = await Promise.all([
+  const [pending, seats, decisions, pendingResources, storage, teamWebsite, websitePreview] = await Promise.all([
     getPendingUsers(actor),
     getSeatUsage(actor),
     getRecentDecisions(actor, 10),
     countPendingResources(actor),
     getFileStorageOverview(actor),
     getPublicProgressAdminView(actor),
+    getTeamWebsitePreview(actor, env.teamTimezone),
   ]);
   // An owner looking at the storage card: delete R2 objects of removed files that are still waiting (after the page).
   if (storage?.owner && storage.location === "r2" && storage.owner.waitingDeletions > 0) scheduleFileCleanup();
@@ -78,6 +80,8 @@ export default async function ApprovalsPage() {
               settings={teamWebsite.settings}
               defaultSince={teamWebsite.defaultSince}
               hiddenPeople={teamWebsite.hiddenPeople}
+              hiddenUncounted={teamWebsite.hiddenUncounted}
+              preview={websitePreview}
               today={todayInTimezone(env.teamTimezone, now)}
             />
           )}

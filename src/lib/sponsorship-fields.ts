@@ -6,7 +6,7 @@ import { LIMITS, SPONSORSHIP_STAGES } from "./constants";
 import { parseDollars } from "./money";
 import { withHttps } from "./sponsorships";
 import { parseHttpUrl } from "./urls";
-import { dateOnlySchema, emailSchema, idSchema, optionalText, text } from "./validation";
+import { checkbox, dateOnlySchema, emailSchema, idSchema, optionalText, text } from "./validation";
 
 export const WEBSITE_MESSAGE = "Enter the website's full address, like https://example.com";
 
@@ -80,6 +80,16 @@ export const sponsorshipFields = z.object({
   acceptedOn: optionalDate,
   closesOn: optionalDate,
   notes: optionalText("Notes", LIMITS.sponsorNotesMax),
+});
+
+/**
+ * The edit form's "Team website" section (not in the import): "Thank them on the team website" (a checkbox: missing =
+ * off) and "Name on the website" (empty = the sponsor's name). The form sends `websiteFields` with them, so a save
+ * without that section (the import, older forms) never changes them.
+ */
+export const sponsorshipWebsiteFields = z.object({
+  showOnWebsite: checkbox,
+  publicName: optionalText("Name on the website", LIMITS.sponsorNameMax),
 });
 
 export type SponsorshipFields = z.infer<typeof sponsorshipFields>;

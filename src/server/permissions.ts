@@ -539,3 +539,31 @@ export function purchaseStatusTargets(actor: ActorLike, item: PurchaseLike): Pur
 export function canSetPurchaseStatus(actor: ActorLike, item: PurchaseLike, to: PurchaseStatusLike): boolean {
   return purchaseStatusTargets(actor, item).includes(to);
 }
+
+// ── Workshop (what the team builds, shown on the team website once approved) ──
+
+/**
+ * Approve or send back projects for the team website, publish straight to it, feature projects, and change or remove
+ * any project: everyone with admin access (leaders, captain, mentors, teachers, owners).
+ */
+export function canReviewWorkshop(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
+type WorkshopProjectLike = { createdById: string | null; creditUserIds: readonly string[] };
+
+/** Change a project (details, photos, design files): whoever added it, the people credited on it, and reviewers. */
+export function canEditWorkshopProject(actor: ActorLike, project: WorkshopProjectLike): boolean {
+  if (canReviewWorkshop(actor)) return true;
+  return (project.createdById !== null && project.createdById === actor.id) || project.creditUserIds.includes(actor.id);
+}
+
+/** Remove a whole project: whoever added it and reviewers (people only credited on it can take their name off). */
+export function canDeleteWorkshopProject(actor: ActorLike, project: { createdById: string | null }): boolean {
+  return canReviewWorkshop(actor) || (project.createdById !== null && project.createdById === actor.id);
+}
+
+/** See a project in the portal: approved ones everyone; drafts and ones waiting for approval, whoever can change them. */
+export function canViewWorkshopProject(actor: ActorLike, project: WorkshopProjectLike & { status: string }): boolean {
+  return project.status === "APPROVED" || canEditWorkshopProject(actor, project);
+}

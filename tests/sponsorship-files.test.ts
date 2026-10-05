@@ -287,7 +287,7 @@ describe("how much one person can upload", () => {
     const old = await alreadyUploaded(gwen, SPONSOR_FILE_BYTES_PER_PERSON - 30);
     const s = await makeSponsorship();
     expect(await fileErrorOf(upload(gwen, s.id, file("form.pdf", "x".repeat(31))))).toBe(
-      "You've uploaded 50 MB of sponsor files, and each person can have up to 50 MB. Remove ones you don't need, or ask the Business leader to add this one.",
+      "You've uploaded 50 MB of sponsor files and logos, and each person can have up to 50 MB. Remove ones you don't need, or ask the Business leader to add this one.",
     );
     await upload(gwen, s.id, file("form.pdf", "x".repeat(30))); // exactly at the limit is fine
     // Other people's files (even on the same sponsor) don't count toward hers.

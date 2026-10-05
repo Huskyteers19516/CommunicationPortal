@@ -5,6 +5,8 @@
 // - The edit form sends `version` (the event's updatedAt when it was opened): a stale save is a ConflictError,
 //   so it can't silently undo someone else's edit.
 // - Events loaded from a season schedule carry a `sourceKey`; editing keeps it, so loading again never duplicates.
+// - "Hide from the team website" (hideFromWebsite) keeps a meet, scrimmage, competition, or outreach event off the
+//   team website's Events page (src/server/queries/public-events.ts); other kinds are never published.
 import { z } from "zod";
 import { type CalendarEventFields, checkCalendarEventFields } from "@/lib/calendar";
 import { type DateOnly, dateOnlyToDb, dbToDateOnly, todayInTimezone } from "@/lib/dates";
@@ -64,6 +66,7 @@ function columns(f: CalendarEventFields) {
     location: f.location,
     link: f.link,
     notes: f.notes,
+    hideFromWebsite: f.hideFromWebsite,
   };
 }
 

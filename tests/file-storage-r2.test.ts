@@ -65,12 +65,15 @@ import { FILE_UPLOAD_FAILED } from "@/server/files/stored";
 import { LIMITS } from "@/lib/constants";
 import { formatFileSize } from "@/lib/files";
 import { buildNotebookDocxWithin } from "@/server/notebook/docx";
+import { DEFAULT_PUBLIC_PROGRESS_SETTINGS, PUBLIC_PROGRESS_KEY, serializePublicProgressSettings } from "@/lib/public-progress";
+import { PUBLIC_FILE_IMMUTABLE_CACHE, PUBLIC_FILE_UNAVAILABLE, publicSponsorLogoResponse } from "@/server/public-api";
 import { getFileStorageOverview } from "@/server/queries/files";
 import { getNotebookExport, getNotebookImage } from "@/server/queries/notebook";
 import { getPosterFile } from "@/server/queries/posters";
 import { getResourceDetail, getResourceFile } from "@/server/queries/resources";
-import { getSponsorshipFile } from "@/server/queries/sponsorships";
+import { getSponsorshipFile, getSponsorshipLogo } from "@/server/queries/sponsorships";
 import { getStrategyFile, strategyFileHeaders } from "@/server/queries/strategy";
+import { getWorkshopDownloadFile, getWorkshopPhotoFile } from "@/server/queries/workshop";
 import {
   ADMIN_TOOL_TIMEOUT_MS,
   cleanUpFileStorage,
@@ -94,8 +97,10 @@ import {
 import { createPoster, deletePoster, POSTER_FILE_BYTES_PER_PERSON, updatePoster } from "@/server/services/posters";
 import { createResource, deleteResource, MEMBER_UNAPPROVED_FILE_BYTES, updateResource } from "@/server/services/resources";
 import { deleteSponsorshipFile, uploadSponsorshipFile } from "@/server/services/sponsorship-files";
+import { removeSponsorshipLogo, uploadSponsorshipLogo } from "@/server/services/sponsorship-logos";
 import { deleteSponsorship, deleteSponsorships } from "@/server/services/sponsorships";
 import { createStrategy, deleteStrategy, updateStrategy } from "@/server/services/strategy";
+import { addWorkshopFile, addWorkshopPhoto, createWorkshopProject, deleteWorkshopProject, removeWorkshopFile } from "@/server/services/workshop";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeUser } from "./helpers/factories";
 import { type FakeS3, startFakeS3 } from "./helpers/fake-s3";
@@ -135,6 +140,7 @@ const pg = (a: Actor): ServiceContext => contextFor(t.db, a);
 const r2 = (a: Actor): ServiceContext => ({ ...contextFor(t.db, a), objectStore: s3.store() });
 
 const enc = (s: string) => new TextEncoder().encode(s);
+const STL = enc("solid roller\nendsolid roller\n");
 const PNG = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
 const PDF = enc("%PDF-1.4\n% sponsor form\n");
 const JAVA = "package org.firstinspires.ftc.teamcode;\n\npublic class TeleOpMain {}\n";
@@ -299,6 +305,56 @@ const KINDS: KindCase[] = [
     remove: (ctx, a) => deleteStrategy(ctx, { strategyId: a.parentId }),
     field: "files",
   },
+  {
+    kind: "logos",
+    bytes: PNG,
+    uploader: () => fresh({ subteam: "BUSINESS" }),
+    async add(ctx) {
+      const s = await t.db.sponsorship.create({ data: { name: `Logo Co ${++n}`, stage: "ACCEPTED", createdById: ctx.actor.id }, select: { id: true } });
+      const { id } = await uploadSponsorshipLogo(ctx, { sponsorshipId: s.id, file: { name: "logo.png", type: "image/png", bytes: PNG } });
+      return { fileId: id, routeId: id, parentId: s.id };
+    },
+    row: (id) => t.db.sponsorshipLogo.findUniqueOrThrow({ where: { id }, select: fileCols }),
+    // The signed-in preview on the sponsor's page (the public route is tested below).
+    get: (a, id) => getSponsorshipLogo(a, id, t.db),
+    outsider: () => fresh({ subteam: "BUILD" }), // outside Business: logos look missing here
+    options: { immutable: true },
+    remove: (ctx, a) => removeSponsorshipLogo(ctx, { sponsorshipId: a.parentId }),
+    field: "file",
+  },
+  {
+    kind: "workshop-photos",
+    bytes: PNG,
+    uploader: () => fresh(),
+    async add(ctx) {
+      const { id } = await createWorkshopProject(ctx, { kind: "PART", title: `Servo mount ${++n}`, summary: "Holds the claw servo." });
+      const { photoId } = await addWorkshopPhoto(ctx, { projectId: id, label: "Version 1", file: { name: "mount.png", type: "image/png", bytes: PNG } });
+      return { fileId: photoId, routeId: photoId, parentId: id };
+    },
+    row: (id) => t.db.workshopPhoto.findUniqueOrThrow({ where: { id }, select: fileCols }),
+    get: (a, id) => getWorkshopPhotoFile(a, id, t.db),
+    // A draft: someone else on the team can't see it yet.
+    outsider: () => fresh(),
+    options: { immutable: true },
+    remove: (ctx, a) => deleteWorkshopProject(ctx, { projectId: a.parentId }),
+    field: "file",
+  },
+  {
+    kind: "workshop-files",
+    bytes: STL,
+    uploader: () => fresh(),
+    async add(ctx) {
+      const { id } = await createWorkshopProject(ctx, { kind: "PART", title: `Intake roller ${++n}`, summary: "Pulls game pieces in." });
+      const { fileId } = await addWorkshopFile(ctx, { projectId: id, label: "", file: { name: "roller.stl", type: "", bytes: STL } });
+      return { fileId, routeId: fileId, parentId: id };
+    },
+    row: (id) => t.db.workshopFile.findUniqueOrThrow({ where: { id }, select: fileCols }),
+    get: (a, id) => getWorkshopDownloadFile(a, id, t.db),
+    outsider: () => fresh(),
+    options: {},
+    remove: (ctx, a) => removeWorkshopFile(ctx, { fileId: a.fileId }),
+    field: "file",
+  },
 ];
 
 const request = (path: string) => new NextRequest(`http://localhost${path}`);
@@ -409,7 +465,7 @@ function fromHeadersNoSniff(res: Response): boolean {
 
 // ── The routes themselves ──────────────────────────────────────────────────────────────────────────────────────
 
-describe("the five file routes (R2 from the settings, as on Vercel)", () => {
+describe("the signed-in file routes (R2 from the settings, as on Vercel)", () => {
   it("stream an R2 file with the same checks and headers; never redirect; plain errors when R2 can't send it", async () => {
     const routes = {
       resources: (await import("@/app/(app)/resources/files/[id]/route")).GET,
@@ -417,6 +473,9 @@ describe("the five file routes (R2 from the settings, as on Vercel)", () => {
       posters: (await import("@/app/(app)/posters/files/[id]/route")).GET,
       notebook: (await import("@/app/(app)/notebook/images/[id]/route")).GET,
       strategy: (await import("@/app/(app)/strategy/files/[id]/route")).GET,
+      logos: (await import("@/app/(app)/sponsors/logos/[id]/route")).GET,
+      "workshop-photos": (await import("@/app/(app)/workshop/photos/[id]/route")).GET,
+      "workshop-files": (await import("@/app/(app)/workshop/files/[id]/route")).GET,
     };
     const call = (k: KindCase, id: string, query = "") =>
       routes[k.kind](request(`/x/${id}${query}`), { params: Promise.resolve({ id }) } as never) as Promise<Response>;
@@ -1046,9 +1105,69 @@ describe("test connection, clean up, and the storage card", () => {
   });
 });
 
-/** Someone who may read files of kind `k` (Resources waiting for approval: a reviewer; sponsor files: Business). */
+// ── Sponsor logos: replaced, removed with their sponsor, and served publicly ──────────────────────────────────
+
+describe("sponsor logos in R2", () => {
+  it("replacing a logo queues the old object (a new row and key); removing the sponsor queues the new one", async () => {
+    const who = await fresh({ subteam: "BUSINESS" });
+    const first = await KINDS[5].add(r2(who));
+    const old = await KINDS[5].row(first.fileId);
+    const replaced = await uploadSponsorshipLogo(r2(who), { sponsorshipId: first.parentId, file: { name: "new.png", type: "image/png", bytes: PNG } });
+    expect(replaced.replaced).toBe(true);
+    expect(replaced.id).not.toBe(first.fileId);
+    const now = await t.db.sponsorshipLogo.findUniqueOrThrow({ where: { id: replaced.id } });
+    expect(now.storageKey).toMatch(/^logos\//);
+    expect(now.storageKey).not.toBe(old.storageKey);
+    expect(await queued()).toEqual([old.storageKey]);
+    expect(await drain()).toMatchObject({ deleted: 1, remaining: 0 });
+    await deleteSponsorship(r2(bizLeader), { sponsorshipId: first.parentId });
+    expect(await queued()).toEqual([now.storageKey]);
+    expect(await drain()).toMatchObject({ deleted: 1, remaining: 0 });
+    expect(s3.objects.size).toBe(0);
+  });
+
+  it("the public route streams a public sponsor's R2 logo with the public headers (as from Postgres), else a 404", async () => {
+    // The website's Sponsors page is off until an admin turns it on.
+    const body = serializePublicProgressSettings({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showSponsors: true });
+    await t.db.teamNote.upsert({ where: { key: PUBLIC_PROGRESS_KEY }, create: { key: PUBLIC_PROGRESS_KEY, body }, update: { body } });
+    const who = await fresh({ subteam: "BUSINESS" });
+    const inR2 = await KINDS[5].add(r2(who));
+    const inPg = await KINDS[5].add(pg(who));
+    const ask = (id: string, method = "GET") =>
+      publicSponsorLogoResponse(new NextRequest(`http://localhost/api/public/sponsors/logos/${id}`, { method }), { db: t.db, id, store: s3.store() });
+    const fromR2 = await ask(inR2.fileId);
+    const fromPg = await ask(inPg.fileId);
+    expect(fromR2.status).toBe(200);
+    expect(await bodyOf(fromR2)).toEqual(PNG);
+    // The same headers, but each under its sponsor's public name ("Logo Co 7" → logo-co-7-logo.png).
+    const named = (res: Response) => ({ ...headersOf(res), "content-disposition": "" });
+    expect(named(fromR2)).toEqual(named(fromPg));
+    expect(fromR2.headers.get("content-disposition")).toMatch(/^inline; filename="logo-co-\d+-logo\.png"/);
+    expect(fromR2.headers.get("content-type")).toBe("image/png");
+    expect(fromR2.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
+    expect(fromR2.headers.get("cache-control")).toBe(PUBLIC_FILE_IMMUTABLE_CACHE);
+    const head = await ask(inR2.fileId, "HEAD");
+    expect([head.status, await head.text()]).toEqual([200, ""]);
+
+    // R2 not answering: a plain 503 for guests (never the team's message about R2's settings).
+    s3.fail = "get";
+    const down = await ask(inR2.fileId);
+    expect([down.status, await down.text()]).toEqual([503, PUBLIC_FILE_UNAVAILABLE]);
+    s3.fail = null;
+    // Off the website (stage moved back): a plain, uncached 404 — R2 isn't even asked.
+    await t.db.sponsorship.update({ where: { id: inR2.parentId }, data: { stage: "SUBMITTED" } });
+    const before = s3.requests.length;
+    const hidden = await ask(inR2.fileId);
+    expect([hidden.status, hidden.headers.get("cache-control")]).toEqual([404, "private, no-store"]);
+    expect(s3.requests.length).toBe(before);
+  });
+});
+
+/** Someone who may read files of kind `k` (Resources waiting for approval: a reviewer; sponsor files and logos: Business). */
 function readerFor(k: KindCase): Actor {
-  if (k.kind === "sponsors") return bizLeader;
+  if (k.kind === "sponsors" || k.kind === "logos") return bizLeader;
   if (k.kind === "resources") return captain;
+  // Workshop drafts: the people who can change them, and reviewers.
+  if (k.kind === "workshop-photos" || k.kind === "workshop-files") return captain;
   return member;
 }

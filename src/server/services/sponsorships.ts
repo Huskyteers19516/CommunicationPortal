@@ -7,7 +7,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import type { SponsorshipStage } from "@/generated/prisma/enums";
 import { LIMITS, STAFF_ROLES } from "@/lib/constants";
 import { type DateOnly, dateOnlyToDb, dbToDateOnly, todayInTimezone } from "@/lib/dates";
-import { type SponsorshipFields, sponsorshipFields, stageField } from "@/lib/sponsorship-fields";
+import { type SponsorshipFields, sponsorshipFields, sponsorshipWebsiteFields, stageField } from "@/lib/sponsorship-fields";
 import {
   type ExistingSponsor,
   matchSponsorshipImport,
@@ -87,6 +87,22 @@ function columns(f: SponsorshipFields) {
   };
 }
 
+/** The edit form's fields, plus its "Team website" section when the form sent one (`websiteFields`). */
+const formFieldsWithWebsite = sponsorshipFields.extend(sponsorshipWebsiteFields.shape);
+
+/**
+ * Parses the add / edit form: every field at once (so every problem shows together). `website` is null when the form
+ * had no "Team website" section (then showOnWebsite / publicName stay as they are, or their defaults for a new one).
+ */
+function parseSponsorshipForm(rec: Record<string, unknown>): {
+  fields: SponsorshipFields;
+  website: { showOnWebsite: boolean; publicName: string } | null;
+} {
+  if (rec.websiteFields === undefined) return { fields: parseInput(sponsorshipFields, rec), website: null };
+  const { showOnWebsite, publicName, ...fields } = parseInput(formFieldsWithWebsite, rec);
+  return { fields, website: { showOnWebsite, publicName: publicName ?? "" } };
+}
+
 // ---------------------------------------------------------------------------------------------
 // People
 // ---------------------------------------------------------------------------------------------
@@ -145,13 +161,13 @@ export interface CreatedSponsorship {
 /** Add a sponsor. Picking Submitted or Accepted without a date fills in today. A name that's already here is allowed. */
 export async function createSponsorship(ctx: ServiceContext, raw: unknown): Promise<CreatedSponsorship> {
   assertCanUseSponsorships(ctx);
-  const fields = parseInput(sponsorshipFields, asRecord(raw));
+  const { fields, website } = parseSponsorshipForm(asRecord(raw));
   await assertOwner(ctx, fields.ownerId);
   await limitSponsorshipWrites(ctx);
   const data = columns(fields);
   fillStageDate(data, null, today(ctx));
   const sameName = await ctx.db.sponsorship.count({ where: { name: { equals: data.name, mode: "insensitive" } } });
-  const { id } = await ctx.db.sponsorship.create({ data: { ...data, createdById: ctx.actor.id }, select: { id: true } });
+  const { id } = await ctx.db.sponsorship.create({ data: { ...data, ...website, createdById: ctx.actor.id }, select: { id: true } });
   return { id, sameName };
 }
 
@@ -166,7 +182,8 @@ function parseVersion(value: unknown): Date | null {
 }
 
 /**
- * Save the edit form. Moving the stage into Submitted / Accepted fills that date when it's left empty.
+ * Save the edit form. Moving the stage into Submitted / Accepted fills that date when it's left empty. Its "Team
+ * website" section (showOnWebsite, publicName) is saved only when the form sent it (`websiteFields`).
  * The form sends `version` (the updatedAt it loaded): if the sponsor changed since (e.g. someone moved
  * its stage from the list), nothing is saved and it's a ConflictError, so a stale form can't undo that.
  */
@@ -174,7 +191,7 @@ export async function updateSponsorship(ctx: ServiceContext, raw: unknown): Prom
   assertCanUseSponsorships(ctx);
   const rec = asRecord(raw);
   const { sponsorshipId } = parseInput(idInput, rec);
-  const fields = parseInput(sponsorshipFields, rec);
+  const { fields, website } = parseSponsorshipForm(rec);
   const version = parseVersion(rec.version);
   const existing = await ctx.db.sponsorship.findUnique({
     where: { id: sponsorshipId },
@@ -189,7 +206,7 @@ export async function updateSponsorship(ctx: ServiceContext, raw: unknown): Prom
   // Conditional on the version the form loaded (or, without one, on the stage the date fill was based on).
   const { count } = await ctx.db.sponsorship.updateMany({
     where: { id: sponsorshipId, ...(version ? { updatedAt: version } : { stage: existing.stage }) },
-    data,
+    data: { ...data, ...website },
   });
   if (count === 0) {
     const still = await ctx.db.sponsorship.count({ where: { id: sponsorshipId } });

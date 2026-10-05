@@ -66,7 +66,7 @@ export const POSTER_DATE_MAX_FUTURE_DAYS = 2 * 365;
 // ---------- files ----------
 
 /** What a poster file really is, from its first bytes. */
-type PosterFileKind = "png" | "jpg" | "gif" | "webp" | "pdf";
+export type PosterFileKind = "png" | "jpg" | "gif" | "webp" | "pdf";
 
 const KIND_INFO: Record<PosterFileKind, { contentType: string; extensions: string[] }> = {
   png: { contentType: "image/png", extensions: ["png"] },
@@ -241,14 +241,14 @@ function checkPictureSize(bytes: Uint8Array, kind: PosterFileKind): void {
 }
 
 /** HEIC/HEIF (iPhone photos) and AVIF: an ISO media file with an image brand. Browsers mostly can't show them. */
-function isHeicLike(bytes: Uint8Array): boolean {
+export function isHeicLike(bytes: Uint8Array): boolean {
   if (!startsWith(bytes, ascii("ftyp"), 4)) return false;
   const brand = String.fromCharCode(...bytes.subarray(8, 12));
   return ["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1", "avif", "avis"].includes(brand);
 }
 
 /** "IMG_0001.HEIC" holding a JPEG → "IMG_0001.jpg"; "flyer" → "flyer.pdf". Keeps names like "v2.5" intact. */
-function withKindExtension(filename: string, kind: PosterFileKind): string {
+export function withKindExtension(filename: string, kind: PosterFileKind): string {
   const ext = fileExtension(filename);
   const { extensions } = KIND_INFO[kind];
   if (extensions.includes(ext)) return filename;

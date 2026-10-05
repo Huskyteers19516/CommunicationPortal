@@ -711,6 +711,8 @@ describe("listSponsorships", () => {
       // beta LLC (3 days) and Soon Co (14 days); not past-due, not 20 days out, not submitted/declined ones.
       closingSoon: 2,
       waiting: 2,
+      // The accepted and the finished one are thanked on the team website (the default) without a logo.
+      logoNeeded: 2,
     });
   });
 
