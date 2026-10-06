@@ -23,6 +23,8 @@ export interface ReplyItemData {
   authorName: string;
   /** "Software member", "Build Leader"… ("" when unknown). */
   position: string;
+  /** Their portal photo (UserPhoto id) when they show one, else null (initials). */
+  authorPhotoId: string | null;
   mine: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -111,7 +113,7 @@ export function ReplyItem({ reply, justPosted = false }: { reply: ReplyItemData;
         )}
       >
         <header className="flex min-w-0 items-start gap-3">
-          <Avatar name={reply.authorName} size="sm" className="mt-0.5" />
+          <Avatar name={reply.authorName} size="sm" className="mt-0.5" photoId={reply.authorPhotoId} />
           <div className="min-w-0 flex-1 leading-tight">
             <p className="text-sm font-semibold text-ink-900 wrap-anywhere">
               {reply.authorName}

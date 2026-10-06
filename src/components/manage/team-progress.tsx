@@ -78,7 +78,7 @@ export function TeamProgressList({
               className="block px-4 py-3.5 transition-colors hover:bg-ink-50 active:bg-ink-100"
             >
               <div className="flex items-center justify-between gap-3">
-                <PersonLabel name={r.user.name} role={r.user.role} subteam={r.user.subteam} />
+                <PersonLabel userId={r.user.id} name={r.user.name} role={r.user.role} subteam={r.user.subteam} />
                 <ChevronRight className="size-5 shrink-0 text-ink-300" aria-hidden />
               </div>
               <ProgressBar done={r.approved} pending={r.submitted} total={r.total} className="mt-3" />
@@ -130,6 +130,7 @@ export function TeamProgressList({
                   <td className="px-5 py-3">
                     <Link href={href} className="group block min-w-40 rounded-md py-0.5">
                       <PersonLabel
+                        userId={r.user.id}
                         name={r.user.name}
                         role={r.user.role}
                         subteam={r.user.subteam}

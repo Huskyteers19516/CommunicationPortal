@@ -14,6 +14,7 @@ import { todayInTimezone } from "@/lib/dates";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { getPartsQueue, PARTS_WHO, type PartsCounts, type PartsView, type PartsWho } from "@/server/queries/parts";
+import { getPortalPhotoMap, photoIdsFor } from "@/server/queries/user-photos";
 
 export const metadata: Metadata = { title: "Parts queue" };
 
@@ -78,6 +79,7 @@ export default async function PartsQueuePage({ searchParams }: PageProps<"/parts
   const timeZone = env.teamTimezone;
   const today = todayInTimezone(timeZone, now);
   const queue = await getPartsQueue(actor, { ...filters, today, now });
+  const photoIds = photoIdsFor(await getPortalPhotoMap(), queue.items.map((p) => p.claimedBy?.id));
   const { counts } = queue;
   const filtered = !!filters.process || !!filters.who;
 
@@ -169,6 +171,7 @@ export default async function PartsQueuePage({ searchParams }: PageProps<"/parts
           nowIso={now.toISOString()}
           timeZone={timeZone}
           queueLength={queue.queueLength}
+          photoIds={photoIds}
           empty={<Card>{empty}</Card>}
         />
       </div>

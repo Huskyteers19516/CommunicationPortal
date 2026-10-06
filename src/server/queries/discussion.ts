@@ -158,6 +158,8 @@ export async function listDiscussionThreads(
 // ---------- one discussion ----------
 
 export interface DiscussionAuthor {
+  /** Their account (for their portal photo). */
+  id: string;
   name: string;
   role: Role;
   subteam: Subteam | null;
@@ -215,7 +217,7 @@ export interface DiscussionThreadView {
   canReply: boolean;
 }
 
-const authorSelect = { select: { name: true, role: true, subteam: true, isAdmin: true } } as const;
+const authorSelect = { select: { id: true, name: true, role: true, subteam: true, isAdmin: true } } as const;
 
 /** One discussion with its (latest) replies for its page, or null (missing, or an account that isn't active). */
 export async function getDiscussionThread(actor: Viewer, id: string, db: Db = prisma): Promise<DiscussionThreadView | null> {

@@ -15,6 +15,7 @@ import {
   parseTeamMemberFilters,
   teamMemberAdminHref,
 } from "@/server/queries/people";
+import { getPortalPhotoMap } from "@/server/queries/user-photos";
 
 export const metadata: Metadata = { title: "Team members" };
 
@@ -30,7 +31,8 @@ export default async function TeamMembersPage({ searchParams }: PageProps<"/peop
   const { people, total } = await listTeamMembers(actor, filters);
   const admin = canAdminister(actor);
   // Members get null everywhere (canManageAccount needs admin access).
-  const rows = people.map((p) => ({ ...p, adminHref: teamMemberAdminHref(actor, p) }));
+  const photos = await getPortalPhotoMap();
+  const rows = people.map((p) => ({ ...p, adminHref: teamMemberAdminHref(actor, p), photoId: photos.get(p.id) ?? null }));
   const filtered = hasTeamMemberFilters(filters);
   const now = requestTime();
 

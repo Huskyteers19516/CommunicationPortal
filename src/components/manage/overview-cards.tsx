@@ -1,7 +1,7 @@
 import { BadgeCheck, CalendarCheck, ChartColumn, ChevronRight, Inbox, PartyPopper, Plus } from "lucide-react";
 import Link from "next/link";
 import { FinishedBadge, PriorityBadge, SubteamBadge } from "@/components/app/badges";
-import { Avatar } from "@/components/ui/avatar";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
@@ -151,7 +151,7 @@ export function AttentionCard({ people, className }: { people: AttentionPerson[]
                 href={memberProgressHref(person.id, "week")}
                 className="flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-ink-50 active:bg-ink-100 sm:px-5"
               >
-                <PersonLabel name={person.name} role={person.role} subteam={person.subteam} />
+                <PersonLabel userId={person.id} name={person.name} role={person.role} subteam={person.subteam} />
                 <span className="flex shrink-0 items-center gap-1">
                   <Badge tone="red">{person.overdueCount} overdue</Badge>
                   <ChevronRight className="size-4 text-ink-300" aria-hidden />
@@ -226,7 +226,7 @@ export function RecentActivityCard({
               const body = (
                 <>
                   <span className="relative shrink-0">
-                    <Avatar name={item.person.name} size="sm" />
+                    <UserAvatar userId={item.person.id} name={item.person.name} size="sm" />
                     <span
                       className={cn("absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-white", activityDot[item.status])}
                       aria-hidden

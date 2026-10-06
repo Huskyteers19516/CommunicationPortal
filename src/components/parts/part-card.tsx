@@ -112,6 +112,7 @@ export function PartCard({
   nowIso,
   timeZone,
   queueLength,
+  photoIds,
   onResult,
 }: {
   part: PartItem;
@@ -122,6 +123,8 @@ export function PartCard({
   timeZone: string;
   /** Parts in the whole queue (the last rank). */
   queueLength: number;
+  /** Makers' portal photos (user id → photo id), else initials. */
+  photoIds?: Record<string, string>;
   onResult: (part: PartItem, result: { ok: boolean; message: string }) => void;
 }) {
   const headingId = useId();
@@ -261,7 +264,7 @@ export function PartCard({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-ink-100 pt-3">
-        <StatusLine part={part} done={done} nowIso={nowIso} timeZone={timeZone} />
+        <StatusLine part={part} done={done} nowIso={nowIso} timeZone={timeZone} photoId={part.claimedBy ? photoIds?.[part.claimedBy.id] : undefined} />
         {(part.canClaim || part.canFinish || part.canUnclaim) && !done && (
           <div className="flex flex-wrap gap-2">
             {part.canClaim && (
@@ -372,14 +375,27 @@ function RankMark({ rank, done }: { rank: number | null; done: boolean }) {
   );
 }
 
-function StatusLine({ part, done, nowIso, timeZone }: { part: PartItem; done: boolean; nowIso: string; timeZone: string }) {
+function StatusLine({
+  part,
+  done,
+  nowIso,
+  timeZone,
+  photoId,
+}: {
+  part: PartItem;
+  done: boolean;
+  nowIso: string;
+  timeZone: string;
+  /** The maker's portal photo, else initials. */
+  photoId?: string | null;
+}) {
   const now = new Date(nowIso);
   const ago = (iso: string | null) => (iso ? timeAgo(new Date(iso), now, timeZone) : null);
   if (done) {
     const when = ago(part.doneAt);
     return (
       <p className="flex min-w-0 items-center gap-2 text-sm text-ink-700">
-        {part.claimedBy && <Avatar name={part.claimedBy.name} size="sm" />}
+        {part.claimedBy && <Avatar name={part.claimedBy.name} size="sm" photoId={photoId} />}
         <span className="min-w-0 wrap-anywhere">
           {part.claimedBy ? (
             <>
@@ -406,7 +422,7 @@ function StatusLine({ part, done, nowIso, timeZone }: { part: PartItem; done: bo
   const since = ago(part.claimedAt);
   return (
     <p className="flex min-w-0 items-center gap-2 text-sm text-ink-700">
-      {part.claimedBy && <Avatar name={part.claimedBy.name} size="sm" />}
+      {part.claimedBy && <Avatar name={part.claimedBy.name} size="sm" photoId={photoId} />}
       <span className="min-w-0 wrap-anywhere">
         <span className="font-medium text-ink-900">{maker}</span> making it
         {since && <span className="text-ink-500"> · {since}</span>}

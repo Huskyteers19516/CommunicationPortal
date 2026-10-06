@@ -4,7 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 import { QuestionStatusBadge, SubteamBadge } from "@/components/app/badges";
-import { UserChip } from "@/components/app/user-chip";
+import { UserChipWithPhoto } from "@/components/app/user-avatar";
 import { audienceLabel, repliesLabel, topicLabel } from "@/components/questions/labels";
 import { QuestionActions } from "@/components/questions/question-actions";
 import { ReplyForm } from "@/components/questions/reply-form";
@@ -99,7 +99,7 @@ export default async function QuestionPage({ params }: PageProps<"/questions/[id
 
       <Card>
         <CardBody>
-          <UserChip name={thread.asker.name} role={thread.asker.role} subteam={thread.asker.subteam} />
+          <UserChipWithPhoto userId={thread.asker.id} name={thread.asker.name} role={thread.asker.role} subteam={thread.asker.subteam} />
           <RichText text={thread.body} className="mt-3 text-ink-800" />
         </CardBody>
       </Card>

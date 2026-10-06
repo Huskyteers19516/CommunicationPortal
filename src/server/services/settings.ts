@@ -12,6 +12,7 @@ import type { Db } from "../db";
 import { ConflictError, UnauthorizedError, ValidationError } from "../errors";
 import { canAdminister, isStaff, ledSubteam } from "../permissions";
 import { enforceRateLimit } from "../rate-limit";
+import { holdWebsitePhotoAfterRename } from "./user-photos";
 
 const PASSWORD_CHANGE_LIMIT = 10;
 const PASSWORD_CHANGE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
@@ -82,12 +83,19 @@ function otherSessionsWhere(userId: string, keepTokenHash: string | null) {
 
 const profileInput = z.object({ name: nameSchema });
 
-/** Change your display name. Email and position are managed by the admin. */
-export async function updateProfile(ctx: ServiceContext, raw: unknown): Promise<void> {
+/**
+ * Change your display name. Email and position are managed by the admin. The team website finds members' photos by
+ * name, so a new name holds your photo off the website until someone who manages your account checks it
+ * (holdWebsitePhotoAfterRename in ./user-photos.ts). `photoHeld`: you have a photo and it's held for a new name.
+ */
+export async function updateProfile(ctx: ServiceContext, raw: unknown): Promise<{ photoHeld: boolean }> {
   const { name } = parseInput(profileInput, asRecord(raw));
   assertActive(ctx.actor);
+  const before = await ctx.db.user.findUnique({ where: { id: ctx.actor.id }, select: { name: true, photo: { select: { id: true } } } });
   const { count } = await ctx.db.user.updateMany({ where: { id: ctx.actor.id }, data: { name } });
-  if (count === 0) throw new UnauthorizedError();
+  if (count === 0 || !before) throw new UnauthorizedError();
+  const held = await holdWebsitePhotoAfterRename(ctx, before.name, name);
+  return { photoHeld: held && before.photo !== null };
 }
 
 // ── Password ──────────────────────────────────────────────────────────────────

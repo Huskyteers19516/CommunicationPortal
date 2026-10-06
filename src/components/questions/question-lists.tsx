@@ -2,7 +2,7 @@ import { Clock, MessageCircle, Sparkles } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { QuestionStatusBadge, SubteamBadge } from "@/components/app/badges";
-import { UserChip } from "@/components/app/user-chip";
+import { UserChipWithPhoto } from "@/components/app/user-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
@@ -87,7 +87,7 @@ export function InboxList({ items, now, timeZone }: { items: InboxRow[]; now: Da
             <li key={q.id}>
               <Link href={`/questions/${q.id}`} className="block px-4 py-3.5 transition-colors hover:bg-ink-50 sm:px-5">
                 <div className="flex items-start justify-between gap-3">
-                  <UserChip name={q.asker.name} role={q.asker.role} subteam={q.asker.subteam} size="sm" />
+                  <UserChipWithPhoto userId={q.asker.id} name={q.asker.name} role={q.asker.role} subteam={q.asker.subteam} size="sm" />
                   <QuestionStatusBadge status={q.status} />
                 </div>
                 <p className="mt-2 break-words font-medium text-ink-900">{q.title}</p>

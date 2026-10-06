@@ -3,12 +3,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CategoryBadge, DueBadge, FinishedBadge, PriorityBadge, SignupBadge, SubteamBadge } from "@/components/app/badges";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { PUBLIC_STATUS_STYLES, PublicStatusIcon } from "@/components/board/people-chips";
 import { SignupButtons } from "@/components/board/signup-buttons";
 import { BackLink } from "@/components/tasks/back-link";
 import { FinishTaskControls } from "@/components/tasks/finish-task";
 import { Alert } from "@/components/ui/alert";
-import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
@@ -172,7 +172,7 @@ export default async function BoardTaskPage({ params }: PageProps<"/tasks/[id]">
                   const status = PUBLIC_STATUS_STYLES[person.publicStatus];
                   return (
                     <li key={person.id} className="flex min-h-14 items-center gap-3 px-4 py-2.5 sm:px-5">
-                      <Avatar name={person.name} />
+                      <UserAvatar userId={person.id} name={person.name} />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-ink-900">
                           {person.name}

@@ -100,6 +100,8 @@ import { deleteSponsorshipFile, uploadSponsorshipFile } from "@/server/services/
 import { removeSponsorshipLogo, uploadSponsorshipLogo } from "@/server/services/sponsorship-logos";
 import { deleteSponsorship, deleteSponsorships } from "@/server/services/sponsorships";
 import { createStrategy, deleteStrategy, updateStrategy } from "@/server/services/strategy";
+import { getUserPhotoFile } from "@/server/queries/user-photos";
+import { removeUserPhoto, uploadUserPhoto } from "@/server/services/user-photos";
 import { addWorkshopFile, addWorkshopPhoto, createWorkshopProject, deleteWorkshopProject, removeWorkshopFile } from "@/server/services/workshop";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeUser } from "./helpers/factories";
@@ -198,6 +200,9 @@ interface KindCase {
 }
 
 const fileCols = { filename: true, contentType: true, size: true, data: true, storageKey: true } as const;
+
+/** Members' photos are one per account: each upload is by a new person, kept here so their photo can be removed. */
+const photoOwners = new Map<string, Actor>();
 
 const KINDS: KindCase[] = [
   {
@@ -355,6 +360,26 @@ const KINDS: KindCase[] = [
     remove: (ctx, a) => removeWorkshopFile(ctx, { fileId: a.fileId }),
     field: "file",
   },
+  {
+    kind: "photos",
+    bytes: PNG,
+    uploader: () => fresh(),
+    // One photo per account (a second upload replaces the first): each upload is by a new person, with the same
+    // request (Postgres or R2) as the uploader's.
+    async add(ctx) {
+      const owner = await fresh();
+      const { id } = await uploadUserPhoto({ ...ctx, actor: owner }, { file: { name: "me.png", type: "image/png", bytes: PNG } });
+      photoOwners.set(owner.id, owner);
+      return { fileId: id, routeId: id, parentId: owner.id };
+    },
+    row: (id) => t.db.userPhoto.findUniqueOrThrow({ where: { id }, select: fileCols }),
+    // Everyone ACTIVE sees photos shown in the portal (the default).
+    get: (a, id) => getUserPhotoFile(a, id, t.db),
+    outsider: () => fresh({ status: "DISABLED" }),
+    options: { immutable: true },
+    remove: (ctx, a) => removeUserPhoto({ ...ctx, actor: photoOwners.get(a.parentId)! }, {}),
+    field: "file",
+  },
 ];
 
 const request = (path: string) => new NextRequest(`http://localhost${path}`);
@@ -476,6 +501,7 @@ describe("the signed-in file routes (R2 from the settings, as on Vercel)", () =>
       logos: (await import("@/app/(app)/sponsors/logos/[id]/route")).GET,
       "workshop-photos": (await import("@/app/(app)/workshop/photos/[id]/route")).GET,
       "workshop-files": (await import("@/app/(app)/workshop/files/[id]/route")).GET,
+      photos: (await import("@/app/(app)/people/photos/[id]/route")).GET,
     };
     const call = (k: KindCase, id: string, query = "") =>
       routes[k.kind](request(`/x/${id}${query}`), { params: Promise.resolve({ id }) } as never) as Promise<Response>;

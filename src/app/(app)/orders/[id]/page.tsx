@@ -3,11 +3,11 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { cache } from "react";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { OrderForm } from "@/components/orders/order-form";
 import { OrderStatusControl } from "@/components/orders/status-select";
 import { ActionForm } from "@/components/tasks/action-form";
 import { BackLink } from "@/components/tasks/back-link";
-import { Avatar } from "@/components/ui/avatar";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { SUBTEAM_LABELS } from "@/lib/constants";
@@ -71,7 +71,7 @@ function ItemDetails({ item }: { item: OrderDetail }) {
           <Detail label="Orderer">
             {item.orderer ? (
               <span className="flex min-w-0 items-center gap-2">
-                <Avatar name={item.orderer.name} size="sm" />
+                <UserAvatar userId={item.orderer.id} name={item.orderer.name} size="sm" />
                 <span className="min-w-0">{item.orderer.name}</span>
               </span>
             ) : (

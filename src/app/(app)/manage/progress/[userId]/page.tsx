@@ -3,10 +3,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RoleBadge, SubteamBadge } from "@/components/app/badges";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { MemberAssignmentList } from "@/components/manage/member-assignments";
 import { ProgressLegend, ProgressRangeTabs } from "@/components/manage/progress-filters";
 import { describeRange, lastSeenLabel, memberProgressHref, teamProgressHref } from "@/components/manage/progress-links";
-import { Avatar } from "@/components/ui/avatar";
 import { Card, CardHeader } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { ProgressBar } from "@/components/ui/progress-bar";
@@ -50,7 +50,7 @@ export default async function MemberProgressPage({ params, searchParams }: PageP
         eyebrow="Progress"
         title={
           <span className="flex min-w-0 items-center gap-3">
-            <Avatar name={user.name} size="lg" />
+            <UserAvatar userId={user.id} name={user.name} size="lg" />
             <span className="min-w-0 break-words">{user.name}</span>
           </span>
         }

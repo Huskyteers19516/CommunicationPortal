@@ -1,7 +1,8 @@
 // The team website's public pages: their settings (Admin → Approvals → Team website), kept in the TeamNote
-// "public-progress" as JSON — the progress page (on/off, names, task titles, where counting starts) and the
-// Sponsors and Events pages (on/off each). Everyone with admin access changes them; each person's own "Show me on the team
-// website" switch is in services/settings.ts.
+// "public-progress" as JSON — the progress page (on/off, names, task titles, where counting starts, each person's
+// profile on the Our Team page), the Sponsors and Events pages (on/off each), and members' photos on the Our Team page
+// (on/off). Everyone with admin access changes them; each person's own "Show me on the team website" switch is in
+// services/settings.ts, and their photo's switches in services/user-photos.ts.
 import { z } from "zod";
 import { addDays, todayInTimezone } from "@/lib/dates";
 import {
@@ -31,6 +32,8 @@ const settingsInput = z.object({
   since: z.preprocess((v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? undefined : v), dateOnlySchema.optional()),
   showSponsors: checkbox,
   showEvents: checkbox,
+  showPersonPages: checkbox,
+  showPhotos: checkbox,
 });
 
 function asRecord(raw: unknown): Record<string, unknown> {
@@ -59,6 +62,8 @@ export async function updatePublicProgressSettings(ctx: ServiceContext, raw: unk
     since: input.since ?? null,
     showSponsors: input.showSponsors,
     showEvents: input.showEvents,
+    showPersonPages: input.showPersonPages,
+    showPhotos: input.showPhotos,
   };
   const body = serializePublicProgressSettings(settings);
   await ctx.db.teamNote.upsert({

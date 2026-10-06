@@ -3,23 +3,28 @@ import { describeRole } from "@/lib/constants";
 import { cn } from "@/lib/cn";
 import { Avatar } from "../ui/avatar";
 
-/** Avatar + name + "Build Leader" / "Software member" line. */
+/**
+ * Avatar + name + "Build Leader" / "Software member" line. `photoId`: their portal photo (server components use
+ * UserChipWithPhoto from ./user-avatar.tsx, which looks it up by user id).
+ */
 export function UserChip({
   name,
   role,
   subteam,
   size = "md",
   className,
+  photoId,
 }: {
   name: string;
   role?: Role;
   subteam?: Subteam | null;
   size?: "sm" | "md";
   className?: string;
+  photoId?: string | null;
 }) {
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-2.5", className)}>
-      <Avatar name={name} size={size === "sm" ? "sm" : "md"} />
+      <Avatar name={name} size={size === "sm" ? "sm" : "md"} photoId={photoId} />
       <span className="min-w-0 leading-tight">
         <span className={cn("block truncate font-medium text-ink-900", size === "sm" ? "text-sm" : "text-sm")}>{name}</span>
         {role && <span className="block truncate text-xs text-ink-500">{describeRole(role, subteam ?? null)}</span>}

@@ -10,7 +10,8 @@ const STEPS: readonly { maxSide: number; quality: number }[] = [
   { maxSide: 1600, quality: 0.75 },
 ];
 
-async function loadPicture(file: File): Promise<HTMLImageElement> {
+/** The picked picture, decoded (the right way up). Throws when the browser can't read it. Also used by Settings → My photo. */
+export async function loadPicture(file: File): Promise<HTMLImageElement> {
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();
@@ -23,7 +24,8 @@ async function loadPicture(file: File): Promise<HTMLImageElement> {
   }
 }
 
-function toJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
+/** The canvas as a JPG (null when the browser can't make one). */
+export function toJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
 }
 

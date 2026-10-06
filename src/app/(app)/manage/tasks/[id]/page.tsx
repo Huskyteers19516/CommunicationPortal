@@ -12,7 +12,7 @@ import {
   SignupBadge,
   SubteamBadge,
 } from "@/components/app/badges";
-import { UserChip } from "@/components/app/user-chip";
+import { UserChipWithPhoto } from "@/components/app/user-avatar";
 import { ActionForm } from "@/components/tasks/action-form";
 import { BackLink } from "@/components/tasks/back-link";
 import { FinishTaskControls, type FinishTaskPerson } from "@/components/tasks/finish-task";
@@ -305,7 +305,7 @@ function AssignmentRow({
     <>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <UserChip name={a.user.name} role={a.user.role} subteam={a.user.subteam} />
+          <UserChipWithPhoto userId={a.user.id} name={a.user.name} role={a.user.role} subteam={a.user.subteam} />
           {a.selfAssigned && <Badge tone="blue">Signed up</Badge>}
         </div>
         <div className="flex flex-col items-end gap-1">

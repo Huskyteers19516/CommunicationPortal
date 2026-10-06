@@ -11,7 +11,7 @@ import { FormMessage } from "@/components/ui/form-message";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { initialActionState } from "@/lib/action-state";
 import { addDays, type DateOnly, formatDateOnly } from "@/lib/dates";
-import { PUBLIC_EVENTS_PATH, PUBLIC_SPONSORS_PATH, PUBLIC_WORKSHOP_PATH } from "@/lib/public-api";
+import { PUBLIC_EVENTS_PATH, PUBLIC_SPONSORS_PATH, PUBLIC_TEAM_PHOTOS_PATH, PUBLIC_WORKSHOP_PATH } from "@/lib/public-api";
 import { PUBLIC_EVENT_KINDS_SENTENCE } from "@/lib/public-events";
 import {
   NAME_STYLE_LABELS,
@@ -37,14 +37,20 @@ function eventsPreview(p: TeamWebsitePreview, on: boolean): string {
   return on ? `Shown now: ${what}.` : `Off. Turning it on shows ${what} — check their locations and links first.`;
 }
 
+function photosPreview(p: TeamWebsitePreview, on: boolean): string {
+  const what = plural(p.photos, "person's photo", "people's photos");
+  return on ? `Shown now: ${what}.` : `Off. Turning it on shows ${what}.`;
+}
+
 const linkClass =
   "inline-flex min-h-10 items-center gap-1.5 rounded-md text-sm font-medium text-brand-700 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600";
 
 /**
  * Admin → Approvals → Team website: what huskyteers19516.github.io shows from the portal — the progress page (on/off,
- * how names are shown, task titles, where counting starts), the sponsors on the Sponsors page, and the Events page
- * (each on/off) — with links to the pages and the live JSON, and how the Workshop page fills (projects go on it one at a
- * time, once approved in the Workshop). Everyone with admin access.
+ * how names are shown, each person's profile on the Our Team page, task titles, where counting starts), the sponsors on
+ * the Sponsors page, the Events page, and members' photos on the Our Team page (each on/off) — with links to the pages
+ * and the live JSON, and how the Workshop page fills (projects go on it one at a time, once approved in the Workshop).
+ * Everyone with admin access.
  */
 export function TeamWebsiteCard({
   settings,
@@ -77,12 +83,14 @@ export function TeamWebsiteCard({
   const since = values ? (values.since ?? "") : (settings.since ?? "");
   const showSponsors = values ? values.showSponsors === "on" : settings.showSponsors;
   const showEvents = values ? values.showEvents === "on" : settings.showEvents;
+  const showPersonPages = values ? values.showPersonPages === "on" : settings.showPersonPages;
+  const showPhotos = values ? values.showPhotos === "on" : settings.showPhotos;
 
   return (
     <Card role="region" aria-label="Team website">
       <CardHeader
         title="Team website"
-        description="Live progress, sponsors, events, and Workshop projects for guests on the team's site — no sign-in."
+        description="Live progress, sponsors, events, Workshop projects, and members' photos for guests on the team's site — no sign-in."
         actions={
           // The progress page's switch (the main one); sponsors and events have their own boxes below.
           <Badge tone={settings.enabled ? "green" : "gray"} title={settings.enabled ? "Live progress is on" : "Live progress is off"}>
@@ -123,8 +131,15 @@ export function TeamWebsiteCard({
             key={`titles-${key}`}
             name="showTaskTitles"
             defaultChecked={showTaskTitles}
-            label="Show task titles in “Recent completions”"
-            description="Off: it shows “Checklist item completed” with the subteam (and the person, when names are shown) instead of the task title. Titles are public: keep names and sponsor details out of them."
+            label="Show task titles on the team website"
+            description="In “Recent completions” on the progress page and in each person’s finished list on the Our Team page. Off: they show “Checklist item completed” (with the subteam, and the person when names are shown) or “A task” instead. Titles are public: keep names and sponsor details out of them."
+          />
+          <CheckboxField
+            key={`profiles-${key}`}
+            name="showPersonPages"
+            defaultChecked={showPersonPages}
+            label="Show each person’s profile on the Our Team page"
+            description="Selecting someone on the website’s Our Team page then shows what they finished: their last 25 checklist items, when each was approved (to the minute), the task titles (when shown), which were counted because a leader marked the whole task finished, and their last 8 weeks. Off: their profile shows only their numbers from the progress page. Needs live progress on and names shown."
           />
           <Field
             label="Count tasks due from"
@@ -173,6 +188,22 @@ export function TeamWebsiteCard({
                 </>
               }
             />
+            <CheckboxField
+              key={`photos-${key}`}
+              name="showPhotos"
+              defaultChecked={showPhotos}
+              label="Show members’ photos on the team website"
+              description={
+                <>
+                  Each person&apos;s own photo from their Settings, next to their name wherever the website lists them
+                  (their Our Team card, the progress page; matched by full name), unless they turned “Show my photo on
+                  the team website” off or it&apos;s held off (a person&apos;s Photo card in People). The photos themselves are
+                  public; the list the website reads names nobody (a fingerprint of each name instead), so it isn&apos;t
+                  a list of who&apos;s on the team. Off: the website shows no member&apos;s photo.
+                  {preview && <> {photosPreview(preview, settings.showPhotos)}</>}
+                </>
+              }
+            />
           </div>
           <SubmitButton pendingText="Saving…" className="w-full sm:w-auto">
             Save
@@ -184,8 +215,10 @@ export function TeamWebsiteCard({
           <p>
             Guests see each person&apos;s name and position, how many checklist items they&apos;ve finished, have open, and
             have checked off for review, when their items were approved (to the minute), the task titles in Recent
-            completions (when shown), and the subteams&apos; and team&apos;s totals. Never emails, notes, due dates, or
-            questions. Mentors and teachers aren&apos;t listed.
+            completions (when shown), and the subteams&apos; and team&apos;s totals. While profiles are on, selecting a
+            listed person on the Our Team page also shows what they finished — their last 25 items with the task titles
+            (when shown), when each was approved, and which were counted with the whole task — and their last 8 weeks.
+            Never emails, notes, due dates, or questions. Mentors and teachers aren&apos;t listed.
           </p>
           <p>
             The Workshop page shows each project once a leader, the captain, a mentor, or a teacher approves it (
@@ -216,6 +249,11 @@ export function TeamWebsiteCard({
               See the live data (JSON)
               <span className="sr-only"> (opens in a new tab)</span>
             </a>
+            <a href={`${TEAM_SITE_ORIGIN}/about/team`} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <Globe className="size-4" aria-hidden />
+              Our Team page
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
             <a href={`${TEAM_SITE_ORIGIN}/sponsors`} target="_blank" rel="noopener noreferrer" className={linkClass}>
               <Globe className="size-4" aria-hidden />
               Sponsors page
@@ -244,6 +282,11 @@ export function TeamWebsiteCard({
             <a href={PUBLIC_WORKSHOP_PATH} target="_blank" rel="noopener noreferrer" className={linkClass}>
               <ExternalLink className="size-4" aria-hidden />
               Workshop JSON
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href={PUBLIC_TEAM_PHOTOS_PATH} target="_blank" rel="noopener noreferrer" className={linkClass}>
+              <ExternalLink className="size-4" aria-hidden />
+              Team photos JSON
               <span className="sr-only"> (opens in a new tab)</span>
             </a>
           </div>

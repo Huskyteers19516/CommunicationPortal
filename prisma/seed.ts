@@ -8,6 +8,7 @@
 //
 // Keep this file free of `server-only` and next/* imports: it runs under plain tsx.
 import { randomBytes } from "node:crypto";
+import { crc32, deflateSync } from "node:zlib";
 import { config as loadEnv } from "dotenv";
 import type { Prisma } from "../src/generated/prisma/client";
 import type { AccountStatus, AssignmentStatus, Priority, QuestionStatus, Role, Subteam } from "../src/generated/prisma/enums";
@@ -793,6 +794,62 @@ interface SponsorshipSpec {
   showOnWebsite?: boolean;
   /** A tiny generated PNG logo (base64) for the team website's Sponsors page. */
   logo?: string;
+}
+
+/**
+ * Demo members' photos (Settings → My photo): generated head-and-shoulders drawings (DEMO_PHOTO_SIDE-pixel square PNGs,
+ * sharp in the website's 168 px profile and the Settings preview), never anyone's face. Maya shows hers everywhere;
+ * Ethan only on the team website (in the portal people see his initials); Amara only in the portal (not on the website).
+ */
+const DEMO_PHOTO_SIDE = 256;
+type Rgb = readonly [number, number, number];
+const DEMO_PHOTOS: { person: PersonKey; colors: { bg: Rgb; skin: Rgb; hair: Rgb; shirt: Rgb }; inPortal: boolean; onWebsite: boolean }[] = [
+  { person: "maya", inPortal: true, onWebsite: true, colors: { bg: [15, 118, 110], skin: [217, 164, 124], hair: [31, 26, 23], shirt: [248, 250, 252] } },
+  { person: "ethan", inPortal: false, onWebsite: true, colors: { bg: [29, 78, 216], skin: [241, 199, 165], hair: [59, 38, 24], shirt: [20, 83, 45] } },
+  { person: "amara", inPortal: true, onWebsite: false, colors: { bg: [124, 58, 237], skin: [141, 90, 59], hair: [15, 15, 16], shirt: [161, 98, 7] } },
+];
+
+/** One generated portrait as a real RGB PNG (filter 0 rows, zlib-compressed; 2 × 2 samples a pixel for soft edges). */
+function demoPortraitPng(colors: { bg: Rgb; skin: Rgb; hair: Rgb; shirt: Rgb }, side = DEMO_PHOTO_SIDE): Buffer {
+  const inEllipse = (u: number, v: number, cx: number, cy: number, rx: number, ry: number) => ((u - cx) / rx) ** 2 + ((v - cy) / ry) ** 2 <= 1;
+  const colorAt = (u: number, v: number): Rgb => {
+    if (inEllipse(u, v, 0.5, 0.4, 0.18, 0.21) && v < 0.35) return colors.hair; // hair
+    if (inEllipse(u, v, 0.5, 0.42, 0.16, 0.19)) return colors.skin; // face
+    if (u > 0.45 && u < 0.55 && v > 0.55 && v < 0.72) return colors.skin; // neck
+    if (inEllipse(u, v, 0.5, 1.02, 0.44, 0.34)) return colors.shirt; // shoulders
+    return colors.bg;
+  };
+  const raw = Buffer.alloc((side * 3 + 1) * side);
+  for (let y = 0; y < side; y++) {
+    const row = y * (side * 3 + 1);
+    for (let x = 0; x < side; x++) {
+      const sum = [0, 0, 0];
+      for (const [dx, dy] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+        const c = colorAt((x + dx) / side, (y + dy) / side);
+        for (let k = 0; k < 3; k++) sum[k] += c[k];
+      }
+      for (let k = 0; k < 3; k++) raw[row + 1 + x * 3 + k] = Math.round(sum[k] / 4);
+    }
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc32(body) >>> 0, 8 + data.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(side, 0);
+  ihdr.writeUInt32BE(side, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 /** Demo logos: small generated pictures (no real brands' artwork). */
@@ -2412,14 +2469,32 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
           },
         });
       }
+      // Members' own photos (UserPhoto; stored in Postgres like every seeded file), with their two switches.
+      for (const p of DEMO_PHOTOS) {
+        const png = demoPortraitPng(p.colors);
+        const bytes = Uint8Array.from(png);
+        await tx.userPhoto.create({
+          data: {
+            userId: uid(p.person),
+            filename: "photo.png",
+            contentType: "image/png",
+            size: bytes.byteLength,
+            data: bytes,
+            width: png.readUInt32BE(16),
+            height: png.readUInt32BE(20),
+            createdAt: ago(24 * 5),
+          },
+        });
+        await tx.user.update({ where: { id: uid(p.person) }, data: { showPhotoInPortal: p.inPortal, showPhotoOnWebsite: p.onWebsite } });
+      }
       // Key "sponsorship-info" = SPONSORSHIP_INFO_KEY in src/server/services/sponsorships.ts (not imported: server-only).
       await tx.teamNote.create({ data: { key: "sponsorship-info", body: SPONSORSHIP_INFO, updatedById: uid("amara") } });
-      // The demo team has already checked its sponsors and events: the website's Sponsors and Events pages are on (a
-      // real team starts with them off, Admin → Team website).
+      // The demo team has already checked its sponsors and events: the website's Sponsors and Events pages, and each
+      // person's profile on the Our Team page, are on (a real team starts with them off, Admin → Team website).
       await tx.teamNote.create({
         data: {
           key: PUBLIC_PROGRESS_KEY,
-          body: serializePublicProgressSettings({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showSponsors: true, showEvents: true }),
+          body: serializePublicProgressSettings({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showSponsors: true, showEvents: true, showPersonPages: true }),
           updatedById: uid("david"),
         },
       });

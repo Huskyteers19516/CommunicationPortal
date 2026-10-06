@@ -747,6 +747,34 @@ describe("demo seed", () => {
     }
   });
 
+  it("has demo members' photos: real small PNGs, one shown everywhere, one only on the website, one only in the portal", async () => {
+    const { checkUserPhoto } = await import("@/server/services/user-photos");
+    const { getPublicTeamPhotos, publicTeamPhotoKey } = await import("@/server/queries/public-team-photos");
+    const { portalPhotoMap } = await import("@/server/queries/user-photos");
+    const db = s.db;
+    const photos = await db.userPhoto.findMany({
+      include: { user: { select: { name: true, status: true, showPhotoInPortal: true, showPhotoOnWebsite: true } } },
+    });
+    expect(photos.map((p) => [p.user.name, p.user.showPhotoInPortal, p.user.showPhotoOnWebsite]).sort()).toEqual([
+      ["Amara Okafor", true, false],
+      ["Ethan Chen", false, true],
+      ["Maya Patel", true, true],
+    ]);
+    for (const p of photos) {
+      expect(p.user.status).toBe("ACTIVE");
+      // Big enough to look sharp in the website's 168 px profile and the Settings preview; still tiny files.
+      expect(p).toMatchObject({ filename: "photo.png", contentType: "image/png", size: p.data!.byteLength, width: 256, height: 256, storageKey: null });
+      expect(p.size).toBeLessThan(8 * 1024);
+      // They'd pass the upload's checks as they are (and have no metadata to take out).
+      const checked = checkUserPhoto({ name: "photo.png", type: "image/png", bytes: p.data! });
+      expect(Buffer.from(checked.upload.bytes).equals(Buffer.from(p.data!))).toBe(true);
+    }
+    const map = await portalPhotoMap(db);
+    expect(photos.filter((p) => map.has(p.userId)).map((p) => p.user.name).sort()).toEqual(["Amara Okafor", "Maya Patel"]);
+    const site = await getPublicTeamPhotos(db, { now: TEST_NOW });
+    expect(site.enabled && site.photos.map((p) => p.key).sort()).toEqual([publicTeamPhotoKey("Ethan Chen"), publicTeamPhotoKey("Maya Patel")].sort());
+  });
+
   it("has demo strategies: a pinned auto with a .pp path the planner can open, a match plan with a link, scouting notes", async () => {
     const { isPedroPathProject } = await import("@/lib/strategy");
     const db = s.db;

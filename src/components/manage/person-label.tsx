@@ -1,5 +1,5 @@
+import { UserAvatar } from "@/components/app/user-avatar";
 import { describeRole } from "@/components/app/user-chip";
-import { Avatar } from "@/components/ui/avatar";
 import type { Role, Subteam } from "@/generated/prisma/enums";
 import { cn } from "@/lib/cn";
 
@@ -8,12 +8,15 @@ import { cn } from "@/lib/cn";
  * cut off, so leaders can always tell who a progress row is about.
  */
 export function PersonLabel({
+  userId,
   name,
   role,
   subteam,
   className,
   nameClassName,
 }: {
+  /** Their portal photo is shown when they have one (else initials). */
+  userId: string;
   name: string;
   role: Role;
   subteam: Subteam | null;
@@ -22,7 +25,7 @@ export function PersonLabel({
 }) {
   return (
     <span className={cn("flex min-w-0 items-center gap-2.5", className)}>
-      <Avatar name={name} />
+      <UserAvatar userId={userId} name={name} />
       <span className="min-w-0 leading-tight">
         <span className={cn("block break-words text-sm font-medium text-ink-900", nameClassName)}>{name}</span>
         <span className="mt-0.5 block break-words text-xs text-ink-500">{describeRole(role, subteam)}</span>

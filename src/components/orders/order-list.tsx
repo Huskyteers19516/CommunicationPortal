@@ -92,12 +92,12 @@ function Cost({ cents }: { cents: number | null }) {
 }
 
 /** Who's ordering it. `labeled` (phone cards, which have no column header): "Orderer: …" / "No orderer yet". */
-function Orderer({ item, labeled = false }: { item: OrderItem; labeled?: boolean }) {
+function Orderer({ item, labeled = false, photoIds }: { item: OrderItem; labeled?: boolean; photoIds?: Record<string, string> }) {
   if (!item.orderer) return <span className="text-ink-500">{labeled ? "No orderer yet" : "No one yet"}</span>;
   return (
     <span className="flex min-w-0 items-center gap-2">
       {labeled && <span className="shrink-0">Orderer:</span>}
-      <Avatar name={item.orderer.name} size="sm" />
+      <Avatar name={item.orderer.name} size="sm" photoId={photoIds?.[item.orderer.id]} />
       {/* Wraps at spaces first ("Ava / Thompson", not "Thompso / n"). */}
       <span className="min-w-0 break-words text-ink-800">{item.orderer.name}</span>
     </span>
@@ -162,12 +162,15 @@ export function OrderList({
   timeZone,
   nowIso,
   highlight = null,
+  photoIds,
 }: {
   items: OrderItem[];
   timeZone: string;
   /** Request time (so dates render the same on the server and in the browser). */
   nowIso: string;
   highlight?: OrderHighlight | null;
+  /** Orderers' portal photos (user id → photo id; photoIdsFor), else initials. */
+  photoIds?: Record<string, string>;
 }) {
   const shown = useStableOrder(items);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -238,7 +241,7 @@ export function OrderList({
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-500">
-                    <Orderer item={item} labeled />
+                    <Orderer item={item} labeled photoIds={photoIds} />
                     <span>Added {added(item)}</span>
                   </div>
                 </li>
@@ -290,7 +293,7 @@ export function OrderList({
                   <tr key={item.id} className={cn("align-top", marked(item.id) && "bg-brand-50/70")}>
                     <td className="py-2 pl-3 pr-2 lg:pl-4">
                       <span className="flex min-h-10 min-w-0 items-center">
-                        <Orderer item={item} />
+                        <Orderer item={item} photoIds={photoIds} />
                       </span>
                     </td>
                     {/* px-1.5: the w-32 column leaves a 116px menu, enough for "Requested" (see OrderStatusControl). */}

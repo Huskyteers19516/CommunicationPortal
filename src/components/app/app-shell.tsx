@@ -6,7 +6,7 @@ import type { NavCounts } from "@/server/queries/nav";
 import { HuskyMark, Logo } from "../brand/logo";
 import { BottomTabs, MobileNav, SidebarNav, SignOutButton } from "./nav-client";
 import type { NavItem, NavSection } from "./nav-data";
-import { UserChip } from "./user-chip";
+import { UserChipWithPhoto } from "./user-avatar";
 
 export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSection[]; tabs: NavItem[] } {
   const staff = canAccessManage(actor);
@@ -97,7 +97,7 @@ export function AppShell({ actor, counts, children }: { actor: Actor; counts: Na
         </div>
         <div className="space-y-1 border-t border-ink-100 p-3">
           <Link href="/settings" className="block rounded-lg px-2 py-2 hover:bg-ink-50">
-            <UserChip name={actor.name} role={actor.role} subteam={actor.subteam} />
+            <UserChipWithPhoto userId={actor.id} name={actor.name} role={actor.role} subteam={actor.subteam} />
           </Link>
           <SignOutButton />
         </div>
@@ -111,7 +111,7 @@ export function AppShell({ actor, counts, children }: { actor: Actor; counts: Na
         </Link>
         <MobileNav
           sections={sections}
-          header={<UserChip name={actor.name} role={actor.role} subteam={actor.subteam} size="sm" />}
+          header={<UserChipWithPhoto userId={actor.id} name={actor.name} role={actor.role} subteam={actor.subteam} size="sm" />}
         />
       </header>
 

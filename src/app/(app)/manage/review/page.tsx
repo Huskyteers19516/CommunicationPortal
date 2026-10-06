@@ -2,7 +2,7 @@ import { CircleCheckBig } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { DueBadge, PriorityBadge, SubteamBadge } from "@/components/app/badges";
-import { UserChip } from "@/components/app/user-chip";
+import { UserChipWithPhoto } from "@/components/app/user-avatar";
 import { BulkApproveProvider, BulkCheckbox, BulkSelectGroup, BulkToolbar } from "@/components/tasks/bulk-approve";
 import { FilterChips } from "@/components/tasks/filter-chips";
 import { NoteBlock } from "@/components/tasks/note-block";
@@ -107,7 +107,7 @@ export default async function ReviewPage({ searchParams }: PageProps<"/manage/re
                       </div>
                       <div className="min-w-0 flex-1 space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                          <UserChip name={item.user.name} role={item.user.role} subteam={item.user.subteam} />
+                          <UserChipWithPhoto userId={item.user.id} name={item.user.name} role={item.user.role} subteam={item.user.subteam} />
                           {item.submittedAt && <span className="text-xs text-ink-500">Submitted {timeAgo(item.submittedAt, now, env.teamTimezone)}</span>}
                         </div>
                         {item.submissionNote && <NoteBlock label="Their note" text={item.submissionNote} />}

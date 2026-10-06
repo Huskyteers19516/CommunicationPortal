@@ -85,7 +85,7 @@ function OwnerSection({ overview, owner }: { overview: FileStorageOverview; owne
 /**
  * How much of the team's file storage is used, and by what: uploads stop when it's full, so this says where
  * the space is going and who can free it (Resources, sponsor files, posters, notebook pictures, strategy files,
- * sponsor logos, Workshop photos and design files).
+ * sponsor logos, Workshop photos and design files, members' photos).
  * Everyone who sees it also sees where new files go; owners also get the settings' state and the Cloudflare R2 tools
  * (`overview.owner`).
  */
@@ -166,6 +166,13 @@ export function FileStorageCard({ overview }: { overview: FileStorageOverview })
           . Whoever added the project, the people credited on it, and everyone with admin access can remove them.
         </>
       ),
+    },
+    {
+      key: "photos",
+      label: "Members' photos",
+      bytes: usage.photos,
+      swatch: "bg-pink-500",
+      note: "Each person's own photo (Settings → My photo; one each, about 50 KB). They replace or remove it there; people who manage their account can remove it in Admin → People.",
     },
   ];
 

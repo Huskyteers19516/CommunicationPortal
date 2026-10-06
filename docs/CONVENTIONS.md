@@ -157,6 +157,120 @@ navigations) reset the menus too — same for Admin → People. Phones get stack
 in" on its own line). Members get no links into Admin; people with admin access get "Manage people in Admin → People",
 and a person's name links to `/admin/users/[id]` (with a chevron, and a row hover only on those rows) only when
 `canManageAccount` allows it (`teamMemberAdminHref`). What Admin → People shows and who can open it is unchanged.
+Avatars show each person's own photo when they have one (see **Members' photos**; the page passes `photoId` with each
+row, so `TeamMemberList` stays a plain component).
+
+## Members' photos (`src/server/services/user-photos.ts`, Settings → My photo)
+
+The owner's ask: everyone uploads their own photo in Settings; they can keep it out of the portal, and it goes to the
+team website automatically. `UserPhoto` (one per account, `userId @unique`, migration `20261005070000_user_photos`
+with the CHECK and the deletion trigger), `User.showPhotoInPortal` and `User.showPhotoOnWebsite` (both default true).
+Client-safe constants, messages, the crop math, the public JSON's types, the name key's rule, and the holds' types:
+`src/lib/user-photos.ts`.
+
+- **Who**: every ACTIVE account, any position, uploads / replaces / removes **its own** (`uploadUserPhoto`,
+  `removeUserPhoto(ctx, {})`); PENDING, REJECTED, and DISABLED accounts are refused (`USER_PHOTO_INACTIVE`, checked
+  again inside the save, so an account disabled meanwhile can't save one). People who manage an account
+  (`canManageAccount`: owners anyone; others the ACTIVE accounts ranked below them) remove its photo too —
+  `removeUserPhoto(ctx, { userId })`, the **Photo** card on Admin → People → a person (`UserPhotoCard`, shown while the
+  account is ACTIVE or still has a photo), because the photo goes public on its own — and that also **holds** the
+  account's photos off the website (below), so the same picture can't go straight back up. Uploads and removals:
+  `USER_PHOTO_CHANGES_PER_HOUR` (20) per person (`user-photo:<id>`), refused with `RateLimitError(
+  USER_PHOTO_RATE_LIMITED_MESSAGE)` ("You've changed your photo 20 times in the last hour…": no field error — the
+  Settings card shows anything that isn't about the picture as an alert, not on the file picker); the switches aren't
+  limited.
+- **The picture**: the Settings card (`MyPhotoEditor`) refuses HEIC (the posters' iPhone hint) and anything not
+  PNG/JPG/WebP before reading it (`userPhotoProblem`), draws it as the round avatar it becomes (drag or arrow keys to
+  move, a Zoom slider / buttons / `+` `−`; `photoCropRect` / `movePhotoCrop` / `clampPhotoCrop`: a square of the
+  short side ÷ zoom, never outside the picture), and sends a `USER_PHOTO_SIDE` (512) square JPG (quality 0.86, white
+  behind transparency; `loadPicture` / `toJpeg` from `components/posters/shrink-picture.ts`) — never the original. The
+  server checks it regardless (`checkUserPhoto`), **tighter than posters** because every avatar in the portal and on
+  the public site downloads and decodes the whole photo: ≤ `USER_PHOTO_MAX_BYTES` (1 MB; `userPhotoTooBigMessage`),
+  PNG/JPG/WebP by its bytes (HEIC: the hint; a real GIF/PDF/SVG or a file that doesn't claim to be a picture:
+  `USER_PHOTO_TYPES_MESSAGE`; one that claims to be but isn't: "couldn't be opened"), ≤ `USER_PHOTO_MAX_DIMENSION`
+  (1,024) pixels a side (`userPhotoTooLargeMessage` — a 7,000 × 7,000 PNG is ~200 MB decoded), a still picture
+  (`isAnimatedImage`: APNG acTL/fcTL/fdAT, WebP's animation flag or ANIM/ANMF → `USER_PHOTO_ANIMATED_MESSAGE`),
+  **metadata stripped in strict mode** (`stripImageMetadata(…, { strict: true })`: GPS, camera, author, comments, and
+  also colour profiles — JPEG APP2 ICC, PNG iCCP, WebP ICCP — a JPEG's JFIF thumbnail / JFXX (APP0 becomes a bare JFIF
+  header, APP14 a bare Adobe one), and every PNG chunk the picture doesn't need (sPLT palette names, hIST, bKGD,
+  animation); a JPEG/PNG's orientation kept, width/height swapped for 5–8), and a JPEG only with markers browsers draw
+  (`jpegMarkersDrawable`: SOF0–2, DHT, DQT, DAC, DRI, SOS, RSTn, APPn, COM — a JPGn, DNL, lossless, hierarchical, or
+  arithmetic frame → "couldn't be opened"). Stored as `photo.<ext>` (never the uploaded name). Stored file kind `photos`
+  (`withStoredFiles`, Postgres or R2) under the shared cap (`FileStorageUsage.photos`, "of members' photos";
+  `userPhotoStorageFullMessage`); no per-person allowance (one small photo each). A new photo is a **new row** (new id,
+  so every cached copy of the old one is a different address): the old row is deleted in the same transaction (the
+  trigger queues its R2 object), and the actions call `scheduleFileCleanup()` (also after deleting an account, whose
+  photo cascades).
+- **Switches** (`updatePhotoVisibility(ctx, { which: "portal" | "website", show })`, your own account only, saved as
+  soon as they're flipped — `AutoSaveSwitch`, which `PublicProgressSwitch` also uses; `held` in the answer when the
+  website switch went on but a hold keeps it off): *Show my photo in the portal* (off: the team sees initials — the
+  person still sees it in Settings, and people who manage their account in Admin, who decide what goes public; the copy
+  says so, and that it doesn't change the website) and *Show my photo on the team website (public)* (the copy says the
+  site is public, that the photo is public while it's on — next to their name wherever the website lists them, found
+  by full name, and openable by anyone whether or not they're listed — that it's on automatically, and that turning it
+  off takes it off within a few minutes; it also says so when the team has photos turned off). Under the saved photo
+  the card says where it shows (`MyPhotoVisibility`: "Hidden in the portal: the team sees your initials instead.", "On
+  the team website (public).", "Not on the team website: your switch below is off.", held, or the team shows none),
+  since the preview itself always shows it.
+- **Holds** (`src/server/queries/website-photo-holds.ts`; one TeamNote row per held account, key
+  `website-photo-hold:<userId>`, body `WebsitePhotoHold` JSON — no schema change; a body that can't be read holds as
+  `kept-off`): a held account's photo is off the website (the JSON and its address) **whatever its own switch says**,
+  and stays in the portal. `renamed` — you changed your own name in Settings (`updateProfile` →
+  `holdWebsitePhotoAfterRename`, only when `teamPhotoNameKey` changes — not case, spacing, or accents — and whether or
+  not you have a photo yet, so renaming first and uploading after doesn't skip it; `from` = the name before, kept
+  across further renames; renaming back to it lifts the hold; `updateProfile` returns `photoHeld` and Settings says
+  so): the website matches photos by name and members can change theirs freely, so otherwise anyone could put a
+  picture on someone else's card (a coach, an alumnus) or knock theirs off. `removed` — someone who manages the account
+  removed its photo (`byName`). `kept-off` — someone who manages the account keeps it off (`keepPhotoOffWebsite`, e.g.
+  no photo release; can be set before any photo). `allowWebsitePhoto` lifts any of them. Both: people who manage the
+  account, never their own unless they're an owner (`USER_PHOTO_HOLD_OWN` — a leader can't wave their own new name
+  through), `USER_PHOTO_CANT_HOLD` otherwise; admin actions `keepPhotoOffWebsiteAction` / `allowWebsitePhotoAction`
+  on the Photo card (`getManagedWebsitePhotoHold`: `{ hold, canChange }`). A hold someone put on (`removed`,
+  `kept-off`) isn't replaced by a rename. Settings shows the person a warning (`websitePhotoHoldSentence`).
+- **Admin → Approvals → Members' photos** (`WebsitePhotosCard`, `getWebsitePhotoReview(actor, now)`, everyone with
+  admin access; shown only when there's something in it): photos go public on their own, so admins get a notice
+  instead of an approval step — who's **held off the website** (with a "N to check" badge for renames: check the new
+  name, then Allow on their page) and every photo that went **on the website in the last `WEBSITE_PHOTO_RECENT_DAYS`
+  (7) days**, newest first (≤ 30 each), names linking to the person for those the viewer manages (their Photo card has
+  Remove, Keep off, Allow); avatars only where the viewer may see the photo in the portal.
+- **Avatars in the portal**: `Avatar` (`components/ui/avatar.tsx`, client-safe) takes `photoId`: the photo
+  (`/people/photos/<id>`, `alt=""`, lazy, `object-cover`) **covers the initials inside the same fixed circle** — no
+  layout shift — drawn by `AvatarPhoto` (`components/ui/avatar-photo.tsx`, a tiny `"use client"` leaf, so `Avatar`
+  still works from server and client components): if the photo can't be loaded (a 404 because it was replaced,
+  removed, or hidden after the page was drawn, or the sign-in page) it turns `invisible` (`data-failed`), so no
+  broken-picture icon covers the initials — also when that happened before hydration (`imageFailed`: complete with no
+  picture, checked once it's on the page) — and shows again if it loads after all. The Settings preview and the Photo
+  card use it too. The whole avatar stays `aria-hidden` (the name is always next to it). `UserChip` passes `photoId`
+  on. Who shows one comes from **one read per page render**:
+  `getPortalPhotoMap()` (`queries/user-photos.ts`, React `cache()`: ACTIVE accounts with a photo and
+  `showPhotoInPortal`, `Map<userId, photoId>`). Server components use `UserAvatar` / `UserChipWithPhoto`
+  (`components/app/user-avatar.tsx`, `server-only`, async: they look the id up); client components get ids in their
+  props from the page (`photoIdsFor(map, ids)` → `Record<userId, photoId>`, or `photoId` on the row) — never a join in
+  every query. Photos show on: the menu's chip (sidebar and phone drawer) and Settings' profile chip, Team members,
+  Admin → People (list, a person, recent decisions), the Task dashboard's people chips and a task's people, Manage
+  (a task's assignees, Review, Overview's Needs attention and Recent activity, Progress rows and a person's page),
+  Questions (list, a question, its messages), Discussion (a discussion and its replies), Announcements, Orders (list
+  and an item), the Parts queue (who's making it), and Fundraising (helper chips and a fundraiser's helpers). Not on
+  Approvals' sign-ups (waiting accounts can't have one).
+- **The signed-in route** `src/app/(app)/people/photos/[id]/route.ts` (`getUserPhotoFile`): any ACTIVE viewer while
+  the owner is ACTIVE with `showPhotoInPortal`; the owner always (Settings shows it while it's off in the portal); people
+  who manage the owner's account (they decide what goes public — the portal switch's copy says they still see it);
+  anything else — replaced, removed, hidden — is a 404. `sendStoredFile(…, { immutable: true })` (`private,
+  max-age=604800, immutable`: a photo's address never changes).
+- **The team website** (see **Public API for the team website**): `GET /api/public/team-photos` and
+  `GET /api/public/team-photos/[id]`, while Admin → Team website's *Show members' photos on the team website*
+  (`showPhotos`, **on** by default — the owner asked for photos to go up automatically; each person has their own
+  switch, and admins have holds and the Members' photos notice) is on. The JSON lists **name keys, never names**.
+  Settings' card links to the Our Team page.
+- **Demo seed**: Maya Patel (shown everywhere), Ethan Chen (website only), Amara Okafor (portal only) — 256 × 256
+  generated head-and-shoulders PNGs (`demoPortraitPng`, ~1.5 KB each), never anyone's face.
+- Tests: `tests/user-photos.test.ts` (checks and limits, animations and undrawable JPEGs, strict metadata, permissions
+  per position and status, replace / remove, the rate limit and its message, switches, holds — removal, keep off,
+  renames, allow, who may — the Members' photos review, storage, R2, the avatar lookup, server avatar, and a photo
+  that fails to load, the signed-in route, the public JSON and file — name keys and their test vectors, privacy,
+  switches, holds, CORS, caching, `X-Robots-Tag` — and the proxy), `tests/image-metadata.test.ts` (strict mode,
+  `isAnimatedImage`, `jpegMarkersDrawable`), `tests/file-storage-r2.test.ts` (the `photos` kind in both modes),
+  `e2e/member-photos.spec.ts`.
 
 ## Sponsorships (`src/server/services/sponsorships.ts`, `/sponsors`)
 
@@ -943,6 +1057,36 @@ be cached publicly. Never add anything personal to it.
   it isn't touched. Changing it gives everyone new ids.
 - **Never in it**: emails, submission or review notes, due dates or overdue/late info, questions, task or account ids,
   anything about mentors, teachers, or accounts that aren't ACTIVE. `tests/public-progress.test.ts` checks each.
+- **One person** (**`GET /api/public/progress/people/<id>`**, the website's Our Team page opens it from a person's
+  card; `src/app/api/public/progress/people/[id]/route.ts` → `publicPersonProgressResponse` →
+  `getPublicPersonProgress`; types `PublicPersonProgress` / `PublicPersonDone` in `src/lib/public-progress.ts`).
+  `<id>` is a `people[].id` from the progress JSON. Answer: `{ enabled: true, updatedAt, since, person, weekly, done }`
+  — `person` is **exactly** their `people` entry (same fields, order, and numbers: the same SQL pieces —
+  `countedItemsSql`, `personCountsSql`, `weeklySql`, `publicPersonEntry` — filtered to them), `weekly` their approvals
+  over **the same weeks** as the progress JSON's `weekly`, and `done: [{ title, subteam, at, withTask }]` — their newest
+  `PUBLIC_PERSON_DONE_MAX` (25) approvals (APPROVED with a `reviewedAt`, tasks due on or after `since`), newest first:
+  `title` the task's (null while task titles are off), `subteam` **the task's** (null for a team-wide task; theirs is
+  `person.subteam`), `at` to the minute, `withTask` = counted when a leader marked the whole task finished
+  (`finishedWithTask`; unlike `recent`, whole-task credit is listed here, marked — it's one person's own list).
+  **Otherwise one JSON 404** `{ error: PUBLIC_PERSON_NOT_FOUND }` (`no-store`, the usual CORS headers), byte-for-byte
+  the same whatever the reason: the page off, the profiles off (`showPersonPages`, the default), `nameStyle` "hidden"
+  (the progress JSON lists nobody), no salt yet (no id
+  can have been handed out — this endpoint never makes it), an id that isn't 16 base64url characters
+  (`PUBLIC_PERSON_ID_RE`; answered without touching the database or the cache), or an id that isn't a **listed**
+  person's — unknown, someone who turned off "Show me on the team website", a mentor or teacher, an account that isn't
+  ACTIVE. Those last ones are one code path (the id is looked for only among the listed people, an HMAC each), so
+  nothing tells them apart; an id made for another name style is unknown too. Never emails, notes, review notes, due
+  dates, overdue/late info, or account or task ids (`tests/public-progress.test.ts`). **Cost**: never a write; the
+  database work never depends on what's in the address. The route keeps a **directory** of who can be found
+  (`getPublicPeopleDirectory`: settings, then the listed people with their public ids — two reads; null while anything
+  above is off) for `PUBLIC_ANSWER_TTL_MS` (`cachedPublicValue` with the route's `createPublicValueCache()`). An id that
+  isn't in it — made up, hidden, any of the reasons above — is the 404 straight from memory: no read, no cache entry.
+  Only a listed id builds (`getPublicPersonProgressFor`: their counts, weeks, and approvals — three reads) and is kept
+  **per id** for `PUBLIC_ANSWER_TTL_MS` (`cachedPublicAnswerByKey` with the route's
+  `createPublicAnswerCacheMap(PUBLIC_PERSON_CACHE_MAX)`, 100 ids, least recently asked dropped first — only listed
+  people reach it, so a flood of made-up ids can't push them out). `getPublicPersonProgress(db, { now, teamTimezone,
+  id })` is both in one (at most five reads). Someone who hides themselves disappears within the same ~10 s (plus the
+  CDN's 15 s) as from the progress JSON.
 - **Settings** (TeamNote `public-progress`, JSON, `parsePublicProgressSettings` falls back to the defaults field by
   field): `enabled` (true), `nameStyle` ("full"), `showTaskTitles` (true), `since` (null = the attendance schedule's
   `reportStart`, default 2026-08-31; the Events page starts there too), `showSponsors` (**false**) and `showEvents`
@@ -950,7 +1094,15 @@ be cached publicly. Never add anything personal to it.
   access turns them on** (settings saved before they existed read as off), so sponsors and events already in the
   portal — imported from a spreadsheet, written for the team — never go public on their own. Under each switch the card
   says what it shows, or would show once on (`getTeamWebsitePreview` in `queries/team-website.ts`: how many sponsor
-  entries, how many without a logo, how many events — counts only). The demo seed turns both on. Changed in **Admin → Approvals → Team website** (`TeamWebsiteCard`, everyone with admin access —
+  entries, how many without a logo, how many events — counts only). `showPersonPages` (**false**): each listed
+  person's profile on the website's Our Team page (the person endpoint below; it also needs `enabled` and names shown)
+  — **off until someone with admin access turns it on**, so nobody's task-by-task history goes public on its own; the
+  card's box says exactly what a profile lists, the task titles box covers Recent completions and the profiles, and
+  each member's own switch (Settings → Team website) says what their profile shows and whether profiles are on. The
+  demo seed turns sponsors, events, and profiles on. `showPhotos` (**true**): members' own photos on the Our Team page
+  (`GET /api/public/team-photos`, below) — on, because each person already chose for their own photo (on by default,
+  with a switch that says the site is public); off answers `{ enabled: false }` and serves no photo (a missing value
+  reads as on; the card says how many photos show, `TeamWebsitePreview.photos`). Changed in **Admin → Approvals → Team website** (`TeamWebsiteCard`, everyone with admin access —
   `canManagePublicProgress`; `updatePublicProgressSettings`: unchecked boxes = off, an empty date = null, a date within
   5 years back / 1 year ahead, `PUBLIC_PROGRESS_SETTINGS_RATE_LIMIT` 60 saves an hour), which also links to the pages
   and the JSON and says how many people hid themselves (a count only). The card's On/Off badge is the progress switch.
@@ -966,15 +1118,19 @@ be cached publicly. Never add anything personal to it.
 ## Public API for the team website
 
 The team website (its own repo, static Astro on GitHub Pages; its `PUBLIC_PORTAL_URL` points here) reads public JSON
-and images from `src/app/api/public/**` in the browser, without signing in: `/progress` (above), `/sponsors`,
-`/events`, and `/workshop` (see **Workshop (team website)**). Another feature adding a public endpoint follows exactly this.
+and images from `src/app/api/public/**` in the browser, without signing in: `/progress` and `/progress/people/<id>`
+(above), `/sponsors`, `/events`, `/workshop` (see **Workshop (team website)**), and `/team-photos` (members' photos,
+below). Another feature adding a public endpoint follows exactly this.
 
 - **Which paths are public** (`src/lib/public-api.ts`, client-safe): `PUBLIC_API_PATHS: readonly string[]` (exact
-  paths: `PUBLIC_PROGRESS_PATH`, `PUBLIC_SPONSORS_PATH`, `PUBLIC_EVENTS_PATH`, `PUBLIC_WORKSHOP_PATH`; `src/lib/public-progress.ts` re-exports
+  paths: `PUBLIC_PROGRESS_PATH`, `PUBLIC_SPONSORS_PATH`, `PUBLIC_EVENTS_PATH`, `PUBLIC_WORKSHOP_PATH`,
+  `PUBLIC_TEAM_PHOTOS_PATH`; `src/lib/public-progress.ts` re-exports
   `PUBLIC_API_PATHS` and `PUBLIC_PROGRESS_PATH` so older imports keep working), `PUBLIC_API_FILE_PREFIXES: readonly
-  string[]` (each ending with "/": `PUBLIC_SPONSOR_LOGOS_PREFIX` = `/api/public/sponsors/logos/`,
+  string[]` — the **id routes** (the name is older than the one JSON id route; it means "prefix + one id"), each
+  ending with "/": `PUBLIC_SPONSOR_LOGOS_PREFIX` = `/api/public/sponsors/logos/`,
   `PUBLIC_WORKSHOP_PHOTOS_PREFIX` = `/api/public/workshop/photos/`, `PUBLIC_WORKSHOP_FILES_PREFIX` =
-  `/api/public/workshop/files/`),
+  `/api/public/workshop/files/`, `PUBLIC_PROGRESS_PEOPLE_PREFIX` = `/api/public/progress/people/` (JSON),
+  `PUBLIC_TEAM_PHOTOS_PREFIX` = `/api/public/team-photos/`,
   `PUBLIC_API_ID_RE = /^[A-Za-z0-9_-]{1,64}$/`, and `isPublicApiPath(pathname): boolean` — true for an exact
   `PUBLIC_API_PATHS` entry, or a prefix followed by exactly one segment matching `PUBLIC_API_ID_RE` (so no further "/",
   no "%" escapes such as `%2f` or `%2e`, no dots, nothing empty or longer than 64). The proxy (`src/proxy.ts`) uses it
@@ -983,7 +1139,8 @@ and images from `src/app/api/public/**` in the browser, without signing in: `/pr
   route only when its parent path + "/" is in `PUBLIC_API_FILE_PREFIXES` (and every listed path / prefix has its
   route); each route must import `@/server/public-api` and never read the session, cookies, or headers.
 - **JSON** (`src/server/public-api.ts`): `publicJsonResponse(request, { extraOrigins, now, cache?, build,
-  unavailableMessage, logTag }): Promise<Response>` — `build: () => Promise<string>` returns the answer's JSON text.
+  unavailableMessage, logTag, extraHeaders? }): Promise<Response>` (`extraHeaders`: more headers on the 200 — members'
+  photos send `PUBLIC_NO_INDEX_HEADERS`) — `build: () => Promise<string>` returns the answer's JSON text.
   GET / HEAD answer it (`Content-Type: application/json; charset=utf-8`), OPTIONS is the preflight (204,
   `Access-Control-Allow-Methods: GET, HEAD, OPTIONS`, `Max-Age` a day), anything else 405 with `Allow`.
   `Access-Control-Allow-Origin` = the request's `Origin` when it's `https://huskyteers19516.github.io`
@@ -992,14 +1149,24 @@ and images from `src/app/api/public/**` in the browser, without signing in: `/pr
   never credentials (so a CDN copy that ignored `Vary` still works for the team website). Always `Vary: Origin`,
   `Cache-Control: public, s-maxage=15, stale-while-revalidate=45` (`PUBLIC_CACHE_CONTROL`: Vercel's CDN answers most
   requests), `X-Content-Type-Options: nosniff`. A failed build is logged as `[<logTag>] couldn't build the answer` and
-  answered with a 503 `{ error: unavailableMessage }`, `no-store`.
+  answered with a 503 `{ error: unavailableMessage }`, `no-store`. Optional `notFoundMessage` (only an endpoint with a
+  "not here" answer — one person's progress): a build answering JSON `null` is a 404 `{ error: notFoundMessage }`,
+  `no-store`, with the same CORS headers; without it every build is a 200, as before.
   `cachedPublicAnswer(cache: PublicAnswerCache | undefined, now: Date, build: () => Promise<string>): Promise<string>`
   keeps a build for `PUBLIC_ANSWER_TTL_MS` (10 s): the CDN keys copies by the whole URL, so `?anything=<random>` always
   reaches the server, and this makes the database work independent of the query string. One shared build per server
   instance at a time (each route keeps its own `createPublicAnswerCache()` at module level); a failed build isn't kept;
-  no cache = build every time. `publicProgressResponse` / `publicSponsorsResponse` / `publicEventsResponse` /
-  `publicWorkshopResponse(request,
-  { db, now, teamTimezone, extraOrigins?, cache? })` are the thin wrappers the routes and tests call.
+  no cache = build every time. An id route's JSON keeps one such answer **per id**:
+  `createPublicAnswerCacheMap(max): PublicAnswerCacheMap` (at module level in the route; `max` ≥ 1 keys) and
+  `cachedPublicAnswerByKey(map | undefined, key, now, build): Promise<string>` — `cachedPublicAnswer` for that key's
+  entry, the key moved to most recently used, the least recently used dropped past `max` (so made-up ids can't grow
+  it; a build in flight still answers its waiters); no map = build every time. Check the id's format before using it as
+  a key, and keep only ids worth keeping (the person route looks the id up in a cached directory first). Any other
+  built value (not JSON text) uses `createPublicValueCache<T>(): PublicValueCache<T>` and `cachedPublicValue(cache |
+  undefined, now, build)` — the same rules (`cachedPublicAnswer` is it for strings). `publicProgressResponse` / `publicSponsorsResponse` / `publicEventsResponse` / `publicWorkshopResponse(request,
+  { db, now, teamTimezone, extraOrigins?, cache? })` and `publicPersonProgressResponse(request, { db, now,
+  teamTimezone, extraOrigins?, cache?: PublicAnswerCacheMap, directory?: PublicValueCache<PublicPeopleDirectory |
+  null>, id })` are the thin wrappers the routes and tests call.
 - **Files** (`publicFileHeaders({ contentType, filename, inline, immutable }): Headers`, the caller adds
   Content-Length): `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`
   (`PUBLIC_FILE_CSP`), `Content-Disposition` inline or attachment with a safe filename (`contentDisposition`: an ASCII
@@ -1012,7 +1179,8 @@ and images from `src/app/api/public/**` in the browser, without signing in: `/pr
   uploaded with (that can hold someone's name, a phone's or a folder's) — except Workshop design files, whose cleaned
   name is part of what a reviewer approves (see **Workshop (team website)**).
   A public file route is a thin wrapper around **`publicFileResponse(request, { id, load, filename, inline, immutable,
-  notFoundMessage, logTag, store? })`**, which: (1) answers an id that isn't `PUBLIC_API_ID_RE` with a plain 404;
+  notFoundMessage, logTag, store?, extraHeaders? })`** (`extraHeaders`: more headers on the file's answer — members'
+  photos: `PUBLIC_NO_INDEX_HEADERS`), which: (1) answers an id that isn't `PUBLIC_API_ID_RE` with a plain 404;
   (2) answers **any query string** with a `308` to the bare address (relative `Location`, `PUBLIC_FILE_REDIRECT_CACHE`)
   **before touching the database or R2** — the CDN keys copies by the whole URL, so without this `?cb=1`, `?cb=2`, …
   would each read the whole file again (the team website never adds a query to a file address); (3) calls `load(id)`,
@@ -1053,6 +1221,34 @@ and images from `src/app/api/public/**` in the browser, without signing in: `/pr
   calendar's label ("League meet"); `endsOn` null for one day; times "HH:MM" in `timezone` (the team's, e.g.
   America/Los_Angeles), `endTime` only with a start time; `link` http(s) or null. **Never** notes, who added or edited
   it, or `sourceKey` — `tests/public-events.test.ts` checks each.
+- **Members' photos** (`GET /api/public/team-photos`, `publicTeamPhotosResponse` → `getPublicTeamPhotos` in
+  `queries/public-team-photos.ts`, types `PublicTeamPhotos` / `PublicTeamPhotosAnswer` in `src/lib/user-photos.ts`):
+  `{ enabled: true, updatedAt, photos: [{ key, photo }] }`, or `{ enabled: false }` while `showPhotos` is off. One entry
+  per ACTIVE account — any position: members, leaders, the captain, mentors, teachers — with a photo, "Show my photo on
+  the team website" on (`publicTeamPhotoUsersWhere`), and **no hold** (see **Members' photos**). `key` =
+  `publicTeamPhotoKey(name)`: the first `TEAM_PHOTO_KEY_LENGTH` (32) hex characters of SHA-256(`TEAM_PHOTO_KEY_PREFIX`
+  "huskyteers-team-photo-v1:" + `teamPhotoNameKey(full name)`), where `teamPhotoNameKey` is **exactly the website's
+  `normalizeName`** (NFKD, accents removed, curly apostrophes straightened, lower-case, spaces collapsed — keep the two
+  identical; both repos' tests share the same vectors). The website hashes the names it already shows (its Our Team
+  cards, the progress page's people) and matches; **the JSON never says a name**, so it isn't a public roster of the
+  team (mentors, teachers, new members, people hidden from the progress page, full names while the progress page shows
+  initials) — the photos themselves are public. `photo` = `/api/public/team-photos/<UserPhoto.id>` (relative, like
+  sponsor logos); sorted by key, at most `PUBLIC_TEAM_PHOTOS_MAX` (300). A name two ACTIVE accounts share as the
+  website compares names (`teamPhotoNameKey`: "José Díaz" = "Jose Diaz") is left out: matching by name could put one
+  person's photo on the other's card; an account held for a rename counts under its **checked** name (`from`), so
+  renaming to someone's name can't knock their photo off. `listPublishedTeamPhotos` (with user id, name, upload time:
+  Admin only) / `listPublicTeamPhotos` (the JSON's entries). **Never** names, emails, positions, account ids, the
+  switches, or anything else — `tests/user-photos.test.ts` checks each. **The photo**: `GET
+  /api/public/team-photos/[id]` (`publicTeamPhotoResponse` → `publicFileResponse`; `getPublicTeamPhoto`:
+  `showPhotos`, the holds, then one `findFirst` with `publicTeamPhotoUsersWhere` and the held ids in its WHERE):
+  inline, immutable (a new photo is a new row/id), under the neutral name `team-photo.<ext>`, only while published,
+  else the uncached 404 (`PUBLIC_TEAM_PHOTO_NOT_FOUND`). Both send `X-Robots-Tag: noindex, noimageindex`
+  (`PUBLIC_NO_INDEX_HEADERS`, through the `extraHeaders` option of `publicJsonResponse` / `publicFileResponse`): Google
+  renders the Our Team page's script and would index minors' photos at their portal addresses, and getting one out of
+  an index takes far longer than the few minutes a member is promised. Turning the website switch off (or a hold, or
+  removing / replacing the photo, or the account leaving) drops it from the JSON within the usual ~1 minute and makes
+  its address a 404 at once (Vercel's CDN may still answer a copy for up to 5 minutes; a browser that already showed it
+  keeps its copy a day).
 
 ## Workshop (team website) (`src/server/services/workshop.ts`, `/workshop`)
 
@@ -1214,6 +1410,9 @@ export async function createThingAction(_prev: ActionState, formData: FormData):
 - Forms: client components with `useActionState(action, initialActionState)`, `<SubmitButton>` (pending state), `<FormMessage state={state} />`, per-field errors via `<Field error={state?.fieldErrors?.title}>`, and `defaultValue={state?.values?.title ?? initial}` so input survives validation errors.
 - Use the UI kit: `Button/ButtonLink/buttonClasses` (size `icon` = 40px square icon button; `cn` only joins classes, so an override only wins if the kit leaves that property out — padding is left out when you pass your own `p-*`/`px-*`), `SubmitButton` (supports `confirm="Are you sure?"`), `Field/Input/Textarea/Select/CheckboxField`, `AutoSubmitSelect` (a filter menu in a GET form that applies on change), `Card/CardHeader/CardBody`, `Badge/CountBubble`, `Alert`, `FormMessage`, `EmptyState`, `PageHeader`, `Avatar`, `ProgressBar`, `StatCard`, `LinkTabs`, `Pagination/parsePage`, `RichText` (user text; never `dangerouslySetInnerHTML`).
   Domain badges: `RoleBadge`, `SubteamBadge` (null = "Whole team"), `AccountStatusBadge`, `AssignmentStatusBadge`, `QuestionStatusBadge`, `PriorityBadge`, `DueBadge`; `UserChip`, `describeRole`.
+  People's avatars: in server components `UserAvatar` / `UserChipWithPhoto` with the person's `userId` (their photo
+  when they show one, else initials); in client components `Avatar` / `UserChip` with a `photoId` the page passed
+  (`photoIdsFor`). See **Members' photos**.
 - Icons: `lucide-react` (v1 names, e.g. `MessageCircleQuestionMark`, `CircleCheck`, `LoaderCircle`).
 - **Mobile first**: most members use phones. Tap targets ≥ 40px, no horizontal page scroll at 375px wide (tables → stacked cards on small screens or `overflow-x-auto` wrappers), bottom tab bar occupies ~64px. A sticky bar at the bottom of the page (like Select mode's Remove bar) carries `data-sticky-action-bar`: `globals.css` then adds scroll padding so keyboard focus isn't hidden under it.
 - Look & feel: brand green `brand-*`, neutral `ink-*`, white cards on `bg-canvas`, `font-display` (Oswald) for page titles only. Keep copy short, friendly, and specific.
@@ -1238,13 +1437,13 @@ below — ≤ `LIMITS.resourceFileMaxBytes` = 4 MB each and the team's storage c
   files and posters; any new kind of stored file must use `assertFileStorageRoom` so every file counts toward the same cap
   (and `withStoredFiles`, see **File storage**).
   "Full" messages start with `storageFullSentence(usage)` (how much is Resources files vs sponsor files, plus posters,
-  notebook pictures, strategy files, sponsor logos, and Workshop photos and designs when there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
+  notebook pictures, strategy files, sponsor logos, Workshop photos and designs, and members' photos when there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
 
 ## File storage (`src/server/files/`)
 
 Every uploaded file (`ResourceFile`, `SponsorshipFile`, `PosterFile`, `NotebookImage`, `StrategyFile`, `SponsorshipLogo`,
-`WorkshopPhoto`, `WorkshopFile` — kinds `resources`, `sponsors`, `posters`, `notebook`, `strategy`, `logos`,
-`workshop-photos`, `workshop-files`) keeps its bytes in
+`WorkshopPhoto`, `WorkshopFile`, `UserPhoto` — kinds `resources`, `sponsors`, `posters`, `notebook`, `strategy`, `logos`,
+`workshop-photos`, `workshop-files`, `photos`) keeps its bytes in
 **Postgres** (`data`) or in **Cloudflare R2** (`storageKey`, the object's key; `data` null) — a CHECK constraint makes every
 row have one. R2 is used only when all four of `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` are set
 (`env.r2Status` / `readR2Status`: some missing = `partial`, a bad account id/bucket/endpoint = `invalid`, both mean Postgres;
@@ -1294,9 +1493,10 @@ before (Postgres, 300 MB), so the code is safe to deploy before the owner adds t
   503, R2 failing → 502, object missing → 404 (plain text, `no-store`). Server-side reads (the Resources text preview —
   `reason: "unavailable"` when it can't be read — and the notebook's Word export via `loadNotebookImageBytes`) use
   `readStoredBytes`.
-- **Deleting**: database triggers (migration `20260928090000_object_storage`; `20261004080000_sponsor_logos` for logos) put a
+- **Deleting**: database triggers (migration `20260928090000_object_storage`; `20261004080000_sponsor_logos` for logos;
+  `20261005070000_user_photos` for members' photos) put a
   row's `storageKey` into `FileDeletion` whenever the row is deleted — directly or by any cascade (a sponsor — its files and
-  logo — notebook, page, entry, poster, strategy, league team)
+  logo — notebook, page, entry, poster, strategy, league team, an account's photo)
   — or its key changes. The app only drains that queue: actions that delete or replace files call `scheduleFileCleanup()`
   (`cleanup.ts`, `after()`: deletes from R2 after the response; never fails the action), the owner's storage card drains
   what's waiting when it's shown, and it has **Clean up**. `drainFileDeletions(db, { store, limit, budgetMs, includeStuck })`

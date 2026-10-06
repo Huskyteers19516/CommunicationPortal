@@ -1,8 +1,8 @@
 import { Pencil, Pin, Trash2 } from "lucide-react";
 import { deleteAnnouncementAction } from "@/app/(app)/announcements/actions";
 import { SubteamBadge } from "@/components/app/badges";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { ActionForm } from "@/components/tasks/action-form";
-import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { RichText } from "@/components/ui/rich-text";
@@ -83,7 +83,7 @@ export function AnnouncementCard({ item, ctx }: { item: AnnouncementItem; ctx: A
           </h2>
 
           <div className="flex min-w-0 items-center gap-2.5">
-            <Avatar name={name} size="sm" />
+            <UserAvatar userId={item.author?.id} name={name} size="sm" />
             <div className="min-w-0 text-sm leading-snug">
               <p className="wrap-anywhere">
                 <span className="font-medium text-ink-900">{name}</span>

@@ -4,8 +4,20 @@
 // decoded or re-encoded, so it looks exactly the same, keeps its colour profile, and keeps its rotation (a JPEG or
 // PNG's Exif orientation is kept as a tiny Exif block with nothing else in it). Anything after the picture's end
 // (e.g. a phone's extra pictures appended to a JPEG) is dropped too. Never throws: whatever it can't read is left out.
+//
+// `{ strict: true }` (members' photos, src/server/services/user-photos.ts) also drops the parts that can still carry
+// text: colour profiles (a profile can name the phone or hold any text), a JPEG's JFIF thumbnail or extension (APP0
+// becomes a bare JFIF header, APP14 a bare Adobe one), and every PNG chunk the picture doesn't need (palette names in
+// sPLT, histograms, background colours, animation). The photos the browser makes have none of these anyway.
+// `isAnimatedImage` and `jpegMarkersDrawable` help refuse what an avatar can't be (an animation, a JPEG browsers can't
+// decode).
 
 export type MetadataImageKind = "png" | "jpg" | "webp";
+
+export interface StripOptions {
+  /** Also drop colour profiles, thumbnails, and every chunk the picture doesn't need (see the top of this file). */
+  strict?: boolean;
+}
 
 const ascii = (s: string) => Array.from(s, (c) => c.charCodeAt(0));
 
@@ -82,7 +94,32 @@ function keepJpegSegment(marker: number, payload: Uint8Array): boolean {
   return true;
 }
 
-function stripJpeg(b: Uint8Array): Uint8Array<ArrayBuffer> {
+const JFIF_ID = [...ascii("JFIF"), 0];
+const ADOBE_ID = ascii("Adobe");
+
+/**
+ * Strict mode's version of a header segment (the whole segment, marker included), or null to drop it: APP0 only as a
+ * bare JFIF header (version, units, density; no thumbnail), APP14 only as a bare Adobe header (its colour transform),
+ * no ICC profile, and the rest as keepJpegSegment says.
+ */
+function strictJpegSegment(marker: number, segment: Uint8Array): Uint8Array | null {
+  const payload = segment.subarray(4);
+  if (marker === 0xe0) {
+    if (!startsWith(payload, JFIF_ID) || payload.length < 14) return null;
+    const out = Uint8Array.from([0xff, 0xe0, 0x00, 16, ...payload.subarray(0, 14)]);
+    out[16] = 0; // thumbnail width
+    out[17] = 0; // thumbnail height
+    return out;
+  }
+  if (marker === 0xee) {
+    if (!startsWith(payload, ADOBE_ID) || payload.length < 12) return null;
+    return Uint8Array.from([0xff, 0xee, 0x00, 14, ...payload.subarray(0, 12)]);
+  }
+  if (marker >= 0xe0 && marker <= 0xef) return null; // ICC (APP2) included
+  return keepJpegSegment(marker, payload) ? segment : null;
+}
+
+function stripJpeg(b: Uint8Array, strict = false): Uint8Array<ArrayBuffer> {
   const parts: Uint8Array[] = [Uint8Array.of(0xff, 0xd8)];
   /** Where the orientation-only Exif block goes: after SOI and JFIF (APP0). */
   let exifAt = 1;
@@ -111,7 +148,13 @@ function stripJpeg(b: Uint8Array): Uint8Array<ArrayBuffer> {
     const end = Math.min(b.length, i + length);
     const payload = b.subarray(i + 2, end);
     if (marker === 0xe1 && startsWith(payload, EXIF_ID) && orientation === null) orientation = exifOrientation(payload.subarray(6));
-    if (keepJpegSegment(marker, payload)) {
+    if (strict) {
+      const kept = strictJpegSegment(marker, concat([Uint8Array.of(0xff, marker), b.subarray(i, end)]));
+      if (kept) {
+        parts.push(kept);
+        if (marker === 0xe0 && exifAt === parts.length - 1) exifAt = parts.length;
+      }
+    } else if (keepJpegSegment(marker, payload)) {
       parts.push(Uint8Array.of(0xff, marker), b.subarray(i, end));
       if (marker === 0xe0 && exifAt === parts.length - 2) exifAt = parts.length;
     }
@@ -153,6 +196,9 @@ const PNG_KEEP_CHUNKS: ReadonlySet<string> = new Set([
   "hIST", "sPLT", "acTL", "fcTL", "fdAT",
 ]);
 
+/** Strict mode: only what draws the picture (no colour profile, palette names, histogram, background, animation). */
+const PNG_STRICT_CHUNKS: ReadonlySet<string> = new Set(["IHDR", "PLTE", "IDAT", "IEND", "tRNS", "gAMA", "cHRM", "sRGB", "cICP", "sBIT", "pHYs"]);
+
 let crcTable: Uint32Array | null = null;
 function crc32(parts: Uint8Array[]): number {
   if (!crcTable) {
@@ -180,7 +226,8 @@ function pngChunk(type: string, data: Uint8Array): Uint8Array {
   ]);
 }
 
-function stripPng(b: Uint8Array): Uint8Array<ArrayBuffer> {
+function stripPng(b: Uint8Array, strict = false): Uint8Array<ArrayBuffer> {
+  const keep = strict ? PNG_STRICT_CHUNKS : PNG_KEEP_CHUNKS;
   const parts: Uint8Array[] = [b.subarray(0, 8)];
   let i = 8;
   while (i + 8 <= b.length) {
@@ -189,13 +236,13 @@ function stripPng(b: Uint8Array): Uint8Array<ArrayBuffer> {
     const end = i + 12 + length;
     if (end > b.length) {
       // Cut short: keep what's there of a picture chunk, nothing of anything else.
-      if (PNG_KEEP_CHUNKS.has(type)) parts.push(b.subarray(i));
+      if (keep.has(type)) parts.push(b.subarray(i));
       break;
     }
     if (type === "eXIf") {
       const orientation = exifOrientation(b.subarray(i + 8, i + 8 + length));
       if (orientation !== null && orientation !== 1) parts.push(pngChunk("eXIf", orientationTiff(orientation)));
-    } else if (PNG_KEEP_CHUNKS.has(type)) {
+    } else if (keep.has(type)) {
       parts.push(b.subarray(i, end));
     }
     i = end;
@@ -206,16 +253,21 @@ function stripPng(b: Uint8Array): Uint8Array<ArrayBuffer> {
 
 // ── WebP ─────────────────────────────────────────────────────────────────────
 
+const VP8X_ICC = 0x20;
 const VP8X_EXIF = 0x08;
 const VP8X_XMP = 0x04;
+const VP8X_ANIMATION = 0x02;
 /**
  * The chunks a WebP keeps: the picture (lossy, lossless, alpha), animation, and the colour profile. EXIF and XMP go,
  * and so does anything else (content credentials in a C2PA chunk, private chunks), so nothing unknown carries metadata
  * out. A WebP's Exif orientation isn't kept (browsers draw WebPs as stored).
  */
 const WEBP_KEEP_CHUNKS: ReadonlySet<string> = new Set(["VP8 ", "VP8L", "VP8X", "ALPH", "ANIM", "ANMF", "ICCP"]);
+/** Strict mode: one still picture, no colour profile. */
+const WEBP_STRICT_CHUNKS: ReadonlySet<string> = new Set(["VP8 ", "VP8L", "VP8X", "ALPH"]);
 
-function stripWebp(b: Uint8Array): Uint8Array<ArrayBuffer> {
+function stripWebp(b: Uint8Array, strict = false): Uint8Array<ArrayBuffer> {
+  const keep = strict ? WEBP_STRICT_CHUNKS : WEBP_KEEP_CHUNKS;
   const riffEnd = Math.min(b.length, 8 + u32le(b, 4));
   const parts: Uint8Array[] = [];
   let i = 12;
@@ -223,9 +275,9 @@ function stripWebp(b: Uint8Array): Uint8Array<ArrayBuffer> {
     const fourcc = String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
     const size = u32le(b, i + 4);
     const end = Math.min(riffEnd, i + 8 + size + (size & 1));
-    if (WEBP_KEEP_CHUNKS.has(fourcc)) {
+    if (keep.has(fourcc)) {
       const chunk = b.slice(i, end);
-      if (fourcc === "VP8X" && chunk.length > 8) chunk[8] &= ~(VP8X_EXIF | VP8X_XMP);
+      if (fourcc === "VP8X" && chunk.length > 8) chunk[8] &= ~(VP8X_EXIF | VP8X_XMP | (strict ? VP8X_ICC | VP8X_ANIMATION : 0));
       parts.push(chunk);
     }
     i = end;
@@ -242,21 +294,115 @@ function stripWebp(b: Uint8Array): Uint8Array<ArrayBuffer> {
 
 /**
  * The picture without its metadata (see the top of this file). `kind` is what the file really is (sniffed from its
- * bytes). A file that doesn't start the way its kind does comes back unchanged.
+ * bytes). A file that doesn't start the way its kind does comes back unchanged. `strict`: members' photos.
  */
-export function stripImageMetadata(bytes: Uint8Array, kind: MetadataImageKind): Uint8Array<ArrayBuffer> {
+export function stripImageMetadata(bytes: Uint8Array, kind: MetadataImageKind, options: StripOptions = {}): Uint8Array<ArrayBuffer> {
+  const strict = options.strict === true;
   switch (kind) {
     case "jpg":
-      if (startsWith(bytes, [0xff, 0xd8])) return stripJpeg(bytes);
+      if (startsWith(bytes, [0xff, 0xd8])) return stripJpeg(bytes, strict);
       break;
     case "png":
-      if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return stripPng(bytes);
+      if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return stripPng(bytes, strict);
       break;
     case "webp":
-      if (startsWith(bytes, ascii("RIFF")) && startsWith(bytes, ascii("WEBP"), 8)) return stripWebp(bytes);
+      if (startsWith(bytes, ascii("RIFF")) && startsWith(bytes, ascii("WEBP"), 8)) return stripWebp(bytes, strict);
       break;
   }
   return Uint8Array.from(bytes);
+}
+
+/**
+ * Whether a PNG or WebP is an animation: an APNG (an acTL chunk) or an animated WebP (the VP8X animation flag, or an
+ * ANIM / ANMF chunk). JPEGs never are.
+ */
+export function isAnimatedImage(b: Uint8Array, kind: MetadataImageKind): boolean {
+  if (kind === "png") {
+    let i = 8;
+    while (i + 8 <= b.length) {
+      const length = u32be(b, i);
+      const type = String.fromCharCode(b[i + 4], b[i + 5], b[i + 6], b[i + 7]);
+      if (type === "acTL" || type === "fcTL" || type === "fdAT") return true;
+      if (type === "IEND") break;
+      i += 12 + length;
+    }
+    return false;
+  }
+  if (kind === "webp") {
+    const riffEnd = Math.min(b.length, 8 + u32le(b, 4));
+    let i = 12;
+    while (i + 8 <= riffEnd) {
+      const fourcc = String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
+      const size = u32le(b, i + 4);
+      if (fourcc === "ANIM" || fourcc === "ANMF") return true;
+      if (fourcc === "VP8X" && i + 8 < b.length && (b[i + 8] & VP8X_ANIMATION) !== 0) return true;
+      i += 8 + size + (size & 1);
+    }
+  }
+  return false;
+}
+
+/**
+ * The JPEG markers every browser's decoder (libjpeg-turbo) draws: SOI / EOI, a Huffman frame (baseline, extended, or
+ * progressive: SOF0–SOF2), tables (DHT, DQT, DAC), DRI, scans (SOS) and their restarts, TEM, APPn, and COM. Lossless,
+ * hierarchical, and arithmetic-coded frames, DNL, JPG / JPGn, and reserved markers make Chrome show nothing.
+ */
+function drawableJpegMarker(marker: number): boolean {
+  return (
+    marker === 0xd8 ||
+    marker === 0xd9 ||
+    marker === 0xc0 ||
+    marker === 0xc1 ||
+    marker === 0xc2 ||
+    marker === 0xc4 ||
+    marker === 0xcc ||
+    marker === 0xdb ||
+    marker === 0xdd ||
+    marker === 0xda ||
+    marker === 0x01 ||
+    (marker >= 0xd0 && marker <= 0xd7) ||
+    (marker >= 0xe0 && marker <= 0xef) ||
+    marker === 0xfe
+  );
+}
+
+/**
+ * Whether every marker in a JPEG is one browsers draw (drawableJpegMarker), walking it the way stripImageMetadata does
+ * (segments by their length, scans to the next real marker), up to EOI. False for a file that isn't a JPEG.
+ */
+export function jpegMarkersDrawable(b: Uint8Array): boolean {
+  if (!startsWith(b, [0xff, 0xd8])) return false;
+  let i = 2;
+  while (i < b.length) {
+    if (b[i] !== 0xff) {
+      i++;
+      continue;
+    }
+    while (i < b.length && b[i] === 0xff) i++;
+    if (i >= b.length) break;
+    const marker = b[i++];
+    if (marker === 0x00) continue;
+    if (!drawableJpegMarker(marker)) return false;
+    if (marker === 0xd9) return true;
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (i + 2 > b.length) break;
+    const length = u16be(b, i);
+    if (length < 2) return false;
+    i = Math.min(b.length, i + length);
+    if (marker === 0xda) {
+      while (i < b.length) {
+        if (b[i] !== 0xff) {
+          i++;
+          continue;
+        }
+        const next = b[i + 1];
+        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) i += 2;
+        else if (next === 0xff) i += 1;
+        else break;
+      }
+    }
+  }
+  return true;
 }
 
 /**

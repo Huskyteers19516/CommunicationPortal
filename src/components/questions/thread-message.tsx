@@ -1,6 +1,6 @@
 import type { Role } from "@/generated/prisma/enums";
 import { RoleBadge } from "@/components/app/badges";
-import { Avatar } from "@/components/ui/avatar";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { Badge } from "@/components/ui/badge";
 import { RichText } from "@/components/ui/rich-text";
 import { cn } from "@/lib/cn";
@@ -19,7 +19,7 @@ export function ThreadMessage({
   now,
   timeZone,
 }: {
-  author: { name: string; role: Role; isAdmin: boolean };
+  author: { id: string; name: string; role: Role; isAdmin: boolean };
   body: string;
   createdAt: Date;
   /** A staff answer (not the asker). */
@@ -30,7 +30,7 @@ export function ThreadMessage({
 }) {
   return (
     <li className={cn("flex items-start gap-2.5", mine && "flex-row-reverse")}>
-      <Avatar name={author.name} size="sm" className="mt-0.5" />
+      <UserAvatar userId={author.id} name={author.name} size="sm" className="mt-0.5" />
       <div
         className={cn(
           "min-w-0 max-w-[85%] rounded-2xl border px-3.5 py-2.5 shadow-sm sm:max-w-[75%]",

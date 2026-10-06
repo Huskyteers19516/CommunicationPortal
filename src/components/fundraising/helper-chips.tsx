@@ -2,7 +2,7 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import type { FundraiserPerson } from "@/server/queries/fundraising";
 import { firstName } from "../checklist/format";
-import { Avatar } from "../ui/avatar";
+import { UserAvatar } from "../app/user-avatar";
 
 /**
  * Who's helping: avatar + first name per person (the viewer shows as "You", first). Shows up to `max`
@@ -38,7 +38,7 @@ export function HelperChips({
             p.isMe ? "border-brand-300 bg-brand-50" : "border-ink-200 bg-white",
           )}
         >
-          <Avatar name={p.name} size="sm" />
+          <UserAvatar userId={p.id} name={p.name} size="sm" />
           <span aria-hidden className="truncate font-medium text-ink-800">
             {p.isMe ? "You" : firstName(p.name)}
           </span>

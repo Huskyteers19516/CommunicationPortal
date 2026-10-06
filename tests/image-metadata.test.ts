@@ -1,9 +1,11 @@
 // Taking the metadata out of public pictures (src/server/files/image-metadata.ts — sponsor logos on the team website):
 // Exif (GPS, phone model, author), XMP, IPTC, comments, PNG text chunks, and WebP EXIF/XMP chunks go; the picture's
 // own data (tables, frames, scans, colour profile) stays byte for byte; a JPEG / PNG's orientation is kept on its own.
+// Strict mode (members' photos) also drops colour profiles, JFIF thumbnails, Adobe extras, and every PNG / WebP chunk
+// the picture doesn't need; isAnimatedImage and jpegMarkersDrawable say what an avatar can't be.
 import { crc32 } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { exifOrientation, imageOrientation, stripImageMetadata } from "@/server/files/image-metadata";
+import { exifOrientation, imageOrientation, isAnimatedImage, jpegMarkersDrawable, stripImageMetadata } from "@/server/files/image-metadata";
 import { posterImageSize, sniffPosterFile } from "@/server/services/posters";
 
 const ascii = (s: string) => Array.from(s, (c) => c.charCodeAt(0));
@@ -229,5 +231,121 @@ describe("imageOrientation", () => {
     expect(imageOrientation(Uint8Array.from(ascii("hello")), "jpg")).toBe(1);
     expect(imageOrientation(Uint8Array.from(ascii("hello")), "png")).toBe(1);
     expect(imageOrientation(Uint8Array.from(ascii("hello")), "webp")).toBe(1);
+  });
+});
+
+// ── Strict mode (members' photos) ─────────────────────────────────────────────
+
+describe("strict mode", () => {
+  it("JPEG: no colour profile, a bare JFIF header (no thumbnail), a bare Adobe header; orientation and the picture kept", () => {
+    const { kept, scan } = metadataJpeg(6);
+    const file = bytes(
+      [0xff, 0xd8],
+      segment(0xe0, [...ascii("JFIF"), 0, 1, 2, 1, 0, 72, 0, 72, 2, 1, ...ascii("SECRET-APP0-THUMB-DATA")]),
+      segment(0xe0, [...ascii("JFXX"), 0, 0x10, ...ascii("SECRET-JFXX")]),
+      segment(0xe1, [...ascii("Exif"), 0, 0, ...exifTiff(6)]),
+      segment(0xe2, [...ascii("ICC_PROFILE"), 0, 1, 1, ...ascii("SECRET-ICC-TEXT owner Maya's phone")]),
+      segment(0xee, [...ascii("Adobe"), 0, 100, 0, 0, 0, 0, 1, ...ascii("SECRET-ADOBE")]),
+      kept.dqt,
+      kept.sof,
+      kept.dht,
+      kept.sos,
+      scan,
+      [0xff, 0xd9],
+    );
+    const out = stripImageMetadata(file, "jpg", { strict: true });
+    for (const secret of [...SECRETS, "SECRET", "ICC_PROFILE", "JFXX"]) expect(text(out), secret).not.toContain(secret);
+    const orientationOnly = stripImageMetadata(metadataJpeg(6).file, "jpg").subarray(2 + kept.app0.length);
+    const exif = orientationOnly.subarray(0, 4 + ((orientationOnly[2] << 8) | orientationOnly[3]) - 2);
+    expect(out).toEqual(
+      bytes(
+        [0xff, 0xd8],
+        segment(0xe0, [...ascii("JFIF"), 0, 1, 2, 1, 0, 72, 0, 72, 0, 0]),
+        exif,
+        segment(0xee, [...ascii("Adobe"), 0, 100, 0, 0, 0, 0, 1]),
+        kept.dqt,
+        kept.sof,
+        kept.dht,
+        kept.sos,
+        scan,
+        [0xff, 0xd9],
+      ),
+    );
+    expect(imageOrientation(out, "jpg")).toBe(6);
+    expect(posterImageSize(out, "jpg")).toEqual({ width: 300, height: 100 });
+    // Without strict, the profile stays (sponsor logos, Workshop photos: colours exactly as uploaded).
+    expect(text(stripImageMetadata(file, "jpg"))).toContain("ICC_PROFILE");
+  });
+
+  it("PNG: only the chunks that draw the picture (no iCCP, sPLT, hIST, bKGD, animation)", () => {
+    const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const ihdr = chunk("IHDR", [...u32(64), ...u32(28), 8, 6, 0, 0, 0]);
+    const srgb = chunk("sRGB", [0]);
+    const idat = chunk("IDAT", [0x78, 0x9c, 1, 2, 3, 4]);
+    const iend = chunk("IEND", []);
+    const file = bytes(
+      SIGNATURE,
+      ihdr,
+      chunk("iCCP", [...ascii("SECRET-ICC-NAME"), 0, 0, 1, 2, 3]),
+      srgb,
+      chunk("sPLT", [...ascii("SECRET-SPLT-NAME Maya"), 0, 8, 1, 2, 3, 4, 0, 1]),
+      chunk("hIST", [0, 1]),
+      chunk("bKGD", [0, 0, 0, 0, 0, 0]),
+      chunk("acTL", [...u32(1), ...u32(0)]),
+      idat,
+      iend,
+    );
+    const out = stripImageMetadata(file, "png", { strict: true });
+    expect(text(out)).not.toContain("SECRET");
+    expect(out).toEqual(bytes(SIGNATURE, ihdr, srgb, idat, iend));
+    expect(text(stripImageMetadata(file, "png"))).toContain("SECRET-SPLT-NAME"); // not strict: kept, as before
+  });
+
+  it("WebP: no ICCP or animation chunks, and their flags cleared", () => {
+    const le = (n: number) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+    const riffChunk = (fourcc: string, data: number[]) => [...ascii(fourcc), ...le(data.length), ...data, ...(data.length % 2 ? [0] : [])];
+    const vp8x = (flags: number) => riffChunk("VP8X", [flags, 0, 0, 0, 49, 0, 0, 19, 0, 0]);
+    const vp8l = riffChunk("VP8L", [0x2f, 0x31, 0xc0, 0x04, 0x00, 7, 8]);
+    const riff = (...chunks: number[][]) => {
+      const body = chunks.flat();
+      return [...ascii("RIFF"), ...le(4 + body.length), ...ascii("WEBP"), ...body];
+    };
+    const file = bytes(riff(vp8x(0x20 | 0x10 | 0x02), riffChunk("ICCP", ascii("SECRET")), riffChunk("ANIM", [0, 0, 0, 0, 0, 0]), vp8l));
+    expect(stripImageMetadata(file, "webp", { strict: true })).toEqual(bytes(riff(vp8x(0x10), vp8l)));
+  });
+
+  it("says when a PNG or WebP is an animation", () => {
+    const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const ihdr = chunk("IHDR", [...u32(64), ...u32(28), 8, 6, 0, 0, 0]);
+    const idat = chunk("IDAT", [0x78, 0x9c, 1, 2, 3, 4]);
+    const iend = chunk("IEND", []);
+    expect(isAnimatedImage(bytes(SIGNATURE, ihdr, idat, iend), "png")).toBe(false);
+    expect(isAnimatedImage(bytes(SIGNATURE, ihdr, chunk("acTL", [...u32(2), ...u32(0)]), idat, iend), "png")).toBe(true);
+    expect(isAnimatedImage(bytes(SIGNATURE, ihdr, idat, chunk("fdAT", [0, 0, 0, 1]), iend), "png")).toBe(true);
+    const le = (n: number) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+    const riff = (...chunks: number[][]) => {
+      const body = chunks.flat();
+      return bytes([...ascii("RIFF"), ...le(4 + body.length), ...ascii("WEBP"), ...body]);
+    };
+    const vp8x = (flags: number) => [...ascii("VP8X"), ...le(10), flags, 0, 0, 0, 49, 0, 0, 19, 0, 0];
+    expect(isAnimatedImage(riff(vp8x(0)), "webp")).toBe(false);
+    expect(isAnimatedImage(riff(vp8x(0x02)), "webp")).toBe(true);
+    expect(isAnimatedImage(riff(vp8x(0), [...ascii("ANMF"), ...le(2), 0, 0]), "webp")).toBe(true);
+    expect(isAnimatedImage(metadataJpeg(1).file, "jpg")).toBe(false);
+  });
+
+  it("says whether every marker in a JPEG is one browsers draw", () => {
+    const { file, kept, scan } = metadataJpeg(1);
+    expect(jpegMarkersDrawable(file)).toBe(true);
+    expect(jpegMarkersDrawable(stripImageMetadata(file, "jpg", { strict: true }))).toBe(true);
+    const withMarker = (marker: number) => bytes([0xff, 0xd8], segment(marker, [1, 2]), kept.dqt, kept.sof, kept.dht, kept.sos, scan, [0xff, 0xd9]);
+    for (const marker of [0xf0, 0xf7, 0xfd, 0xc8, 0xdc, 0xde, 0xdf, 0x02, 0xbf]) expect(jpegMarkersDrawable(withMarker(marker)), marker.toString(16)).toBe(false);
+    for (const marker of [0xdd, 0xfe, 0xe5, 0xcc]) expect(jpegMarkersDrawable(withMarker(marker)), marker.toString(16)).toBe(true);
+    const sof = (marker: number) => bytes([0xff, 0xd8], kept.dqt, [0xff, marker, ...kept.sof.slice(2)], kept.dht, kept.sos, scan, [0xff, 0xd9]);
+    for (const marker of [0xc0, 0xc1, 0xc2]) expect(jpegMarkersDrawable(sof(marker))).toBe(true);
+    for (const marker of [0xc3, 0xc5, 0xc9, 0xca, 0xcf]) expect(jpegMarkersDrawable(sof(marker))).toBe(false);
+    // The scan's coded bytes (stuffed 0xFF00, restarts) are not markers.
+    expect(jpegMarkersDrawable(bytes([0xff, 0xd8], kept.sof, kept.sos, [1, 0xff, 0x00, 2, 0xff, 0xd3, 3], [0xff, 0xd9]))).toBe(true);
+    expect(jpegMarkersDrawable(Uint8Array.from(ascii("hello")))).toBe(false);
   });
 });

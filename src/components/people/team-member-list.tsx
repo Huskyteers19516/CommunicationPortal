@@ -10,6 +10,8 @@ import type { TeamMember } from "@/server/queries/people";
 export interface TeamMemberRow extends TeamMember {
   /** Admin → People edit page, only for people the viewer can manage there (null for members). */
   adminHref: string | null;
+  /** Their portal photo (UserPhoto id) when they show one; absent/null: initials. */
+  photoId?: string | null;
 }
 
 /**
@@ -19,7 +21,13 @@ export interface TeamMemberRow extends TeamMember {
 function Person({ person }: { person: TeamMemberRow }) {
   const content = (
     <>
-      <UserChip name={person.name} role={person.role} subteam={person.subteam} className="min-w-0 max-w-full" />
+      <UserChip
+        name={person.name}
+        role={person.role}
+        subteam={person.subteam}
+        photoId={person.photoId}
+        className="min-w-0 max-w-full"
+      />
       {person.isAdmin && (
         <span className="shrink-0">
           <OwnerBadge />

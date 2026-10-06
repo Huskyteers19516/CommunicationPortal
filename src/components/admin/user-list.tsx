@@ -1,7 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { AccountStatusBadge, OwnerBadge } from "@/components/app/badges";
-import { UserChip } from "@/components/app/user-chip";
+import { UserChipWithPhoto } from "@/components/app/user-avatar";
 import { Card } from "@/components/ui/card";
 import { lastSeenLabel } from "@/lib/dates";
 import type { UserListItem } from "@/server/queries/admin";
@@ -16,7 +16,7 @@ export function UserList({ users, now, timeZone }: { users: UserListItem[]; now:
           <li key={u.id}>
             <Link href={`/admin/users/${u.id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-ink-50">
               <div className="min-w-0 flex-1 space-y-1.5">
-                <UserChip name={u.name} role={u.role} subteam={u.subteam} className="max-w-full" />
+                <UserChipWithPhoto userId={u.id} name={u.name} role={u.role} subteam={u.subteam} className="max-w-full" />
                 <p className="truncate text-xs text-ink-500">{u.email}</p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   <AccountStatusBadge status={u.status} />
@@ -53,7 +53,7 @@ export function UserList({ users, now, timeZone }: { users: UserListItem[]; now:
             <tr key={u.id} className="transition-colors hover:bg-ink-50">
               <td className="px-3 py-2 lg:px-4">
                 <Link href={`/admin/users/${u.id}`} className="flex min-h-10 min-w-0 items-center rounded-md hover:text-brand-700">
-                  <UserChip name={u.name} role={u.role} subteam={u.subteam} className="max-w-full" />
+                  <UserChipWithPhoto userId={u.id} name={u.name} role={u.role} subteam={u.subteam} className="max-w-full" />
                 </Link>
               </td>
               <td className="truncate px-3 py-2 text-ink-600 lg:px-4" title={u.email}>

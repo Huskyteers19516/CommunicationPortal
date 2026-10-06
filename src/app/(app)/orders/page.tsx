@@ -27,6 +27,7 @@ import {
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { listOrders } from "@/server/queries/orders";
+import { getPortalPhotoMap, photoIdsFor } from "@/server/queries/user-photos";
 
 export const metadata: Metadata = { title: "Order list" };
 
@@ -67,6 +68,7 @@ export default async function OrdersPage({ searchParams }: PageProps<"/orders">)
   const list = await listOrders(actor, q);
   const { items, summary, counts } = list;
   const highlight = highlightFor(sp, items);
+  const photoIds = photoIdsFor(await getPortalPhotoMap(), items.map((i) => i.orderer?.id));
   // "?removed=1" only: the alert never repeats text from the link.
   const removed = first(sp.removed) === "1";
   // Added or saved, but cut off the list (over the limit): say so at the top instead.
@@ -139,6 +141,7 @@ export default async function OrdersPage({ searchParams }: PageProps<"/orders">)
             timeZone={env.teamTimezone}
             nowIso={now.toISOString()}
             highlight={highlight}
+            photoIds={photoIds}
           />
           {items.length === 0 && (
             <Card>

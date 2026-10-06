@@ -5,6 +5,7 @@ import type { SeatInfo } from "@/components/admin/position-fields";
 import { RecentDecisions } from "@/components/admin/recent-decisions";
 import { SeatUsageCard } from "@/components/admin/seat-usage-card";
 import { TeamWebsiteCard } from "@/components/admin/team-website-card";
+import { WebsitePhotosCard } from "@/components/admin/website-photos-card";
 import { ResourceApprovalsCard } from "@/components/resources/resource-approvals-card";
 import { PageHeader } from "@/components/ui/page-header";
 import type { Role } from "@/generated/prisma/enums";
@@ -18,6 +19,7 @@ import { getFileStorageOverview } from "@/server/queries/files";
 import { getPublicProgressAdminView } from "@/server/queries/public-progress";
 import { countPendingResources } from "@/server/queries/resources";
 import { getTeamWebsitePreview } from "@/server/queries/team-website";
+import { getWebsitePhotoReview } from "@/server/queries/user-photos";
 
 export const metadata: Metadata = { title: "Approvals" };
 // The owners' file storage tools (Server Actions on this page) stop starting new work after 25 s, with at most 10 s per
@@ -26,7 +28,8 @@ export const maxDuration = 60;
 
 export default async function ApprovalsPage() {
   const actor = await requireAdminUser();
-  const [pending, seats, decisions, pendingResources, storage, teamWebsite, websitePreview] = await Promise.all([
+  const now = new Date();
+  const [pending, seats, decisions, pendingResources, storage, teamWebsite, websitePreview, websitePhotos] = await Promise.all([
     getPendingUsers(actor),
     getSeatUsage(actor),
     getRecentDecisions(actor, 10),
@@ -34,10 +37,10 @@ export default async function ApprovalsPage() {
     getFileStorageOverview(actor),
     getPublicProgressAdminView(actor),
     getTeamWebsitePreview(actor, env.teamTimezone),
+    getWebsitePhotoReview(actor, now),
   ]);
   // An owner looking at the storage card: delete R2 objects of removed files that are still waiting (after the page).
   if (storage?.owner && storage.location === "r2" && storage.owner.waitingDeletions > 0) scheduleFileCleanup();
-  const now = new Date();
   const seatMap: Partial<Record<Role, SeatInfo>> = Object.fromEntries(
     seats.map((s) => [s.role, { filled: s.filled, limit: s.limit }]),
   );
@@ -73,6 +76,9 @@ export default async function ApprovalsPage() {
         </section>
         <aside className="min-w-0 space-y-6">
           <ResourceApprovalsCard count={pendingResources} />
+          {websitePhotos && (websitePhotos.held.length > 0 || websitePhotos.recent.length > 0) && (
+            <WebsitePhotosCard review={websitePhotos} now={now} timeZone={env.teamTimezone} />
+          )}
           <SeatUsageCard seats={seats} />
           {storage && <FileStorageCard overview={storage} />}
           {teamWebsite && (

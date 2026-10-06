@@ -1,6 +1,6 @@
 import Link from "next/link";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { describeRole } from "@/components/app/user-chip";
-import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { formatDateTime, timeAgo } from "@/lib/dates";
@@ -20,7 +20,7 @@ export function RecentDecisions({ decisions, now, timeZone }: { decisions: Recen
                 href={`/admin/users/${d.id}`}
                 className="flex min-h-14 items-center gap-3 px-4 py-2.5 transition-colors hover:bg-ink-50 sm:px-5"
               >
-                <Avatar name={d.name} size="sm" />
+                <UserAvatar userId={d.id} name={d.name} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-ink-900">{d.name}</p>
                   {/* When comes first and the line wraps, so the date is never the part that gets cut. */}

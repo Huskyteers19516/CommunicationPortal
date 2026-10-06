@@ -33,12 +33,19 @@ vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 import { NextRequest } from "next/server";
 import { updatePublicProgressSettingsAction } from "@/app/(app)/admin/actions";
 import { updatePublicProgressVisibilityAction } from "@/app/(app)/settings/actions";
+import * as personRoute from "@/app/api/public/progress/people/[id]/route";
 import * as progressRoute from "@/app/api/public/progress/route";
 import type { AssignmentStatus, Subteam } from "@/generated/prisma/enums";
 import { initialActionState } from "@/lib/action-state";
 import { ATTENDANCE_SETTINGS_KEY, DEFAULT_ATTENDANCE_SETTINGS, serializeAttendanceSettings } from "@/lib/attendance";
 import { dateOnlyToDb, type DateOnly } from "@/lib/dates";
-import { isPublicApiPath, PUBLIC_API_FILE_PREFIXES, PUBLIC_API_ID_RE, PUBLIC_SPONSOR_LOGOS_PREFIX } from "@/lib/public-api";
+import {
+  isPublicApiPath,
+  PUBLIC_API_FILE_PREFIXES,
+  PUBLIC_API_ID_RE,
+  PUBLIC_PROGRESS_PEOPLE_PREFIX,
+  PUBLIC_SPONSOR_LOGOS_PREFIX,
+} from "@/lib/public-api";
 import {
   DEFAULT_PUBLIC_PROGRESS_SETTINGS,
   PUBLIC_API_PATHS,
@@ -46,8 +53,11 @@ import {
   parsePublicProgressSettings,
   PUBLIC_PROGRESS_ID_SALT_KEY,
   PUBLIC_PROGRESS_KEY,
+  PUBLIC_PERSON_DONE_MAX,
+  PUBLIC_PERSON_ID_RE,
   publicName,
   publicRoleLabel,
+  type PublicPersonProgress,
   type PublicProgress,
   type PublicProgressSettings,
   serializePublicProgressSettings,
@@ -57,12 +67,28 @@ import { proxy } from "@/proxy";
 import type { Actor } from "@/server/actor";
 import type { Db } from "@/server/db";
 import { ForbiddenError, UnauthorizedError, ValidationError } from "@/server/errors";
-import { createPublicAnswerCache, PUBLIC_ANSWER_TTL_MS, PUBLIC_CACHE_CONTROL, publicProgressResponse } from "@/server/public-api";
+import {
+  cachedPublicAnswerByKey,
+  cachedPublicValue,
+  createPublicAnswerCache,
+  createPublicAnswerCacheMap,
+  createPublicValueCache,
+  PUBLIC_ANSWER_TTL_MS,
+  PUBLIC_CACHE_CONTROL,
+  PUBLIC_PERSON_CACHE_MAX,
+  PUBLIC_PERSON_NOT_FOUND,
+  type PublicPersonDeps,
+  publicPersonProgressResponse,
+  publicProgressResponse,
+} from "@/server/public-api";
 import {
   firstPublicWeek,
+  getPublicPeopleDirectory,
+  getPublicPersonProgress,
   getPublicProgress,
   getPublicProgressAdminView,
   getPublicProgressConfig,
+  type PublicPeopleDirectory,
   publicPersonId,
   publicTime,
 } from "@/server/queries/public-progress";
@@ -544,12 +570,25 @@ describe("the public progress answer", () => {
       nameStyle: "initials",
       showTaskTitles: false,
       since: "2026-09-01",
-      // Saved before sponsors and events had switches: off until an admin turns them on (nothing goes public on its own).
+      // Saved before sponsors, events, and profiles had switches: off until an admin turns them on (nothing goes public
+      // on its own).
       showSponsors: false,
       showEvents: false,
+      showPersonPages: false,
+      // Members' photos: on — each person decides about their own (Settings → My photo, on by default).
+      showPhotos: true,
     });
-    expect(DEFAULT_PUBLIC_PROGRESS_SETTINGS).toMatchObject({ showSponsors: false, showEvents: false });
+    expect(DEFAULT_PUBLIC_PROGRESS_SETTINGS).toMatchObject({ showSponsors: false, showEvents: false, showPersonPages: false, showPhotos: true });
+    expect(parsePublicProgressSettings('{"showPhotos":false}')).toEqual({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showPhotos: false });
+    expect(parsePublicProgressSettings('{"showPhotos":"off"}').showPhotos).toBe(true);
+    expect(parsePublicProgressSettings(serializePublicProgressSettings({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showPhotos: false })).showPhotos).toBe(false);
     expect(parsePublicProgressSettings('{"showSponsors":true,"showEvents":"yes"}')).toEqual({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showSponsors: true });
+    expect(parsePublicProgressSettings('{"showPersonPages":true}')).toEqual({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showPersonPages: true });
+    expect(parsePublicProgressSettings('{"showPersonPages":"on"}').showPersonPages).toBe(false);
+    expect(parsePublicProgressSettings(serializePublicProgressSettings({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showPersonPages: true }))).toEqual({
+      ...DEFAULT_PUBLIC_PROGRESS_SETTINGS,
+      showPersonPages: true,
+    });
   });
 
   it("writes names and positions in the team website's words", () => {
@@ -852,11 +891,540 @@ describe("GET /api/public/progress", () => {
       expect(PUBLIC_API_FILE_PREFIXES, p).toContain(p.slice(0, -"[id]".length));
     }
     expect(dynamics.map((p) => p.slice(0, -"[id]".length)).sort()).toEqual([...PUBLIC_API_FILE_PREFIXES].sort());
+    expect(dynamics).toContain("/api/public/progress/people/[id]");
     for (const prefix of PUBLIC_API_FILE_PREFIXES) expect(prefix.endsWith("/"), prefix).toBe(true);
     for (const file of routes) {
       const source = readFileSync(file, "utf8");
       expect(source, file).toContain("@/server/public-api");
       expect(source, file).not.toMatch(/auth\/session|next\/headers|cookies\(|getCurrentUser|getServiceContext/);
+    }
+  });
+});
+
+// ── One person (GET /api/public/progress/people/[id]) ────────────────────────
+
+describe("one person's progress (GET /api/public/progress/people/[id])", () => {
+  const url = (id: string, query = "") => `https://communication-portal-iota.vercel.app${PUBLIC_PROGRESS_PEOPLE_PREFIX}${id}${query}`;
+  const page = (id: string, db: Db = t.db) => getPublicPersonProgress(db, { now: TEST_NOW, teamTimezone: TEST_TZ, id });
+  const found = async (id: string): Promise<PublicPersonProgress> => {
+    const answer = await page(id);
+    if (!answer) throw new Error(`expected ${id} to be listed`);
+    return answer;
+  };
+  const idOf = async (name: string) => {
+    const entry = personNamed(await progress(), name);
+    if (!entry) throw new Error(`expected ${name} to be listed`);
+    return entry.id;
+  };
+  const call = (id: string, init: RequestInit & { origin?: string } = {}, deps: Partial<Omit<PublicPersonDeps, "id">> = {}) => {
+    const headers = new Headers(init.headers);
+    if (init.origin) headers.set("origin", init.origin);
+    return publicPersonProgressResponse(new Request(url(id), { ...init, headers }), { db: t.db, now: TEST_NOW, teamTimezone: TEST_TZ, id, ...deps });
+  };
+  /** Everything a visitor gets back. */
+  const seen = async (res: Response) => ({ status: res.status, headers: [...res.headers.entries()], body: await res.text() });
+  /** A well-formed id nobody has. */
+  const NOBODY = "AAAAAAAAAAAAAAAA";
+  /** The profiles are off until an admin turns them on: these tests turn them on, with whatever else they need. */
+  const setProfileSettings = (settings: Partial<PublicProgressSettings>) => setSettings({ showPersonPages: true, ...settings });
+  beforeEach(async () => {
+    await setProfileSettings({});
+  });
+
+  let small: TestDb;
+  afterAll(async () => {
+    await small?.drop();
+  });
+
+  it("has the agreed shape: their people entry, their weeks, and what they finished", async () => {
+    const team = await progress();
+    const entry = personNamed(team, "Ethan Chen")!;
+    const p = await found(entry.id);
+    expect(Object.keys(p)).toEqual(["enabled", "updatedAt", "since", "person", "weekly", "done"]);
+    expect(p).toEqual({
+      enabled: true,
+      updatedAt: TEST_NOW.toISOString(),
+      since: "2026-08-31",
+      person: entry,
+      weekly: [
+        { weekStart: "2026-08-31", itemsDone: 0 },
+        { weekStart: "2026-09-07", itemsDone: 0 },
+        { weekStart: "2026-09-14", itemsDone: 1 }, // Sun Sep 20, 23:30 in Anaheim
+        { weekStart: "2026-09-21", itemsDone: 1 },
+      ],
+      // Newest first; last season's robot (due before counting starts) isn't there.
+      done: [
+        { title: "Finish the arm", subteam: "BUILD", at: "2026-09-24T18:59:00.000Z", withTask: false },
+        { title: "Build the intake", subteam: "BUILD", at: "2026-09-21T06:30:00.000Z", withTask: false },
+      ],
+    });
+    expect(Object.keys(p.person)).toEqual(Object.keys(entry));
+    expect(Object.keys(p.done[0])).toEqual(["title", "subteam", "at", "withTask"]);
+    // Whole-task credit is on their own list (marked), unlike the team's recent list; `subteam` is the task's.
+    expect((await found(personNamed(team, "Ava Thompson")!.id)).done).toEqual([
+      { title: "Sponsor letters", subteam: null, at: "2026-09-23T20:00:00.000Z", withTask: true },
+    ]);
+    expect((await found(personNamed(team, "Maya Patel")!.id)).done).toEqual([
+      { title: "Kickoff notes", subteam: null, at: "2026-09-18T06:00:00.000Z", withTask: false },
+    ]);
+  });
+
+  it("agrees with the progress JSON for everyone it lists", async () => {
+    const team = await progress();
+    const weekSums = team.weekly.map(() => 0);
+    for (const entry of team.people) {
+      const p = await found(entry.id);
+      expect(p.person, entry.name).toEqual(entry);
+      expect(p.since).toBe(team.since);
+      expect(p.weekly.map((w) => w.weekStart), entry.name).toEqual(team.weekly.map((w) => w.weekStart));
+      p.weekly.forEach((w, i) => (weekSums[i] += w.itemsDone));
+      expect(p.done, entry.name).toHaveLength(Math.min(entry.itemsDone, PUBLIC_PERSON_DONE_MAX));
+      expect(p.done[0]?.at ?? null, entry.name).toBe(entry.lastDoneAt);
+      expect([...p.done].sort((a, b) => b.at.localeCompare(a.at))).toEqual(p.done);
+    }
+    // Everyone counted is listed (Hannah, the only one hidden in Build, isn't counted): the weeks add up exactly.
+    expect(weekSums).toEqual(team.weekly.map((w) => w.itemsDone));
+  });
+
+  it("finds only the people the progress JSON lists: everyone else gets the same 404", async () => {
+    const ethanId = await idOf("Ethan Chen");
+    const salt = (await t.db.teamNote.findUniqueOrThrow({ where: { key: PUBLIC_PROGRESS_ID_SALT_KEY } })).body;
+    const baseline = await seen(await call(NOBODY, { origin: TEAM_SITE_ORIGIN }));
+    expect(baseline.status).toBe(404);
+    expect(JSON.parse(baseline.body)).toEqual({ error: PUBLIC_PERSON_NOT_FOUND });
+    expect(Object.fromEntries(baseline.headers)).toEqual({
+      "access-control-allow-origin": TEAM_SITE_ORIGIN,
+      vary: "Origin",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-type": "application/json; charset=utf-8",
+    });
+    const sameAsNobody = async (id: string, why: string) => {
+      expect(await page(id), why).toBeNull();
+      expect(await seen(await call(id, { origin: TEAM_SITE_ORIGIN })), why).toEqual(baseline);
+    };
+
+    // Ids made exactly like the listed ones (as if the salt had leaked): the person who left herself off the list,
+    // mentors, teachers, sign-ups waiting for approval, disabled accounts.
+    for (const [why, actor] of [
+      ["hidden", hannah],
+      ["mentor", mentor],
+      ["teacher", teacher],
+      ["pending", pending],
+      ["disabled", disabled],
+    ] as const) {
+      await sameAsNobody(publicPersonId(salt, actor.id, "full"), why);
+    }
+    // Not a person id at all (an account id, too short or long, path tricks): the same 404.
+    for (const id of [ethan.id, "abc", "A".repeat(17), "", "..", "AAAAAAAAAAAAAAA.", "AAAAAAAA/AAAAAAA"]) await sameAsNobody(id, JSON.stringify(id));
+
+    // Ethan leaves himself off the list: his id stops working at once (and he's gone from the progress JSON too).
+    expect((await found(ethanId)).person.name).toBe("Ethan Chen");
+    await t.db.user.update({ where: { id: ethan.id }, data: { hideFromPublicProgress: true } });
+    await sameAsNobody(ethanId, "Ethan hidden");
+    expect((await progress()).people.map((x) => x.id)).not.toContain(ethanId);
+    await t.db.user.update({ where: { id: ethan.id }, data: { hideFromPublicProgress: false } });
+    expect((await found(ethanId)).person.name).toBe("Ethan Chen");
+
+    // The page turned off, or names hidden (the progress JSON lists nobody): the same 404.
+    await setProfileSettings({ enabled: false });
+    await sameAsNobody(ethanId, "page off");
+    await setProfileSettings({ nameStyle: "hidden" });
+    await sameAsNobody(ethanId, "names hidden");
+    await sameAsNobody(publicPersonId(salt, ethan.id, "hidden"), "names hidden, an id made for that style");
+
+    // Shorter names: the old id is gone, the new one shows the shorter name.
+    await setProfileSettings({ nameStyle: "initials" });
+    await sameAsNobody(ethanId, "full-name id after switching to initials");
+    const short = await found(await idOf("E.C."));
+    expect(short.person).toMatchObject({ name: "E.C.", subteam: "BUILD", role: "Build Team", itemsDone: 2 });
+    expect(JSON.stringify(short)).not.toContain("Ethan");
+  });
+
+  it("leaves task titles out when they're turned off", async () => {
+    await setProfileSettings({ showTaskTitles: false });
+    const team = await progress();
+    for (const entry of team.people) {
+      const p = await found(entry.id);
+      expect(p.done.every((d) => d.title === null), entry.name).toBe(true);
+      const json = JSON.stringify(p);
+      for (const title of ["Finish the arm", "Build the intake", "Kickoff notes", "Sponsor letters", "Wire the drivetrain", "Code autonomous"]) {
+        expect(json, entry.name).not.toContain(title);
+      }
+    }
+    expect((await found(personNamed(team, "Ethan Chen")!.id)).done).toHaveLength(2);
+  });
+
+  it("never includes emails, notes, due dates, overdue info, account or task ids, or anyone else", async () => {
+    const team = await progress();
+    const users = await t.db.user.findMany({ select: { id: true, email: true } });
+    for (const entry of team.people) {
+      const json = JSON.stringify(await found(entry.id));
+      for (const u of users) {
+        expect(json).not.toContain(u.email);
+        expect(json).not.toContain(u.id);
+      }
+      for (const id of Object.values(taskIds)) expect(json).not.toContain(id);
+      for (const text of [
+        SECRET_REVIEW,
+        SECRET_SUBMISSION,
+        "secret",
+        "@",
+        "overdue",
+        "late",
+        "dueDate",
+        "reviewNote",
+        "submissionNote",
+        "2026-09-10", // due dates
+        "2026-09-15",
+        "2026-09-20",
+        "2026-10-01",
+        "Last season",
+        "Mentor paperwork",
+        "Hannah",
+        "Elena",
+      ]) {
+        expect(json.toLowerCase(), `${entry.name}: ${text}`).not.toContain(text.toLowerCase());
+      }
+    }
+  });
+
+  it("counts from `since`, like the progress JSON", async () => {
+    await setProfileSettings({ since: "2026-09-15" });
+    const team = await progress();
+    const entry = personNamed(team, "Ethan Chen")!;
+    const p = await found(entry.id);
+    expect(p.since).toBe("2026-09-15");
+    expect(p.person).toEqual(entry);
+    expect(p.done.map((d) => d.title)).toEqual(["Finish the arm"]); // the intake was due Sep 10
+    expect(p.weekly).toEqual([
+      { weekStart: "2026-09-14", itemsDone: 0 },
+      { weekStart: "2026-09-21", itemsDone: 1 },
+    ]);
+    const jordan = await found(personNamed(team, "Jordan Lee")!.id);
+    expect(jordan.done).toEqual([]);
+    expect(jordan.person).toMatchObject({ itemsDone: 0, itemsOpen: 0, completion: 0, lastDoneAt: null });
+  });
+
+  it("only reads, one query at a time, and never makes the salt", async () => {
+    const id = await idOf("Ethan Chen");
+    const { db, stats } = tracked(t.db);
+    expect(await page(id, db)).not.toBeNull();
+    expect(stats.maxInflight).toBe(1);
+    expect(stats.calls.length).toBeLessThanOrEqual(5);
+    expect(stats.writes).toEqual([]);
+
+    // Not a person id: nothing is read.
+    const junk = tracked(t.db);
+    expect(await page("../../planner", junk.db)).toBeNull();
+    expect(junk.stats.calls).toEqual([]);
+
+    // No salt yet: no id can be valid, so nothing is found — and the person endpoint doesn't make one.
+    await t.db.teamNote.deleteMany({ where: { key: PUBLIC_PROGRESS_ID_SALT_KEY } });
+    const fresh = tracked(t.db);
+    expect(await page(id, fresh.db)).toBeNull();
+    expect(fresh.stats.writes).toEqual([]);
+    expect(await t.db.teamNote.findUnique({ where: { key: PUBLIC_PROGRESS_ID_SALT_KEY } })).toBeNull();
+    // The progress JSON makes a new one: everyone gets new ids, which work.
+    const renewed = await idOf("Ethan Chen");
+    expect(renewed).not.toBe(id);
+    expect(await page(id)).toBeNull();
+    expect((await found(renewed)).person.name).toBe("Ethan Chen");
+  });
+
+  it("lists the newest 25 things they finished", async () => {
+    small = await createTestDb();
+    const body = serializePublicProgressSettings({ ...DEFAULT_PUBLIC_PROGRESS_SETTINGS, showPersonPages: true });
+    await small.db.teamNote.create({ data: { key: PUBLIC_PROGRESS_KEY, body } });
+    const lead = await makeUser(small.db, { role: "BUILD_LEADER", subteam: "BUILD", name: "Lead One" });
+    for (let i = 0; i < 30; i++) {
+      await small.db.task.create({
+        data: {
+          title: `Part ${String(i).padStart(2, "0")}`,
+          subteam: i % 2 ? "BUILD" : null,
+          dueDate: dateOnlyToDb("2026-09-10"),
+          createdById: lead.id,
+          assignments: { create: [{ userId: lead.id, status: "APPROVED", reviewedAt: new Date(Date.UTC(2026, 8, 1, 12, i, 37, 412)) }] },
+        },
+      });
+    }
+    const team = await getPublicProgress(small.db, { now: TEST_NOW, teamTimezone: TEST_TZ });
+    if (!team.enabled) throw new Error("expected on");
+    const p = await page(team.people[0].id, small.db);
+    if (!p) throw new Error("expected the lead to be listed");
+    expect(p.person).toEqual(team.people[0]);
+    expect(p.person.itemsDone).toBe(30);
+    expect(p.done).toHaveLength(PUBLIC_PERSON_DONE_MAX);
+    expect(p.done[0]).toEqual({ title: "Part 29", subteam: "BUILD", at: "2026-09-01T12:29:00.000Z", withTask: false });
+    expect(p.done[1]).toMatchObject({ title: "Part 28", subteam: null });
+    expect(p.done[24].title).toBe("Part 05");
+    expect(p.weekly[0]).toEqual({ weekStart: "2026-08-31", itemsDone: 30 });
+  });
+
+  it("lets the team website read it, with the progress JSON's CORS and caching", async () => {
+    const id = await idOf("Ethan Chen");
+    const res = await call(id, { origin: TEAM_SITE_ORIGIN });
+    expect(res.status).toBe(200);
+    expect(Object.fromEntries(res.headers)).toEqual({
+      "access-control-allow-origin": TEAM_SITE_ORIGIN,
+      vary: "Origin",
+      "cache-control": PUBLIC_CACHE_CONTROL,
+      "x-content-type-options": "nosniff",
+      "content-type": "application/json; charset=utf-8",
+    });
+    expect(((await res.json()) as PublicPersonProgress).person.name).toBe("Ethan Chen");
+
+    // Never another site (or *); extra origins come from the setting — for the 404 too, so the website can read it.
+    for (const origin of ["https://evil.example", "http://localhost:4321", "null", "https://huskyteers19516.github.io.evil.example"]) {
+      expect((await call(id, { origin })).headers.get("access-control-allow-origin"), origin).toBe(TEAM_SITE_ORIGIN);
+    }
+    const local = { extraOrigins: "http://localhost:4321" };
+    expect((await call(id, { origin: "http://localhost:4321" }, local)).headers.get("access-control-allow-origin")).toBe("http://localhost:4321");
+    const missing = await call(NOBODY, { origin: "http://localhost:4321" }, local);
+    expect([missing.status, missing.headers.get("access-control-allow-origin")]).toEqual([404, "http://localhost:4321"]);
+    expect(missing.headers.get("access-control-allow-credentials")).toBeNull();
+
+    // HEAD (found or not), the CORS preflight, and nothing else.
+    const head = await call(id, { method: "HEAD" });
+    expect([head.status, await head.text(), head.headers.get("cache-control")]).toEqual([200, "", PUBLIC_CACHE_CONTROL]);
+    const headMissing = await call(NOBODY, { method: "HEAD" });
+    expect([headMissing.status, await headMissing.text(), headMissing.headers.get("cache-control")]).toEqual([404, "", "no-store"]);
+    const preflight = await call(id, { method: "OPTIONS", origin: TEAM_SITE_ORIGIN });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-methods")).toBe("GET, HEAD, OPTIONS");
+    const post = await call(id, { method: "POST", origin: TEAM_SITE_ORIGIN, body: "{}" });
+    expect([post.status, post.headers.get("allow")]).toEqual([405, "GET, HEAD, OPTIONS"]);
+  });
+
+  it("answers a 503 that isn't cached or kept when the database fails", async () => {
+    const id = await idOf("Ethan Chen");
+    const cache = createPublicAnswerCacheMap(10);
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = { teamNote: { findMany: () => Promise.reject(new Error("database down")) } } as unknown as Db;
+    const res = await call(id, { origin: TEAM_SITE_ORIGIN }, { db: broken, cache });
+    quiet.mockRestore();
+    expect(res.status).toBe(503);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("access-control-allow-origin")).toBe(TEAM_SITE_ORIGIN);
+    expect(((await res.json()) as { error: string }).error).toMatch(/isn't available/);
+    expect((await call(id, {}, { cache })).status).toBe(200);
+  });
+
+  it("keeps one built answer per listed id for 10 seconds, whatever the query string", async () => {
+    const ethanId = await idOf("Ethan Chen");
+    const mayaId = await idOf("Maya Patel");
+    const cache = createPublicAnswerCacheMap(PUBLIC_PERSON_CACHE_MAX);
+    const directory = createPublicValueCache<PublicPeopleDirectory | null>();
+    const { db, stats } = tracked(t.db);
+    const ask = (id: string, query: string, now = TEST_NOW) =>
+      publicPersonProgressResponse(new Request(url(id, query), { headers: { origin: TEAM_SITE_ORIGIN } }), {
+        db,
+        now,
+        teamTimezone: TEST_TZ,
+        cache,
+        directory,
+        id,
+      });
+    /** Directory builds (settings + the listed people) and per-person builds (their counts, weeks, approvals). */
+    const directoryBuilds = () => stats.calls.filter((c) => c === "teamNote.findMany").length;
+    const personBuilds = () => stats.calls.filter((c) => c === "taskAssignment.findMany").length;
+
+    // Ten visitors at once, each with a different cache-busting query string: one directory, one build.
+    const first = await Promise.all(Array.from({ length: 10 }, (_, i) => ask(ethanId, `?x=${i}-${Math.random()}`)));
+    expect(first.every((r) => r.status === 200)).toBe(true);
+    expect(new Set(await Promise.all(first.map((r) => r.text()))).size).toBe(1);
+    expect([directoryBuilds(), personBuilds()]).toEqual([1, 1]);
+    // Another person: their own build, the same directory.
+    expect((await ask(mayaId, "?x=1")).status).toBe(200);
+    expect([directoryBuilds(), personBuilds()]).toEqual([1, 2]);
+    // An id nobody has, or something that isn't an id: answered from memory, never built or kept.
+    const before = stats.calls.length;
+    expect((await ask(NOBODY, "")).status).toBe(404);
+    expect((await ask(NOBODY, "?again")).status).toBe(404);
+    expect((await ask("not-an-id", "")).status).toBe(404);
+    expect(stats.calls.length).toBe(before);
+    expect([...cache.entries.keys()]).toEqual([ethanId, mayaId]);
+
+    // Still fresh just before 10 s; built again after (the directory too).
+    await ask(ethanId, "?t=1", new Date(TEST_NOW.getTime() + PUBLIC_ANSWER_TTL_MS - 1));
+    expect([directoryBuilds(), personBuilds()]).toEqual([1, 2]);
+    const later = new Date(TEST_NOW.getTime() + PUBLIC_ANSWER_TTL_MS);
+    const rebuilt = (await (await ask(ethanId, "?t=2", later)).json()) as PublicPersonProgress;
+    expect([directoryBuilds(), personBuilds()]).toEqual([2, 3]);
+    expect(rebuilt.updatedAt).toBe(later.toISOString());
+  });
+
+  it("answers made-up ids from memory: a flood costs at most the directory's two reads and keeps nobody out", async () => {
+    const ethanId = await idOf("Ethan Chen");
+    const cache = createPublicAnswerCacheMap(PUBLIC_PERSON_CACHE_MAX);
+    const directory = createPublicValueCache<PublicPeopleDirectory | null>();
+    const { db, stats } = tracked(t.db);
+    const ask = (id: string) =>
+      publicPersonProgressResponse(new Request(url(id)), { db, now: TEST_NOW, teamTimezone: TEST_TZ, cache, directory, id });
+
+    const flood = Array.from({ length: 300 }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(12)}`);
+    for (const id of flood) expect(PUBLIC_PERSON_ID_RE.test(id)).toBe(true);
+    const answers = await Promise.all(flood.map(ask));
+    expect(answers.every((r) => r.status === 404)).toBe(true);
+    // Within one TTL: the directory (settings, the listed people) once, nothing else.
+    expect(stats.calls).toEqual(["teamNote.findMany", "user.findMany"]);
+    expect(cache.entries.size).toBe(0);
+
+    // A listed person's kept answer survives another flood bigger than the cache.
+    expect((await ask(ethanId)).status).toBe(200);
+    const builtCalls = stats.calls.length;
+    for (const id of flood.slice(0, PUBLIC_PERSON_CACHE_MAX + 50)) await ask(id);
+    expect([...cache.entries.keys()]).toEqual([ethanId]);
+    expect((await ask(ethanId)).status).toBe(200);
+    expect(stats.calls.length).toBe(builtCalls);
+  });
+
+  it("finds people through a directory of exactly the progress JSON's people (null while anything is off)", async () => {
+    const team = await progress();
+    const dir = await getPublicPeopleDirectory(t.db);
+    if (!dir) throw new Error("expected a directory");
+    expect([...dir.byId.keys()].sort()).toEqual(team.people.map((x) => x.id).sort());
+    expect([...dir.byId.values()].map((u) => u.id)).not.toContain(hannah.id);
+    for (const u of dir.byId.values()) expect(Object.keys(u).sort()).toEqual(["id", "name", "role", "subteam"]);
+    expect(dir).toMatchObject({ since: team.since, style: "full", showTaskTitles: true });
+
+    await setProfileSettings({ enabled: false });
+    expect(await getPublicPeopleDirectory(t.db)).toBeNull();
+    await setProfileSettings({ nameStyle: "hidden" });
+    expect(await getPublicPeopleDirectory(t.db)).toBeNull();
+    await setSettings({ showPersonPages: false });
+    expect(await getPublicPeopleDirectory(t.db)).toBeNull();
+  });
+
+  it("stops finding someone who hides themselves once the directory is rebuilt (within 10 seconds)", async () => {
+    const ethanId = await idOf("Ethan Chen");
+    const cache = createPublicAnswerCacheMap(PUBLIC_PERSON_CACHE_MAX);
+    const directory = createPublicValueCache<PublicPeopleDirectory | null>();
+    const ask = (now: Date) =>
+      publicPersonProgressResponse(new Request(url(ethanId)), { db: t.db, now, teamTimezone: TEST_TZ, cache, directory, id: ethanId });
+    expect((await ask(TEST_NOW)).status).toBe(200);
+    await t.db.user.update({ where: { id: ethan.id }, data: { hideFromPublicProgress: true } });
+    const t0 = TEST_NOW.getTime();
+    expect((await ask(new Date(t0 + PUBLIC_ANSWER_TTL_MS - 1))).status).toBe(200);
+    const gone = await ask(new Date(t0 + PUBLIC_ANSWER_TTL_MS));
+    expect([gone.status, await gone.json()]).toEqual([404, { error: PUBLIC_PERSON_NOT_FOUND }]);
+  });
+
+  it("cachedPublicValue keeps any value like cachedPublicAnswer", async () => {
+    const cache = createPublicValueCache<{ n: number }>();
+    let n = 0;
+    const build = () => Promise.resolve({ n: ++n });
+    const [a, b] = await Promise.all([cachedPublicValue(cache, TEST_NOW, build), cachedPublicValue(cache, TEST_NOW, build)]);
+    expect(a).toBe(b);
+    expect(await cachedPublicValue(cache, new Date(TEST_NOW.getTime() + PUBLIC_ANSWER_TTL_MS - 1), build)).toBe(a);
+    expect(await cachedPublicValue(cache, new Date(TEST_NOW.getTime() + PUBLIC_ANSWER_TTL_MS), build)).toEqual({ n: 2 });
+    const failing = createPublicValueCache<number>();
+    await expect(cachedPublicValue(failing, TEST_NOW, () => Promise.reject(new Error("down")))).rejects.toThrow("down");
+    expect(await cachedPublicValue(failing, TEST_NOW, () => Promise.resolve(7))).toBe(7);
+    expect(await cachedPublicValue(undefined, TEST_NOW, build)).toEqual({ n: 3 });
+  });
+
+  it("is the same 404 for everyone while the profiles are off (the default), and the progress JSON is unchanged", async () => {
+    const ethanId = await idOf("Ethan Chen");
+    const baseline = await seen(await call(NOBODY, { origin: TEAM_SITE_ORIGIN }));
+    expect(baseline.status).toBe(404);
+    expect((await call(ethanId, { origin: TEAM_SITE_ORIGIN })).status).toBe(200);
+    const before = await progress();
+
+    await setSettings({ showPersonPages: false });
+    expect(await page(ethanId)).toBeNull();
+    expect(await seen(await call(ethanId, { origin: TEAM_SITE_ORIGIN }))).toEqual(baseline);
+    expect(await seen(await call(NOBODY, { origin: TEAM_SITE_ORIGIN }))).toEqual(baseline);
+    expect(await progress()).toEqual(before);
+    // Nothing saved yet at all (a team that never opened the settings): off.
+    await t.db.teamNote.deleteMany({ where: { key: PUBLIC_PROGRESS_KEY } });
+    expect(await seen(await call(ethanId, { origin: TEAM_SITE_ORIGIN }))).toEqual(baseline);
+    // On again: found again.
+    await setProfileSettings({});
+    expect((await call(ethanId, { origin: TEAM_SITE_ORIGIN })).status).toBe(200);
+  });
+
+  it("cachedPublicAnswerByKey shares one build per key and keeps at most `max` keys", async () => {
+    expect(() => createPublicAnswerCacheMap(0)).toThrow(RangeError);
+    expect(() => createPublicAnswerCacheMap(1.5)).toThrow(RangeError);
+    const map = createPublicAnswerCacheMap(2);
+    let n = 0;
+    const build = (key: string) => () => Promise.resolve(`${key}${++n}`);
+    const get = (key: string, now = TEST_NOW) => cachedPublicAnswerByKey(map, key, now, build(key));
+
+    expect(await Promise.all([get("a"), get("a"), get("a")])).toEqual(["a1", "a1", "a1"]);
+    expect(await get("b")).toBe("b2");
+    // "a" asked again, so "b" is now the least recently asked: "c" pushes it out.
+    expect(await get("a")).toBe("a1");
+    expect(await get("c")).toBe("c3");
+    expect([...map.entries.keys()]).toEqual(["a", "c"]);
+    expect(await get("b")).toBe("b4");
+    expect([...map.entries.keys()]).toEqual(["c", "b"]);
+    // Made-up keys never grow it past `max`.
+    for (let i = 0; i < 50; i++) await get(`k${i}`);
+    expect(map.entries.size).toBe(2);
+    expect([...map.entries.keys()]).toEqual(["k48", "k49"]);
+
+    // Each key's answer lasts PUBLIC_ANSWER_TTL_MS.
+    const t0 = TEST_NOW.getTime();
+    const kept = await get("k49");
+    expect(await get("k49", new Date(t0 + PUBLIC_ANSWER_TTL_MS - 1))).toBe(kept);
+    expect(await get("k49", new Date(t0 + PUBLIC_ANSWER_TTL_MS))).not.toBe(kept);
+
+    // A failed build isn't kept; no map builds every time.
+    await expect(cachedPublicAnswerByKey(map, "f", TEST_NOW, () => Promise.reject(new Error("down")))).rejects.toThrow("down");
+    expect(await cachedPublicAnswerByKey(map, "f", TEST_NOW, () => Promise.resolve("ok"))).toBe("ok");
+    const before = n;
+    await cachedPublicAnswerByKey(undefined, "a", TEST_NOW, build("a"));
+    await cachedPublicAnswerByKey(undefined, "a", TEST_NOW, build("a"));
+    expect(n).toBe(before + 2);
+  });
+
+  it("is served by the route (GET, HEAD, OPTIONS) without signing in", async () => {
+    holder.user = null;
+    const id = await idOf("Maya Patel");
+    const req = (method: string, which = id) => new NextRequest(url(which), { method, headers: { origin: TEAM_SITE_ORIGIN } });
+    const ctx = (which = id) => ({ params: Promise.resolve({ id: which }) }) as never;
+    const res = await personRoute.GET(req("GET"), ctx());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe(TEAM_SITE_ORIGIN);
+    expect(((await res.json()) as PublicPersonProgress).person.name).toBe("Maya Patel");
+    expect((await personRoute.HEAD(req("HEAD"), ctx())).status).toBe(200);
+    expect((await personRoute.OPTIONS(req("OPTIONS"), ctx())).status).toBe(204);
+    const missing = await personRoute.GET(req("GET", NOBODY), ctx(NOBODY));
+    expect([missing.status, await missing.json()]).toEqual([404, { error: PUBLIC_PERSON_NOT_FOUND }]);
+    expect(Object.keys(personRoute).sort()).toEqual(["GET", "HEAD", "OPTIONS"]);
+  });
+
+  it("gets through the proxy as exactly one id after its prefix", async () => {
+    const ids = (await progress()).people.map((x) => x.id);
+    for (const id of ids) {
+      expect(id).toMatch(PUBLIC_PERSON_ID_RE);
+      expect(PUBLIC_API_ID_RE.test(id)).toBe(true);
+      expect(isPublicApiPath(`${PUBLIC_PROGRESS_PEOPLE_PREFIX}${id}`)).toBe(true);
+    }
+    expect(PUBLIC_PROGRESS_PEOPLE_PREFIX).toBe("/api/public/progress/people/");
+    expect(PUBLIC_API_FILE_PREFIXES).toContain(PUBLIC_PROGRESS_PEOPLE_PREFIX);
+    const visit = (path: string) => proxy(new NextRequest(`https://communication-portal-iota.vercel.app${path}`));
+    for (const path of [`${PUBLIC_PROGRESS_PEOPLE_PREFIX}${ids[0]}`, `${PUBLIC_PROGRESS_PEOPLE_PREFIX}${ids[0]}?x=1`, `${PUBLIC_PROGRESS_PEOPLE_PREFIX}a_b-C9`]) {
+      expect(visit(path).headers.get("x-middleware-next"), path).toBe("1");
+    }
+    for (const path of [
+      "/api/public/progress/people",
+      "/api/public/progress/people/",
+      "/api/public/progress/people/a/b",
+      `/api/public/progress/people/${ids[0]}/`,
+      "/api/public/progress/people/a.b",
+      "/api/public/progress/people/..",
+      "/api/public/progress/people/%2e%2e",
+      "/api/public/progress/people/..%2f..%2fplanner%2fpaths",
+      `/api/public/progress/people/${"a".repeat(65)}`,
+      "/api/public/progress/person/abc",
+      "/api/public/progress/x/abc",
+      "/api/public/PROGRESS/people/abc",
+    ]) {
+      expect(visit(path).status, path).toBe(401);
+      expect(isPublicApiPath(path), path).toBe(false);
     }
   });
 });
@@ -867,13 +1435,25 @@ describe("the page's settings", () => {
   const save = (actor: Actor, raw: Record<string, unknown>) => updatePublicProgressSettings(contextFor(t.db, actor), raw);
 
   it("are changed by everyone with admin access", async () => {
-    expect(await save(buildLead, { enabled: "on", nameStyle: "initials", since: "2026-09-01", showSponsors: "on", showEvents: "on" })).toEqual({
+    expect(
+      await save(buildLead, {
+        enabled: "on",
+        nameStyle: "initials",
+        since: "2026-09-01",
+        showSponsors: "on",
+        showEvents: "on",
+        showPersonPages: "on",
+        showPhotos: "on",
+      }),
+    ).toEqual({
       enabled: true,
       nameStyle: "initials",
       showTaskTitles: false,
       since: "2026-09-01",
       showSponsors: true,
       showEvents: true,
+      showPersonPages: true,
+      showPhotos: true,
     });
     expect((await getPublicProgressConfig(t.db)).settings).toMatchObject({ nameStyle: "initials", showTaskTitles: false });
     const note = await t.db.teamNote.findUniqueOrThrow({ where: { key: PUBLIC_PROGRESS_KEY } });
@@ -882,7 +1462,16 @@ describe("the page's settings", () => {
     // Unchecked boxes = off; an empty date = back to the attendance reports' start.
     await save(mentor, { nameStyle: "full", showTaskTitles: "on", since: "" });
     const config = await getPublicProgressConfig(t.db);
-    expect(config.settings).toEqual({ enabled: false, nameStyle: "full", showTaskTitles: true, since: null, showSponsors: false, showEvents: false });
+    expect(config.settings).toEqual({
+      enabled: false,
+      nameStyle: "full",
+      showTaskTitles: true,
+      since: null,
+      showSponsors: false,
+      showEvents: false,
+      showPersonPages: false,
+      showPhotos: false,
+    });
     expect(config.since).toBe("2026-08-31");
     expect(await getPublicProgress(t.db, { now: TEST_NOW, teamTimezone: TEST_TZ })).toEqual({ enabled: false });
     await save(captain, { enabled: "on", nameStyle: "full", showTaskTitles: "on" });

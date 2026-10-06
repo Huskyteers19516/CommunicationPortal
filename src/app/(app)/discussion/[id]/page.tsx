@@ -2,6 +2,7 @@ import { Pencil, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { cache } from "react";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { DiscussionCategoryBadge, DiscussionLockedBadge, DiscussionPinnedBadge } from "@/components/discussion/badges";
 import { ModerationButtons } from "@/components/discussion/moderation-buttons";
 import { JumpToNewReplies, ThreadReadState } from "@/components/discussion/read-state";
@@ -11,7 +12,6 @@ import { FocusAlert } from "@/components/sponsors/focus-alert";
 import { ActionForm } from "@/components/tasks/action-form";
 import { BackLink } from "@/components/tasks/back-link";
 import { Alert } from "@/components/ui/alert";
-import { Avatar } from "@/components/ui/avatar";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import { RichText } from "@/components/ui/rich-text";
@@ -21,6 +21,7 @@ import { discussionHref, repliesLabel } from "@/lib/discussion";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { type DiscussionAuthor, getDiscussionThread } from "@/server/queries/discussion";
+import { getPortalPhotoMap } from "@/server/queries/user-photos";
 import { deleteThreadAction } from "../actions";
 
 // Shared by generateMetadata and the page so the discussion loads once per request.
@@ -74,6 +75,7 @@ export default async function DiscussionThreadPage({ params, searchParams }: Pag
   // Only ever a reply of mine on this page (never text from the link).
   const postedParam = first(sp.posted);
   const posted = thread.replies.find((r) => r.id === postedParam && r.mine)?.id ?? null;
+  const photos = await getPortalPhotoMap();
 
   const replies = thread.replies.map(
     (r): ReplyItemData => ({
@@ -82,6 +84,7 @@ export default async function DiscussionThreadPage({ params, searchParams }: Pag
       version: r.version,
       authorName: authorName(r.author),
       position: position(r.author),
+      authorPhotoId: (r.author && photos.get(r.author.id)) ?? null,
       mine: r.mine,
       canEdit: r.canEdit,
       canDelete: r.canDelete,
@@ -120,7 +123,7 @@ export default async function DiscussionThreadPage({ params, searchParams }: Pag
         <Card>
           <CardBody>
             <div className="flex min-w-0 items-start gap-3">
-              <Avatar name={authorName(thread.author)} className="mt-0.5" />
+              <UserAvatar userId={thread.author?.id} name={authorName(thread.author)} className="mt-0.5" />
               <div className="min-w-0 flex-1 leading-tight">
                 <p className="text-sm font-semibold text-ink-900 wrap-anywhere">
                   {authorName(thread.author)}

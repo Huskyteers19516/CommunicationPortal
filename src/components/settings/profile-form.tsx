@@ -9,13 +9,13 @@ import { LIMITS } from "@/lib/constants";
 
 type FormAction = (state: ActionState, formData: FormData) => Promise<ActionState>;
 
-/** Edit your display name. */
-export function ProfileForm({ action, name }: { action: FormAction; name: string }) {
+/** Edit your display name. `hint`: what's under the field (default: where it's shown). */
+export function ProfileForm({ action, name, hint = "Shown to your team on tasks and questions." }: { action: FormAction; name: string; hint?: string }) {
   const [state, formAction] = useActionState(action, initialActionState);
   const error = state?.fieldErrors?.name;
   return (
     <form action={formAction} className="space-y-3">
-      <Field label="Name" htmlFor="settings-name" error={error} hint="Shown to your team on tasks and questions.">
+      <Field label="Name" htmlFor="settings-name" error={error} hint={hint}>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             id="settings-name"

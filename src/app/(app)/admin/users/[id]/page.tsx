@@ -5,16 +5,18 @@ import { notFound } from "next/navigation";
 import type { SeatInfo } from "@/components/admin/position-fields";
 import { UserAccountActions } from "@/components/admin/user-account-actions";
 import { UserEditForm } from "@/components/admin/user-edit-form";
+import { UserPhotoCard } from "@/components/admin/user-photo-card";
 import { UserStats } from "@/components/admin/user-stats";
 import { AccountStatusBadge, RoleBadge, SubteamBadge } from "@/components/app/badges";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { Alert } from "@/components/ui/alert";
-import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import type { Role } from "@/generated/prisma/enums";
 import { requireAdminUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { grantableRoles } from "@/server/permissions";
 import { getEmailConfigStatus, getSeatUsage, getUserDetail } from "@/server/queries/admin";
+import { getManagedUserPhoto, getManagedWebsitePhotoHold } from "@/server/queries/user-photos";
 
 export const metadata: Metadata = { title: "Person" };
 
@@ -22,7 +24,12 @@ export default async function PersonPage({ params }: PageProps<"/admin/users/[id
   const actor = await requireAdminUser();
   const { id } = await params;
   const now = new Date();
-  const [user, seats] = await Promise.all([getUserDetail(actor, id, undefined, now), getSeatUsage(actor)]);
+  const [user, seats, photo, websitePhoto] = await Promise.all([
+    getUserDetail(actor, id, undefined, now),
+    getSeatUsage(actor),
+    getManagedUserPhoto(actor, id),
+    getManagedWebsitePhotoHold(actor, id),
+  ]);
   if (!user) notFound();
   const emailReady = getEmailConfigStatus(actor).mode !== "none";
 
@@ -44,7 +51,7 @@ export default async function PersonPage({ params }: PageProps<"/admin/users/[id
       </Link>
 
       <header className="mb-6 flex items-start gap-4">
-        <Avatar name={user.name} size="lg" />
+        <UserAvatar userId={user.id} name={user.name} size="lg" />
         <div className="min-w-0">
           <h1 className="font-display text-2xl font-semibold uppercase tracking-wide text-ink-900 sm:text-3xl break-words">
             {user.name}
@@ -122,6 +129,16 @@ export default async function PersonPage({ params }: PageProps<"/admin/users/[id
             emailReady={emailReady}
             actorIsOwner={actor.isAdmin}
           />
+          {user.canManage && (photo || user.status === "ACTIVE") && (
+            <UserPhotoCard
+              key={user.id}
+              userId={user.id}
+              name={user.name}
+              photo={photo}
+              website={websitePhoto}
+              timeZone={env.teamTimezone}
+            />
+          )}
           <UserStats user={user} now={now} timeZone={env.teamTimezone} />
         </div>
       </div>

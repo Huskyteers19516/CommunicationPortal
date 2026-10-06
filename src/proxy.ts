@@ -7,10 +7,11 @@ const SESSION_COOKIE = "hk_session";
 const PUBLIC_PREFIXES = ["/login", "/register", "/forgot-password", "/reset-password"];
 
 // Public, read-only endpoints for the team website (src/app/api/public/**) answer without a session: the exact
-// paths in PUBLIC_API_PATHS, plus one id after a prefix in PUBLIC_API_FILE_PREFIXES (public images and files: sponsor
-// logos, approved Workshop projects' photos and design files) — isPublicApiPath in src/lib/public-api.ts. Only data
-// meant for the open internet; each route filters to it itself, see src/server/public-api.ts. Anything
-// else under /api/public/ still needs a session cookie here, so a new route there isn't public until it's listed.
+// paths in PUBLIC_API_PATHS, plus one id after a prefix in PUBLIC_API_FILE_PREFIXES (the id routes: sponsor logos,
+// approved Workshop projects' photos and design files, members' published photos, one listed person's progress) —
+// isPublicApiPath in src/lib/public-api.ts. Only data meant for the open internet; each route filters to it itself,
+// see src/server/public-api.ts. Anything else under /api/public/ still needs a session cookie here, so a new route
+// there isn't public until it's listed.
 
 /** Request header telling pages where they are (read by requireActiveUser). Keep in sync with auth/session.ts. */
 const PATH_HEADER = "x-hk-path";

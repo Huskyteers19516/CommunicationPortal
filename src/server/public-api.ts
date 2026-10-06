@@ -4,7 +4,7 @@ import "server-only";
 // route handlers are thin wrappers around the functions here, which tests call. See "Public API for the team
 // website" in docs/CONVENTIONS.md.
 //
-// JSON (publicJsonResponse — progress, sponsors, events, Workshop):
+// JSON (publicJsonResponse — progress, one person's progress, sponsors, events, Workshop, members' photos):
 // - GET / HEAD / OPTIONS only (Next.js answers other methods with 405).
 // - CORS: `Access-Control-Allow-Origin` names the request's origin when it's the team website
 //   (https://huskyteers19516.github.io) or one of PUBLIC_PROGRESS_EXTRA_ORIGINS, and the team website otherwise —
@@ -15,22 +15,34 @@ import "server-only";
 // - The CDN keys its copies by the whole URL, so `?anything=<random>` always reaches the server: the built answer is
 //   also kept in memory for PUBLIC_ANSWER_TTL_MS (cachedPublicAnswer), shared by every request on the instance (one
 //   build at a time; a failed build isn't kept). So the database work never depends on what's in the query string.
+//   An id route's JSON (one person's progress) keeps one such answer per id, in a bounded map
+//   (cachedPublicAnswerByKey: the least recently asked id is dropped first), and only for ids worth keeping: the person
+//   route first looks the id up in a directory of the listed people built at most every PUBLIC_ANSWER_TTL_MS
+//   (cachedPublicValue), so a made-up id reads nothing and keeps nothing.
+// - "Not here" (only endpoints that pass `notFoundMessage`): the build answers `null` → a JSON 404 `{ error }`,
+//   `no-store`, with the same CORS headers — the same answer whatever the reason.
 //
-// Files (publicFileResponse + publicFileHeaders — sponsor logos, Workshop photos and design files): no CORS needed (an <img> can show a cross-origin
-// picture), but `Cross-Origin-Resource-Policy: cross-origin` so the team website may embed it; nosniff, a sandboxing
-// CSP, shown inline only for pictures, under a neutral name (Workshop design files: their cleaned uploaded name),
-// publicly cacheable. A query string is redirected to the
-// bare address before anything is read (one CDN copy per file: `?cb=<random>` can't make the server re-read a file).
+// Files (publicFileResponse + publicFileHeaders — sponsor logos, Workshop photos and design files, members' photos):
+// no CORS needed (an <img> can show a cross-origin picture), but `Cross-Origin-Resource-Policy: cross-origin` so the
+// team website may embed it; nosniff, a sandboxing CSP, shown inline only for pictures, under a neutral name (Workshop
+// design files: their cleaned uploaded name), publicly cacheable. A query string is redirected to the bare address
+// before anything is read (one CDN copy per file: `?cb=<random>` can't make the server re-read a file).
 import type { NextRequest } from "next/server";
 import { PUBLIC_API_ID_RE } from "@/lib/public-api";
-import { parseExtraOrigins, TEAM_SITE_ORIGIN } from "@/lib/public-progress";
+import { PUBLIC_PERSON_ID_RE, parseExtraOrigins, TEAM_SITE_ORIGIN } from "@/lib/public-progress";
 import { publicSponsorLogoFilename } from "@/lib/public-sponsors";
 import type { Db } from "./db";
 import type { ObjectStore } from "./files/object-store";
 import { plainResponse, sendStoredFile, type StoredFileRow } from "./files/respond";
 import { getPublicEvents } from "./queries/public-events";
-import { getPublicProgress } from "./queries/public-progress";
+import {
+  getPublicPeopleDirectory,
+  getPublicPersonProgressFor,
+  getPublicProgress,
+  type PublicPeopleDirectory,
+} from "./queries/public-progress";
 import { getPublicSponsorLogo, getPublicSponsors } from "./queries/public-sponsors";
+import { getPublicTeamPhoto, getPublicTeamPhotos, publicTeamPhotoFilename } from "./queries/public-team-photos";
 import { getPublicWorkshop, getPublicWorkshopFile, getPublicWorkshopPhoto, publicWorkshopPhotoFilename } from "./queries/public-workshop";
 import { contentDisposition } from "./resources/serve";
 
@@ -40,6 +52,8 @@ export const PUBLIC_PROGRESS_UNAVAILABLE = "Live progress isn't available right 
 export const PUBLIC_SPONSORS_UNAVAILABLE = "The sponsors list isn't available right now. Try again in a minute.";
 export const PUBLIC_EVENTS_UNAVAILABLE = "The events list isn't available right now. Try again in a minute.";
 export const PUBLIC_WORKSHOP_UNAVAILABLE = "The Workshop isn't available right now. Try again in a minute.";
+/** The person endpoint's only 404: the same whether the page is off, names are hidden, or the id isn't listed. */
+export const PUBLIC_PERSON_NOT_FOUND = "That person isn't on the team website.";
 /** How long one server instance reuses a built answer. */
 export const PUBLIC_ANSWER_TTL_MS = 10_000;
 
@@ -50,6 +64,39 @@ export interface PublicAnswerCache {
 
 export function createPublicAnswerCache(): PublicAnswerCache {
   return { entry: null };
+}
+
+/**
+ * Any built value kept in memory the same way (PublicAnswerCache is the one for JSON text): e.g. the person route's
+ * directory of listed people (getPublicPeopleDirectory), so ids that aren't listed are answered without the database.
+ */
+export interface PublicValueCache<T> {
+  entry: { builtAt: number; expiresAt: number; body: Promise<T> } | null;
+}
+
+export function createPublicValueCache<T>(): PublicValueCache<T> {
+  return { entry: null };
+}
+
+/**
+ * Answers kept in memory per key (an id route's ids): one PublicAnswerCache each, at most `max` keys — the least
+ * recently asked one is dropped first — so made-up ids can't grow it without bound. One per route per server instance.
+ */
+export interface PublicAnswerCacheMap {
+  readonly max: number;
+  /** In order of last use (oldest first). */
+  readonly entries: Map<string, PublicAnswerCache>;
+}
+
+/**
+ * How many people's answers the person route keeps (the team is ~40). Only listed people's ids reach it (anyone else is
+ * answered from the directory), so made-up ids can't push them out.
+ */
+export const PUBLIC_PERSON_CACHE_MAX = 100;
+
+export function createPublicAnswerCacheMap(max: number): PublicAnswerCacheMap {
+  if (!Number.isInteger(max) || max < 1) throw new RangeError(`A public answer cache holds at least one key (got ${max}).`);
+  return { max, entries: new Map() };
 }
 
 /** The team website plus PUBLIC_PROGRESS_EXTRA_ORIGINS (e.g. http://localhost:4321 for working on the site). */
@@ -76,6 +123,11 @@ function headersFor(request: Request, allowed: string[], cacheControl: string): 
  * PUBLIC_ANSWER_TTL_MS. Without a cache, builds every time. A failed build isn't kept (the next request tries again).
  */
 export function cachedPublicAnswer(cache: PublicAnswerCache | undefined, now: Date, build: () => Promise<string>): Promise<string> {
+  return cachedPublicValue(cache, now, build);
+}
+
+/** cachedPublicAnswer for any value (PublicValueCache): the same freshness, sharing, and failure rules. */
+export function cachedPublicValue<T>(cache: PublicValueCache<T> | undefined, now: Date, build: () => Promise<T>): Promise<T> {
   if (!cache) return build();
   const at = now.getTime();
   const hit = cache.entry;
@@ -88,6 +140,32 @@ export function cachedPublicAnswer(cache: PublicAnswerCache | undefined, now: Da
   return entry.body;
 }
 
+/**
+ * cachedPublicAnswer for one key of `map` (the key becomes the most recently used; past `max` keys, the least
+ * recently used is dropped — an in-flight build still answers whoever is waiting on it). Without a map, builds every
+ * time.
+ */
+export function cachedPublicAnswerByKey(
+  map: PublicAnswerCacheMap | undefined,
+  key: string,
+  now: Date,
+  build: () => Promise<string>,
+): Promise<string> {
+  if (!map) return build();
+  const cache = map.entries.get(key) ?? createPublicAnswerCache();
+  map.entries.delete(key);
+  map.entries.set(key, cache);
+  while (map.entries.size > map.max) {
+    const oldest = map.entries.keys().next();
+    if (oldest.done) break;
+    map.entries.delete(oldest.value);
+  }
+  return cachedPublicAnswer(cache, now, build);
+}
+
+/** What a build answers for "not here" (JSON `null`) when the endpoint has a `notFoundMessage`. */
+const NOT_FOUND_BODY = "null";
+
 export interface PublicJsonOptions {
   /** PUBLIC_PROGRESS_EXTRA_ORIGINS as set (comma-separated). */
   extraOrigins?: string | null;
@@ -98,9 +176,23 @@ export interface PublicJsonOptions {
   build: () => Promise<string>;
   /** The 503's `{ error }` when the build fails. */
   unavailableMessage: string;
+  /**
+   * Only for endpoints with a "not here" answer (one person's progress): a build answering `null` (the JSON text
+   * "null") is a 404 `{ error: notFoundMessage }`, `no-store`. Without it, every build is a 200.
+   */
+  notFoundMessage?: string;
   /** Names the endpoint in the server log ("public-sponsors"). */
   logTag: string;
+  /** More headers for the 200 answer (members' photos: PUBLIC_NO_INDEX_HEADERS). */
+  extraHeaders?: Record<string, string>;
 }
+
+/**
+ * Asks search engines not to index an answer or show it in image search: members' photos (mostly minors) — Google
+ * renders the Our Team page's script and would otherwise index the photos at their portal addresses, and taking one
+ * out of a search index takes far longer than the few minutes a member is promised.
+ */
+export const PUBLIC_NO_INDEX_HEADERS: Readonly<Record<string, string>> = { "X-Robots-Tag": "noindex, noimageindex" };
 
 /**
  * A public JSON endpoint: GET / HEAD with the answer (cached as above), OPTIONS as the CORS preflight (204), anything
@@ -131,8 +223,14 @@ export async function publicJsonResponse(request: Request, options: PublicJsonOp
     headers.set("Content-Type", "application/json; charset=utf-8");
     return new Response(method === "HEAD" ? null : JSON.stringify({ error: options.unavailableMessage }), { status: 503, headers });
   }
+  if (options.notFoundMessage !== undefined && body === NOT_FOUND_BODY) {
+    const headers = headersFor(request, allowed, "no-store");
+    headers.set("Content-Type", "application/json; charset=utf-8");
+    return new Response(method === "HEAD" ? null : JSON.stringify({ error: options.notFoundMessage }), { status: 404, headers });
+  }
   const headers = headersFor(request, allowed, PUBLIC_CACHE_CONTROL);
   headers.set("Content-Type", "application/json; charset=utf-8");
+  for (const [name, value] of Object.entries(options.extraHeaders ?? {})) headers.set(name, value);
   return new Response(method === "HEAD" ? null : body, { status: 200, headers });
 }
 
@@ -156,6 +254,52 @@ export function publicProgressResponse(request: Request, deps: PublicProgressDep
     build: () => getPublicProgress(deps.db, { now: deps.now, teamTimezone: deps.teamTimezone }).then((answer) => JSON.stringify(answer)),
     unavailableMessage: PUBLIC_PROGRESS_UNAVAILABLE,
     logTag: "public-progress",
+  });
+}
+
+/**
+ * What the person route passes in: the JSON routes' deps, the id from the address, and the route's caches — the
+ * directory of listed people and the answers per listed id.
+ */
+export interface PublicPersonDeps extends Omit<PublicProgressDeps, "cache"> {
+  /** The `[id]` from the address: the progress JSON's `people[].id`. */
+  id: string;
+  /** Reuse a built answer per id for PUBLIC_ANSWER_TTL_MS (the route passes its instance-wide map). None: build every time. */
+  cache?: PublicAnswerCacheMap;
+  /**
+   * Reuse the directory of listed people (getPublicPeopleDirectory) for PUBLIC_ANSWER_TTL_MS (the route passes its
+   * instance-wide one). None: read it for every request.
+   */
+  directory?: PublicValueCache<PublicPeopleDirectory | null>;
+}
+
+/**
+ * GET /api/public/progress/people/[id]: one listed person's progress and what they finished
+ * (getPublicPersonProgressFor), with the progress JSON's CORS and caching. Anyone it doesn't list — and the page or the
+ * profiles off, or names hidden — is the one JSON 404 `{ error: PUBLIC_PERSON_NOT_FOUND }` (`no-store`). An id that
+ * can't be a person's id is that 404 without touching anything; any other id is looked up in the directory (built at
+ * most every PUBLIC_ANSWER_TTL_MS: two reads), so one that isn't listed costs no query and never enters the per-id
+ * cache — only listed people's answers are kept there.
+ */
+export function publicPersonProgressResponse(request: Request, deps: PublicPersonDeps): Promise<Response> {
+  const options = { now: deps.now, teamTimezone: deps.teamTimezone, id: deps.id };
+  const build = async (): Promise<string> => {
+    if (!PUBLIC_PERSON_ID_RE.test(deps.id)) return NOT_FOUND_BODY;
+    const directory = await cachedPublicValue(deps.directory, deps.now, () => getPublicPeopleDirectory(deps.db));
+    // One code path for every "not listed" reason, so the 404s can't be told apart.
+    if (!directory?.byId.has(deps.id)) return NOT_FOUND_BODY;
+    return cachedPublicAnswerByKey(deps.cache, deps.id, deps.now, () =>
+      getPublicPersonProgressFor(deps.db, directory, options).then((answer) => JSON.stringify(answer)),
+    );
+  };
+  return publicJsonResponse(request, {
+    extraOrigins: deps.extraOrigins,
+    now: deps.now,
+    // Kept per id here (publicJsonResponse's own cache holds one answer per route).
+    build,
+    unavailableMessage: PUBLIC_PROGRESS_UNAVAILABLE,
+    notFoundMessage: PUBLIC_PERSON_NOT_FOUND,
+    logTag: "public-progress-person",
   });
 }
 
@@ -258,6 +402,8 @@ export interface PublicFileOptions<Row extends StoredFileRow> {
   logTag: string;
   /** For tests; defaults to the R2_* settings. */
   store?: ObjectStore | null;
+  /** More headers for the file's answer (members' photos: PUBLIC_NO_INDEX_HEADERS). */
+  extraHeaders?: Record<string, string>;
 }
 
 /** A plain-text answer without a body for HEAD (and the GET body's stream let go). */
@@ -312,6 +458,7 @@ export async function publicFileResponse<Row extends StoredFileRow>(request: Nex
         publicFileHeaders({ contentType: served.contentType, filename: options.filename(file), inline: options.inline, immutable: options.immutable }),
       ),
       "Content-Length": String(served.byteLength),
+      ...options.extraHeaders,
     }),
   });
   if (response.status !== 200) {
@@ -389,5 +536,47 @@ export function publicWorkshopFileResponse(request: NextRequest, deps: { db: Db;
     notFoundMessage: PUBLIC_WORKSHOP_NOT_FOUND,
     logTag: "public-workshop-file",
     store: deps.store,
+  });
+}
+
+// ── Members' photos (the Our Team page) ──────────────────────────────────────
+
+export const PUBLIC_TEAM_PHOTOS_UNAVAILABLE = "The team's photos aren't available right now. Try again in a minute.";
+export const PUBLIC_TEAM_PHOTO_NOT_FOUND = "That photo isn't on the team website.";
+
+/**
+ * GET /api/public/team-photos: the members' photos for the Our Team page, each under a key made from the person's
+ * name (never the name — src/server/queries/public-team-photos.ts), or `{ enabled: false }` while the team doesn't show
+ * photos. Same CORS and caching as the other public JSON, and not for search engines (PUBLIC_NO_INDEX_HEADERS).
+ */
+export function publicTeamPhotosResponse(request: Request, deps: PublicProgressDeps): Promise<Response> {
+  return publicJsonResponse(request, {
+    extraOrigins: deps.extraOrigins,
+    now: deps.now,
+    cache: deps.cache,
+    build: () => getPublicTeamPhotos(deps.db, { now: deps.now }).then((answer) => JSON.stringify(answer)),
+    unavailableMessage: PUBLIC_TEAM_PHOTOS_UNAVAILABLE,
+    logTag: "public-team-photos",
+    extraHeaders: PUBLIC_NO_INDEX_HEADERS,
+  });
+}
+
+/**
+ * GET / HEAD /api/public/team-photos/[id]: one member's photo, only while it's published (its owner ACTIVE with "Show
+ * my photo on the team website" on, not held off it, and the team showing photos) — else a 404 that isn't cached — as
+ * publicFileResponse serves public files: inline (PNG, JPG, or WebP, metadata taken out), immutable (a new photo gets a
+ * new id), under the neutral name "team-photo.<ext>", and not for search engines (PUBLIC_NO_INDEX_HEADERS).
+ */
+export function publicTeamPhotoResponse(request: NextRequest, deps: { db: Db; id: string; store?: ObjectStore | null }): Promise<Response> {
+  return publicFileResponse(request, {
+    id: deps.id,
+    load: (id) => getPublicTeamPhoto(deps.db, id),
+    filename: publicTeamPhotoFilename,
+    inline: true,
+    immutable: true,
+    notFoundMessage: PUBLIC_TEAM_PHOTO_NOT_FOUND,
+    logTag: "public-team-photo",
+    store: deps.store,
+    extraHeaders: PUBLIC_NO_INDEX_HEADERS,
   });
 }

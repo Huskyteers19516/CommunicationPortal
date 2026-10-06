@@ -23,6 +23,7 @@ export function HelpersCard({
   fundraiser: f,
   nowIso,
   timeZone,
+  photoIds,
 }: {
   fundraiser: Pick<
     FundraiserDetail,
@@ -41,6 +42,8 @@ export function HelpersCard({
   /** Request time and team timezone (server and browser render the same "2 h ago"). */
   nowIso: string;
   timeZone: string;
+  /** Helpers' portal photos (user id → photo id; photoIdsFor), else initials. */
+  photoIds?: Record<string, string>;
 }) {
   const [state, removeAction] = useActionState(removeVolunteerAction, initialActionState);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -82,7 +85,7 @@ export function HelpersCard({
         <ul className="divide-y divide-ink-100">
           {f.helpers.map((h) => (
             <li key={h.id} className="flex min-h-14 items-center gap-3 px-4 py-2.5 sm:px-5">
-              <Avatar name={h.name} />
+              <Avatar name={h.name} photoId={photoIds?.[h.id]} />
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium text-ink-900 wrap-anywhere">
                   {h.name}

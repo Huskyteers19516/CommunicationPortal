@@ -3,7 +3,7 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import type { BoardPerson, PublicStatus } from "@/server/queries/board";
 import { firstName } from "../checklist/format";
-import { Avatar } from "../ui/avatar";
+import { UserAvatar } from "../app/user-avatar";
 
 // Icon colors stay well above 3:1 on white cards and on the canvas (amber-600 / ink-400 were borderline).
 export const PUBLIC_STATUS_STYLES: Record<PublicStatus, { label: string; legend: string; icon: LucideIcon; className: string }> = {
@@ -73,7 +73,7 @@ export function PeopleChips({
               p.isMe ? "border-brand-300 bg-brand-50" : "border-ink-200 bg-white",
             )}
           >
-            <Avatar name={p.name} size="sm" />
+            <UserAvatar userId={p.id} name={p.name} size="sm" />
             <span aria-hidden className="truncate font-medium text-ink-800">
               {p.isMe ? "You" : firstName(p.name)}
             </span>

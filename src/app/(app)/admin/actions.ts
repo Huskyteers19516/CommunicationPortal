@@ -15,6 +15,7 @@ import { formDataToObject, runAction } from "@/server/action";
 import { getServiceContext } from "@/server/context";
 import { getTransport } from "@/server/email/transport";
 import { ConflictError } from "@/server/errors";
+import { scheduleFileCleanup } from "@/server/files/cleanup";
 import {
   cleanUpFileStorage,
   cleanUpMessage,
@@ -34,6 +35,7 @@ import {
   sendTestEmail,
   updateUser,
 } from "@/server/services/admin";
+import { allowWebsitePhoto, keepPhotoOffWebsite, removeUserPhoto } from "@/server/services/user-photos";
 
 export async function approveUserAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(
@@ -108,6 +110,7 @@ export async function deleteUserAction(_prev: ActionState, formData: FormData): 
     async () => {
       const ctx = await getServiceContext();
       await deleteUser(ctx, formDataToObject(formData));
+      scheduleFileCleanup(); // their photo, if they had one (deleted with the account)
       revalidatePath("/", "layout");
       redirect("/admin/users?deleted=1");
     },
@@ -206,4 +209,35 @@ export async function cleanUpFileStorageAction(_prev: ActionState, formData: For
     },
     { formData },
   );
+}
+
+/** Admin → People → a person: remove their photo (from the portal and the team website). */
+export async function removeUserPhotoAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await getServiceContext();
+    await removeUserPhoto(ctx, formDataToObject(formData));
+    scheduleFileCleanup();
+    revalidatePath("/", "layout");
+    return "Photo removed. Their initials show instead, here and on the team website. A new photo they upload stays off the website until you allow it.";
+  });
+}
+
+/** Admin → People → a person: keep their photo off the team website (whatever their own switch says). */
+export async function keepPhotoOffWebsiteAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await getServiceContext();
+    await keepPhotoOffWebsite(ctx, formDataToObject(formData));
+    revalidatePath("/", "layout");
+    return "Their photo is kept off the team website (it's gone from it within a few minutes). It still shows in the portal.";
+  });
+}
+
+/** Admin → People → a person: let their photo go on the team website again (their own switch decides). */
+export async function allowWebsitePhotoAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await getServiceContext();
+    await allowWebsitePhoto(ctx, formDataToObject(formData));
+    revalidatePath("/", "layout");
+    return "Allowed. Their photo goes on the team website within a few minutes while their own switch is on.";
+  });
 }

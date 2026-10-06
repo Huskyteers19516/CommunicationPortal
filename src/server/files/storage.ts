@@ -1,6 +1,6 @@
 // The team's file storage: every uploaded file (Resources files, files attached to sponsors, posters, team
-// notebook pictures, strategy files, sponsors' logos, and Workshop photos and design files) counts toward one cap,
-// wherever its bytes live:
+// notebook pictures, strategy files, sponsors' logos, Workshop photos and design files, and members' own photos)
+// counts toward one cap, wherever its bytes live:
 // - in Postgres (the default): LIMITS.resourceStorageMaxBytes (300 MB), because Neon's free plan gives the whole
 //   database 0.5 GB;
 // - in Cloudflare R2 (when the R2_* settings are set, see ./object-store.ts): OBJECT_STORAGE_CAP_BYTES (8 GB, well under
@@ -49,6 +49,8 @@ export interface FileStorageUsage {
   logos: number;
   /** Bytes of Workshop photos and design files (shown on the team website once approved). */
   workshop: number;
+  /** Bytes of members' own photos (Settings → My photo: one each). */
+  photos: number;
   /** All of them together. */
   used: number;
   /** The cap (fileStorageCapBytes: 300 MB in Postgres, 8 GB with Cloudflare R2). */
@@ -78,6 +80,7 @@ export async function fileStorageUsage(db: Tx, objectStorage: boolean = objectSt
   const logos = await db.sponsorshipLogo.aggregate({ _sum: { size: true } });
   const workshopPhotos = await db.workshopPhoto.aggregate({ _sum: { size: true } });
   const workshopFiles = await db.workshopFile.aggregate({ _sum: { size: true } });
+  const photos = await db.userPhoto.aggregate({ _sum: { size: true } });
   const r = resources._sum.size ?? 0;
   const s = sponsors._sum.size ?? 0;
   const p = posters._sum.size ?? 0;
@@ -85,6 +88,7 @@ export async function fileStorageUsage(db: Tx, objectStorage: boolean = objectSt
   const g = strategy._sum.size ?? 0;
   const l = logos._sum.size ?? 0;
   const w = (workshopPhotos._sum.size ?? 0) + (workshopFiles._sum.size ?? 0);
+  const m = photos._sum.size ?? 0;
   return {
     resources: r,
     sponsors: s,
@@ -93,7 +97,8 @@ export async function fileStorageUsage(db: Tx, objectStorage: boolean = objectSt
     strategy: g,
     logos: l,
     workshop: w,
-    used: r + s + p + n + g + l + w,
+    photos: m,
+    used: r + s + p + n + g + l + w + m,
     max: fileStorageCapBytes(objectStorage),
   };
 }
@@ -116,6 +121,7 @@ export function storageFullSentence(usage: FileStorageUsage): string {
   if (usage.strategy > 0) parts.push(`${formatFileSize(usage.strategy)} of strategy files`);
   if (usage.logos > 0) parts.push(`${formatFileSize(usage.logos)} of sponsor logos`);
   if (usage.workshop > 0) parts.push(`${formatFileSize(usage.workshop)} of Workshop photos and designs`);
+  if (usage.photos > 0) parts.push(`${formatFileSize(usage.photos)} of members' photos`);
   const list = parts.length === 2 ? `${parts[0]} and ${parts[1]}` : `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
   return `The team's file storage is full: ${list}.`;
 }
@@ -170,6 +176,7 @@ const FILE_TABLES: Record<FileKind, string> = {
   logos: "SponsorshipLogo",
   "workshop-photos": "WorkshopPhoto",
   "workshop-files": "WorkshopFile",
+  photos: "UserPhoto",
 };
 
 /** A kind's table for raw SQL (a fixed identifier, never from input). */

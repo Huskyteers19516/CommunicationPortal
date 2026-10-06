@@ -20,6 +20,7 @@ import { formatDollars } from "@/lib/money";
 import { requireActiveUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { type FundraiserDetail, getFundraiser, getFundraiserLeadOptions } from "@/server/queries/fundraising";
+import { getPortalPhotoMap, photoIdsFor } from "@/server/queries/user-photos";
 import { deleteFundraiserAction, updateFundraiserAction } from "../actions";
 
 export const metadata: Metadata = { title: "Fundraiser" };
@@ -45,6 +46,7 @@ export default async function FundraiserPage({ params, searchParams }: PageProps
   if (!f) notFound();
 
   if (first(sp.edit) === "1" && f.canManage) return <EditFundraiser f={f} today={today} />;
+  const helperPhotoIds = photoIdsFor(await getPortalPhotoMap(), f.helpers.map((h) => h.id));
 
   const flash = first(sp.added) === "1" ? "Added. The whole team can see it now." : first(sp.saved) === "1" ? "Changes saved." : null;
   const dates = fundraiserDatesLabel(f, today);
@@ -139,7 +141,12 @@ export default async function FundraiserPage({ params, searchParams }: PageProps
 
         <MoneyCard f={f} />
 
-        <HelpersCard fundraiser={f} nowIso={now.toISOString()} timeZone={timeZone} />
+        <HelpersCard
+          fundraiser={f}
+          nowIso={now.toISOString()}
+          timeZone={timeZone}
+          photoIds={helperPhotoIds}
+        />
       </div>
     </div>
   );

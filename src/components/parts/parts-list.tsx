@@ -21,6 +21,7 @@ export function PartsList({
   nowIso,
   timeZone,
   queueLength,
+  photoIds,
   empty,
 }: {
   parts: PartItem[];
@@ -29,6 +30,8 @@ export function PartsList({
   nowIso: string;
   timeZone: string;
   queueLength: number;
+  /** Makers' portal photos (user id → photo id; photoIdsFor), else initials. */
+  photoIds?: Record<string, string>;
   /** Shown instead of the list when there are no parts (the status line stays, so the last change is still announced). */
   empty: ReactNode;
 }) {
@@ -71,6 +74,7 @@ export function PartsList({
               nowIso={nowIso}
               timeZone={timeZone}
               queueLength={queueLength}
+              photoIds={photoIds}
               onResult={(p, result) => {
                 pending.current = { id: p.id, index, ...result };
                 if (result.ok) setStatus({ text: result.message, ok: true });

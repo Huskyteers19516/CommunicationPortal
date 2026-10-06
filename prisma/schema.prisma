@@ -111,6 +111,10 @@ model User {
   announcementsSeenAt    DateTime?
   /// Leave me off the public team progress page (Huskyteers19516.github.io). Still counted in team/subteam totals.
   hideFromPublicProgress Boolean   @default(false)
+  /// Show my photo on my name around the portal (others see initials when off).
+  showPhotoInPortal      Boolean   @default(true)
+  /// Put my photo on the team website (Our Team page), matched by name.
+  showPhotoOnWebsite     Boolean   @default(true)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
@@ -165,6 +169,7 @@ model User {
   plannerPathsEdited     PlannerPath[]         @relation("PlannerPathEditor")
   tasksCompleted         Task[]                @relation("TaskCompleter")
   sponsorLogosUploaded   SponsorshipLogo[]     @relation("SponsorshipLogoUploader")
+  photo                  UserPhoto?            @relation("UserPhotoOwner")
   workshopCreated        WorkshopProject[]     @relation("WorkshopProjectCreator")
   workshopReviewed       WorkshopProject[]     @relation("WorkshopProjectReviewer")
   workshopCredits        WorkshopCredit[]
@@ -1282,4 +1287,23 @@ model WorkshopFile {
 
   @@index([projectId, createdAt])
   @@index([uploadedById])
+}
+
+/// A person's own profile photo (Settings → My photo): a square picture, shown on their name in the portal
+/// (showPhotoInPortal) and on the team website's Our Team page (showPhotoOnWebsite). Stored like other uploads
+/// (Postgres bytes or Cloudflare R2 via storageKey) and counted toward the same storage cap. A new upload is a new row.
+model UserPhoto {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation("UserPhotoOwner", fields: [userId], references: [id], onDelete: Cascade)
+  filename    String
+  contentType String
+  size        Int
+  /// The image's bytes when stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data        Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there. Null = in Postgres.
+  storageKey  String?  @unique
+  width       Int?
+  height      Int?
+  createdAt   DateTime @default(now())
 }
