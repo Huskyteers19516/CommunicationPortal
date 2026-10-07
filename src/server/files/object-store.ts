@@ -382,11 +382,13 @@ export const FILE_KINDS = [
   "workshop-photos",
   "workshop-files",
   "photos",
+  "site-images",
+  "meeting-audio",
 ] as const;
 export type FileKind = (typeof FILE_KINDS)[number];
 
 /** Keys we make: "<kind>/<24 random url-safe characters>" (plus "connection-test/…" for the owner's test). */
-const KEY_RE = /^(resources|sponsors|posters|notebook|strategy|logos|workshop-photos|workshop-files|photos|connection-test)\/[A-Za-z0-9_-]{24}$/;
+const KEY_RE = /^(resources|sponsors|posters|notebook|strategy|logos|workshop-photos|workshop-files|photos|site-images|meeting-audio|connection-test)\/[A-Za-z0-9_-]{24}$/;
 
 export function isStorageKey(key: string): boolean {
   return KEY_RE.test(key);
@@ -423,6 +425,8 @@ const KEY_IN_USE = Prisma.sql`(
   OR EXISTS (SELECT 1 FROM "WorkshopPhoto" x WHERE x."storageKey" = f."storageKey" FOR KEY SHARE)
   OR EXISTS (SELECT 1 FROM "WorkshopFile" x WHERE x."storageKey" = f."storageKey" FOR KEY SHARE)
   OR EXISTS (SELECT 1 FROM "UserPhoto" x WHERE x."storageKey" = f."storageKey" FOR KEY SHARE)
+  OR EXISTS (SELECT 1 FROM "SiteImage" x WHERE x."storageKey" = f."storageKey" FOR KEY SHARE)
+  OR EXISTS (SELECT 1 FROM "MeetingAudioPart" x WHERE x."storageKey" = f."storageKey" FOR KEY SHARE)
 )`;
 
 /** How long an upload has to get its row saved before its object counts as left behind. */

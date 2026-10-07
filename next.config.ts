@@ -48,19 +48,27 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          // Camera: our own pages only (the in-app QR scanner on Attendance). Never embedded sites.
-          { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=()" },
+          // Camera and microphone: our own pages only (the QR scanner on Attendance; the meeting recorder on Meeting
+          // recaps). On every page, not just the recorder's: a page keeps the policy it was loaded with, so moving to the
+          // recorder from another page in the app would otherwise leave the microphone blocked. Never embedded sites.
+          { key: "Permissions-Policy", value: "camera=(self), microphone=(self), geolocation=()" },
         ],
       },
       {
         // The planner is shown in a frame on our own Strategy pages (and only there): these replace the DENY and the
-        // camera permission above (the last matching rule wins; the planner needs no camera).
+        // camera and microphone permissions above (the last matching rule wins; the planner needs neither).
         source: "/planner/:path*",
         headers: [
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "Content-Security-Policy", value: PLANNER_CSP },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
+      },
+      {
+        // The meeting recorder's speech-to-text files (public/asr/<version>/): a new version gets a new folder, so
+        // browsers may keep these for good.
+        source: "/asr/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
       },
       {
         // The planner's Apache-2.0 notices: shown as text, not downloaded (they have no extension to go by).

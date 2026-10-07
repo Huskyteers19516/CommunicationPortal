@@ -8,6 +8,7 @@ import { NextMeetCard } from "@/components/calendar/next-meet-card";
 import { ChecklistList, ChecklistSection, DueGroupedList } from "@/components/checklist/checklist-list";
 import { firstName, greetingFor, longDate } from "@/components/checklist/format";
 import { ReviewQueueLink, TodaySummary } from "@/components/checklist/today-summary";
+import { TodayMeetingRecaps } from "@/components/meetings/today-meeting-recaps";
 import { OrdersToOrderLink } from "@/components/orders/orders-to-order-link";
 import { PartsMakingLink } from "@/components/parts/parts-making-link";
 import { SponsorLogosLink } from "@/components/sponsors/sponsor-logos-link";
@@ -23,6 +24,7 @@ import { canAccessManage, ledSubteam } from "@/server/permissions";
 import { listUnreadAnnouncements } from "@/server/queries/announcements";
 import { getNextMeet } from "@/server/queries/calendar";
 import { getTodayView } from "@/server/queries/checklist";
+import { getRecentMeetingRecaps } from "@/server/queries/meeting-recaps";
 import { getNavCounts } from "@/server/queries/nav";
 import { countPartsImMaking } from "@/server/queries/parts";
 import { countSponsorsNeedingLogo } from "@/server/queries/sponsorships";
@@ -41,7 +43,7 @@ export default async function TodayPage() {
   const today = todayInTimezone(timeZone, now);
   const nowIso = now.toISOString();
 
-  const [view, navCounts, partsMaking, nextMeet, unreadAnnouncements, logosNeeded] = await Promise.all([
+  const [view, navCounts, partsMaking, nextMeet, unreadAnnouncements, logosNeeded, recentRecaps] = await Promise.all([
     getTodayView(actor, today),
     // Cached per request — the layout already loaded these for the nav badges.
     canAccessManage(actor) ? getNavCounts(actor) : null,
@@ -49,6 +51,7 @@ export default async function TodayPage() {
     getNextMeet(today, timeInTimezone(timeZone, now)),
     listUnreadAnnouncements(actor),
     countSponsorsNeedingLogo(actor),
+    getRecentMeetingRecaps(actor, now),
   ]);
   const reviewCount = navCounts?.reviewQueue ?? 0;
 
@@ -65,6 +68,7 @@ export default async function TodayPage() {
 
       <div className="max-w-3xl space-y-6">
         <TodayAnnouncements items={unreadAnnouncements.items} total={unreadAnnouncements.total} now={now} timeZone={timeZone} />
+        <TodayMeetingRecaps items={recentRecaps} today={today} timeZone={timeZone} />
         <NextMeetCard nextMeet={nextMeet} today={today} />
         <TodayAttendanceCard actor={actor} today={today} />
         <TodayNoShowsCard actor={actor} today={today} />

@@ -13,6 +13,12 @@ const PUBLIC_PREFIXES = ["/login", "/register", "/forgot-password", "/reset-pass
 // see src/server/public-api.ts. Anything else under /api/public/ still needs a session cookie here, so a new route
 // there isn't public until it's listed.
 
+/**
+ * Vercel's daily job that deletes meeting recordings past their 3 days (vercel.json). Vercel calls it without a
+ * session; the route checks CRON_SECRET (or rate-limits itself) — see src/app/api/cron/meeting-audio/route.ts.
+ */
+const MEETING_AUDIO_CRON_PATH = "/api/cron/meeting-audio";
+
 /** Request header telling pages where they are (read by requireActiveUser). Keep in sync with auth/session.ts. */
 const PATH_HEADER = "x-hk-path";
 
@@ -47,6 +53,8 @@ export function proxy(request: NextRequest) {
   // Public JSON and images for the team website (/api/public/progress, …): no session needed, and the routes never
   // read one. Compared as sent (never decoded), so an escaped "/" or ".." can't reach another route.
   if (isPublicApiPath(pathname)) return NextResponse.next();
+  // The daily cron job, exactly this path (compared as sent).
+  if (pathname === MEETING_AUDIO_CRON_PATH) return NextResponse.next();
   // The planner's JSON API answers for itself (a JSON 401, never the sign-in page's HTML).
   if (pathname === "/api" || pathname.startsWith("/api/")) {
     if (request.cookies.has(SESSION_COOKIE)) return NextResponse.next();
@@ -73,6 +81,7 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Skip static files, images, metadata files, and brand assets.
-  matcher: ["/((?!_next/static|_next/image|brand/|icon\\.svg|manifest\\.webmanifest|favicon\\.ico|robots\\.txt).*)"],
+  // Skip static files, images, metadata files, brand assets, and the meeting recorder's speech-to-text files
+  // (public/asr/: the worker and its library load without cookies, like brand/).
+  matcher: ["/((?!_next/static|_next/image|brand/|asr/|icon\\.svg|manifest\\.webmanifest|favicon\\.ico|robots\\.txt).*)"],
 };

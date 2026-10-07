@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AudioLines,
   BadgeCheck,
   BookMarked,
   CalendarCheck,
@@ -9,6 +10,7 @@ import {
   ClipboardList,
   Contact,
   FolderKanban,
+  GlobeCode,
   HandCoins,
   NotebookPen,
   Route,
@@ -54,6 +56,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   calendar: CalendarDays,
   people: Contact,
   announcements: Megaphone,
+  meetings: AudioLines,
   discussion: MessagesSquare,
   notebook: NotebookPen,
   strategy: Route,
@@ -67,6 +70,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   approvals: UserCheck,
   users: Users,
   emails: Mail,
+  website: GlobeCode,
   settings: Settings,
 };
 

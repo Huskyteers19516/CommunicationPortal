@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // The Pedro Pathing planner's static build (npm run planner:sync), not our code.
     "public/planner/**",
+    // The meeting recorder's static speech-to-text files (a vendored transformers.js build and plain-JS workers).
+    "public/asr/**",
   ]),
 ]);
 

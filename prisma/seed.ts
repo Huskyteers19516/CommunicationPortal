@@ -24,6 +24,7 @@ import {
 } from "../src/lib/attendance";
 import { ROLE_LABELS, STATUS_LABELS, SUBTEAM_LABELS } from "../src/lib/constants";
 import { addDays, dateOnlyToDb, type DateOnly, formatDateOnly, todayInTimezone } from "../src/lib/dates";
+import { MEETING_AUDIO_KEEP_MS } from "../src/lib/meeting-recaps";
 import { STANDARD_NOTEBOOKS } from "../src/lib/notebook";
 import { DEFAULT_PUBLIC_PROGRESS_SETTINGS, PUBLIC_PROGRESS_KEY, serializePublicProgressSettings } from "../src/lib/public-progress";
 import { hashPassword } from "../src/server/auth/password";
@@ -2160,11 +2161,195 @@ async function seedDiscussions(tx: Tx, ago: (hours: number) => Date, uid: (key: 
   }
 }
 
+// ── Meeting recaps ────────────────────────────────────────────────────────────
+
+/**
+ * The demo recording: `seconds` of a soft two-note beep as a WAV (8 kHz, 16-bit mono, about 16 KB a second) — small
+ * enough for one Postgres part, and a real file browsers play.
+ */
+function demoMeetingWav(seconds = 1, rate = 8000): Uint8Array<ArrayBuffer> {
+  const samples = Math.round(seconds * rate);
+  const wav = Buffer.alloc(44 + samples * 2);
+  wav.write("RIFF", 0, "ascii");
+  wav.writeUInt32LE(36 + samples * 2, 4);
+  wav.write("WAVEfmt ", 8, "ascii");
+  wav.writeUInt32LE(16, 16); // fmt chunk size
+  wav.writeUInt16LE(1, 20); // PCM
+  wav.writeUInt16LE(1, 22); // mono
+  wav.writeUInt32LE(rate, 24);
+  wav.writeUInt32LE(rate * 2, 28); // bytes per second
+  wav.writeUInt16LE(2, 32); // bytes per sample
+  wav.writeUInt16LE(16, 34); // bits per sample
+  wav.write("data", 36, "ascii");
+  wav.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i++) {
+    const frequency = i < samples / 2 ? 440 : 660;
+    const fade = Math.min(1, i / 400, (samples - i) / 400);
+    wav.writeInt16LE(Math.round(Math.sin((2 * Math.PI * frequency * i) / rate) * 6000 * fade), 44 + i * 2);
+  }
+  return Uint8Array.from(wav);
+}
+
+interface SeedMeetingRecap {
+  /** Fixed, so e2e and the screenshot tour can open them. */
+  id: string;
+  title: string;
+  /** The meeting's day, this many days before today. */
+  daysAgo: number;
+  /** When the recap was saved. */
+  hoursAgo: number;
+  by: PersonKey;
+  /** Ids of categories from the 20261007090000_meeting_recaps migration. */
+  categories: string[];
+  keyPoints: string;
+  transcript: string;
+  durationSec: number;
+  /** "deleted": it had a recording, deleted after its 3 days. "playable": a short WAV kept until 3 days from now. */
+  recording?: "deleted" | "playable";
+}
+
+/**
+ * The usual meeting categories, exactly as the 20261007090000_meeting_recaps migration adds them (tests check the two
+ * agree). The seed puts back any that were deleted; a reset also undoes renames.
+ */
+export const DEFAULT_MEETING_CATEGORIES: readonly { id: string; name: string; nameKey: string }[] = [
+  { id: "meetingcat-whole-team", name: "Whole team", nameKey: "whole team" },
+  { id: "meetingcat-leadership", name: "Leadership", nameKey: "leadership" },
+  { id: "meetingcat-strategy", name: "Strategy", nameKey: "strategy" },
+  { id: "meetingcat-build", name: "Build", nameKey: "build" },
+  { id: "meetingcat-software", name: "Software", nameKey: "software" },
+  { id: "meetingcat-business", name: "Business", nameKey: "business" },
+  { id: "meetingcat-outreach", name: "Outreach", nameKey: "outreach" },
+  { id: "meetingcat-competition", name: "Competition", nameKey: "competition" },
+];
+
+/** A recent kickoff written up from the recorder, an older one whose recording is gone, and one that plays. */
+const MEETING_RECAPS: SeedMeetingRecap[] = [
+  {
+    id: "demo-recap-kickoff",
+    title: "Season kickoff: game strategy",
+    daysAgo: 1,
+    hoursAgo: 20,
+    by: "jordan",
+    categories: ["meetingcat-whole-team", "meetingcat-strategy"],
+    durationSec: 25 * 60 + 40,
+    keyPoints: [
+      "[1:12] Decision: we build a 4-bar intake this season, starting from Marcus's CAD.",
+      "[6:40] Goal: a 3-sample autonomous by the league meet, using Pedro Pathing.",
+      "[11:05] To do (Priya, by Friday): port last year's drive constants to the new robot.",
+      "[14:30] To do (Amara, by Oct 15): send the sponsorship letters to the three local shops.",
+      "[18:52] Decision: build meetings move to Tuesday and Thursday, 4 to 7 PM.",
+      "[22:10] The scrimmage is on Oct 31. Everyone who wants to drive should practice before then.",
+    ].join("\n"),
+    transcript: [
+      "[0:04] Okay, let's get started. Welcome back, everyone, and thanks for coming in on a Saturday.",
+      "[1:12] For the intake, the 4-bar won the vote. Marcus already has a CAD model we can start from.",
+      "[3:30] The slides are too slow to tune before the league meet, so we'll keep them for next year.",
+      "[6:40] Software wants a 3-sample autonomous by the league meet. Pedro Pathing makes the curves a lot easier.",
+      "[11:05] Priya, can you port last year's drive constants this week? Ideally by Friday.",
+      "[14:30] Amara will send the sponsorship letters to the three shops on Main Street by October 15.",
+      "[18:52] We're moving build meetings to Tuesday and Thursday, four to seven.",
+      "[22:10] Last thing: the scrimmage is on October 31. If you want to drive, sign up for practice.",
+    ].join("\n"),
+  },
+  {
+    id: "demo-recap-scrimmage-prep",
+    title: "Scrimmage prep",
+    daysAgo: 6,
+    hoursAgo: 24 * 6 - 2,
+    by: "marcus",
+    categories: ["meetingcat-build", "meetingcat-competition"],
+    durationSec: 18 * 60 + 5,
+    recording: "deleted",
+    keyPoints: [
+      "[0:45] The intake jams on the second sample: raise the top roller about 1/4 in.",
+      "[4:20] To do (Ethan, by Tuesday): print two spare intake brackets.",
+      "[9:15] Decision: we bring the old drivetrain as a backup.",
+      "[13:40] Pit checklist: batteries charged, spare motors, the driver station tablet.",
+    ].join("\n"),
+    transcript: [
+      "[0:45] The intake still jams on the second sample. Raising the top roller a quarter inch should fix it.",
+      "[4:20] Ethan, could you print two spare brackets before Tuesday?",
+      "[9:15] Let's bring the old drivetrain as a backup, just in case.",
+      "[13:40] And for the pit: batteries charged, spare motors, and the driver station tablet.",
+    ].join("\n"),
+  },
+  {
+    id: "demo-recap-drive-practice",
+    title: "Drive practice debrief",
+    daysAgo: 0,
+    hoursAgo: 1,
+    by: "kenji",
+    categories: ["meetingcat-competition"],
+    durationSec: 6 * 60 + 30,
+    recording: "playable",
+    keyPoints: [
+      "[0:20] Endgame climb works 4 times out of 5.",
+      "[2:10] To do (Zara): practice the driver handoff with Liam.",
+      "[4:45] The robot pulls left at full speed. Check the drive motor encoders.",
+    ].join("\n"),
+    transcript: [
+      "[0:20] The climb worked four times out of five today. That's a big improvement.",
+      "[2:10] Zara, please practice the handoff with Liam a few more times.",
+      "[4:45] It still pulls left at full speed. Let's check the encoders on the drive motors.",
+    ].join("\n"),
+  },
+];
+
+async function seedMeetingRecaps(tx: Tx, now: Date, today: DateOnly, ago: (hours: number) => Date, uid: (key: PersonKey) => string) {
+  // The usual categories, with any that were deleted put back (after a reset, all of them, as the migration made them).
+  // ON CONFLICT DO NOTHING: one renamed (without a reset) stays as it is, and a default whose name another category
+  // took is skipped rather than failing the seed.
+  await tx.meetingCategory.createMany({
+    data: DEFAULT_MEETING_CATEGORIES.map((c) => ({ ...c, createdAt: now, updatedAt: now })),
+    skipDuplicates: true,
+  });
+  // A category that still couldn't be put back is left off the demo recaps (like a missing league team).
+  const ids = MEETING_RECAPS.flatMap((r) => r.categories);
+  const existing = await tx.meetingCategory.findMany({ where: { id: { in: ids } }, select: { id: true } });
+  const known = new Set(existing.map((c) => c.id));
+  for (const r of MEETING_RECAPS) {
+    const createdAt = ago(r.hoursAgo);
+    const wav = r.recording === "playable" ? demoMeetingWav() : null;
+    let audio: Partial<Prisma.MeetingRecapUncheckedCreateInput> = {};
+    if (r.recording === "deleted") {
+      const expiresAt = new Date(createdAt.getTime() + MEETING_AUDIO_KEEP_MS);
+      // The 18-minute recording (about 3.2 MB at the recorder's 24 kbps: two parts), deleted the morning after its 3 days.
+      audio = { audioType: "audio/webm", audioParts: 2, audioBytes: 3_250_000, audioExpiresAt: expiresAt, audioDeletedAt: new Date(expiresAt.getTime() + 9 * HOUR) };
+    } else if (wav) {
+      audio = { audioType: "audio/wav", audioParts: 1, audioBytes: wav.byteLength, audioExpiresAt: new Date(now.getTime() + MEETING_AUDIO_KEEP_MS) };
+    }
+    await tx.meetingRecap.create({
+      data: {
+        id: r.id,
+        title: r.title,
+        meetingDate: dateOnlyToDb(addDays(today, -r.daysAgo)),
+        keyPoints: r.keyPoints,
+        transcript: r.transcript,
+        durationSec: r.durationSec,
+        createdById: uid(r.by),
+        createdAt,
+        updatedAt: createdAt,
+        ...audio,
+        categories: { create: r.categories.filter((id) => known.has(id)).map((categoryId) => ({ categoryId })) },
+        audio: wav
+          ? { create: { position: 0, filename: "recording-1.wav", contentType: "audio/wav", size: wav.byteLength, data: wav, createdAt } }
+          : undefined,
+      },
+      select: { id: true },
+    });
+  }
+}
+
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 /** Delete every app row, children first. */
 async function wipeAppData(tx: Tx): Promise<void> {
   await tx.announcement.deleteMany();
+  await tx.meetingRecap.deleteMany(); // recordings' parts and category marks cascade
+  // Every meeting category goes (no recap has one now); seedMeetingRecaps puts the usual ones back as the migration
+  // made them, so renamed or deleted ones are restored and ones people added are gone.
+  await tx.meetingCategory.deleteMany();
   // The season schedule comes from a migration (it has a sourceKey) and stays; events people added go.
   await tx.calendarEvent.deleteMany({ where: { sourceKey: null } });
   await tx.attendanceChange.deleteMany(); // the admins' change log (it outlives sessions and accounts otherwise)
@@ -2703,6 +2888,9 @@ export async function seed(db: Db, options: SeedOptions = {}): Promise<SeedResul
 
       // Announcements: a pinned welcome, one each for Build and Business, and an older one everyone has seen.
       await seedAnnouncements(tx, ago, uid);
+
+      // Meeting recaps: a recent kickoff, one whose recording was deleted after 3 days, and one that plays.
+      await seedMeetingRecaps(tx, now, today, ago, uid);
 
       return {
         users: keys.length,

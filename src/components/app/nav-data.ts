@@ -12,6 +12,7 @@ export type NavIcon =
   | "calendar"
   | "people"
   | "announcements"
+  | "meetings"
   | "discussion"
   | "notebook"
   | "strategy"
@@ -25,6 +26,7 @@ export type NavIcon =
   | "approvals"
   | "users"
   | "emails"
+  | "website"
   | "settings";
 
 export interface NavItem {

@@ -366,6 +366,11 @@ export const LIMITS = {
   discussionReplyMax: 5000,
   announcementTitleMax: 160,
   announcementBodyMax: 10000,
+  meetingTitleMax: 160,
+  /** A meeting recap's key points (one per line). */
+  meetingKeyPointsMax: 20_000,
+  /** A meeting recap's transcript: about 3 hours of talking, and still well under a Server Action's 5 MB. */
+  meetingTranscriptMax: 300_000,
   plannerPathNameMax: 80,
   plannerPathNotesMax: 2000,
   /** A saved planner path's .pp JSON, in bytes. Real paths are a few KB. */

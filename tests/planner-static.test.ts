@@ -44,9 +44,18 @@ describe("the planner's headers (next.config.ts)", () => {
     expect(csp["img-src"]).toEqual(["'self'", "data:", "blob:"]);
     expect(csp["worker-src"]).toEqual(["'self'", "blob:"]);
     expect(planner["content-security-policy"]).not.toMatch(/unsafe-eval|\*/);
-    // No camera for the planner (our own pages keep camera=(self) for the attendance scanner).
+    // No camera or microphone for the planner (our own pages keep camera=(self) for the attendance scanner and
+    // microphone=(self) for the meeting recorder).
     expect(planner["permissions-policy"]).toMatch(/camera=\(\)/);
+    expect(planner["permissions-policy"]).toMatch(/microphone=\(\)/);
     expect(rule("/(.*)")["permissions-policy"]).toMatch(/camera=\(self\)/);
+    expect(rule("/(.*)")["permissions-policy"]).toMatch(/microphone=\(self\)/);
+    expect(rule("/(.*)")["permissions-policy"]).toMatch(/geolocation=\(\)/);
+  });
+
+  it("let browsers keep the meeting recorder's speech-to-text files (public/asr/<version>/) for good", async () => {
+    const rule = await headerRules();
+    expect(rule("/asr/:path*")["cache-control"]).toBe("public, max-age=31536000, immutable");
   });
 
   it("show its LICENSE and NOTICE as text, not as a download", async () => {

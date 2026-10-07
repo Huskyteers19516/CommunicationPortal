@@ -5,7 +5,7 @@
 //   - the paths in PUBLIC_API_PATHS, and
 //   - one id segment (PUBLIC_API_ID_RE: letters, digits, "_" and "-", up to 64) right after a prefix in
 //     PUBLIC_API_FILE_PREFIXES (the id routes: public images and files — sponsor logos, Workshop photos and files,
-//     members' photos — and one person's progress) — never a deeper
+//     members' photos, Website Coding pictures — and one person's progress) — never a deeper
 //     path, a "%" escape, a dot, or an empty id.
 // Everything else under /api/public/ still gets the JSON 401 without a session cookie. tests/public-progress.test.ts
 // fails for a route under src/app/api/public that isn't listed (a static route must be in PUBLIC_API_PATHS, an [id]
@@ -40,6 +40,14 @@ export const PUBLIC_TEAM_PHOTOS_PATH = "/api/public/team-photos";
 /** GET /api/public/team-photos/<UserPhoto id>: one member's published photo (the [id] route below it). */
 export const PUBLIC_TEAM_PHOTOS_PREFIX = "/api/public/team-photos/";
 
+/**
+ * GET /api/public/site-content: the text, links, and pictures admins changed in Website Coding (Admin → Website
+ * Coding), for every page of the team website (src/app/api/public/site-content/route.ts).
+ */
+export const PUBLIC_SITE_CONTENT_PATH = "/api/public/site-content";
+/** GET /api/public/site-images/<SiteImage id>: a picture a Website Coding slot shows now (the [id] route). */
+export const PUBLIC_SITE_IMAGES_PREFIX = "/api/public/site-images/";
+
 /** Every static endpoint that answers without a session, by exact path. */
 export const PUBLIC_API_PATHS: readonly string[] = [
   PUBLIC_PROGRESS_PATH,
@@ -47,6 +55,7 @@ export const PUBLIC_API_PATHS: readonly string[] = [
   PUBLIC_EVENTS_PATH,
   PUBLIC_WORKSHOP_PATH,
   PUBLIC_TEAM_PHOTOS_PATH,
+  PUBLIC_SITE_CONTENT_PATH,
 ];
 
 /**
@@ -59,6 +68,7 @@ export const PUBLIC_API_FILE_PREFIXES: readonly string[] = [
   PUBLIC_WORKSHOP_FILES_PREFIX,
   PUBLIC_PROGRESS_PEOPLE_PREFIX,
   PUBLIC_TEAM_PHOTOS_PREFIX,
+  PUBLIC_SITE_IMAGES_PREFIX,
 ];
 
 /**

@@ -102,6 +102,11 @@ import { deleteSponsorship, deleteSponsorships } from "@/server/services/sponsor
 import { createStrategy, deleteStrategy, updateStrategy } from "@/server/services/strategy";
 import { getUserPhotoFile } from "@/server/queries/user-photos";
 import { removeUserPhoto, uploadUserPhoto } from "@/server/services/user-photos";
+import { getSiteImageFile } from "@/server/queries/site-content";
+import { uploadSiteImage } from "@/server/services/site-content";
+import { SITE_IMAGES_KEPT_PER_SLOT } from "@/lib/public-site-content";
+import { getMeetingAudioPartFile, meetingAudioHeaders } from "@/server/queries/meeting-recaps";
+import { addMeetingAudioPart, createMeetingRecap, deleteMeetingAudio } from "@/server/services/meeting-recaps";
 import { addWorkshopFile, addWorkshopPhoto, createWorkshopProject, deleteWorkshopProject, removeWorkshopFile } from "@/server/services/workshop";
 import { createTestDb, type TestDb } from "./helpers/db";
 import { contextFor, makeUser } from "./helpers/factories";
@@ -145,6 +150,8 @@ const enc = (s: string) => new TextEncoder().encode(s);
 const STL = enc("solid roller\nendsolid roller\n");
 const PNG = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
 const PDF = enc("%PDF-1.4\n% sponsor form\n");
+/** A recording's only part: WebM's magic bytes, then anything. */
+const WEBM = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, ...enc("opus frames of a team meeting")]);
 const JAVA = "package org.firstinspires.ftc.teamcode;\n\npublic class TeleOpMain {}\n";
 const PP = enc(
   JSON.stringify({
@@ -380,6 +387,51 @@ const KINDS: KindCase[] = [
     remove: (ctx, a) => removeUserPhoto({ ...ctx, actor: photoOwners.get(a.parentId)! }, {}),
     field: "file",
   },
+  {
+    kind: "site-images",
+    bytes: PNG,
+    // Website Coding: people with admin access.
+    uploader: () => fresh({ role: "MENTOR", subteam: null }),
+    async add(ctx) {
+      const key = `test.r2.picture-${++n}`;
+      const { id } = await uploadSiteImage(ctx, { key, alt: "", file: { name: "team.png", type: "image/png", bytes: PNG } });
+      return { fileId: id, routeId: id, parentId: key };
+    },
+    row: (id) => t.db.siteImage.findUniqueOrThrow({ where: { id }, select: fileCols }),
+    get: (a, id) => getSiteImageFile(a, id, t.db),
+    outsider: () => fresh(), // a member: not in Website Coding
+    options: { immutable: true },
+    // Pictures go when a spot has more than the few it keeps: upload that many newer ones in the same request mode.
+    async remove(ctx, a) {
+      for (let i = 0; i < SITE_IMAGES_KEPT_PER_SLOT; i++) {
+        await uploadSiteImage({ ...ctx, objectStore: null }, { key: a.parentId, alt: "", file: { name: "team.png", type: "image/png", bytes: PNG } });
+      }
+    },
+    field: "file",
+  },
+  {
+    kind: "meeting-audio",
+    bytes: WEBM,
+    // Meeting recaps: people with admin access record; everyone ACTIVE listens.
+    uploader: () => fresh({ role: "CAPTAIN", subteam: null }),
+    async add(ctx) {
+      // The real clock: a recording is only served for 3 days after it's saved (the route checks against now).
+      const now = new Date();
+      const { id: recapId } = await createMeetingRecap(
+        { ...ctx, now },
+        { title: `Meeting ${++n}`, meetingDate: now.toISOString().slice(0, 10), audioType: "audio/webm", audioBytes: WEBM.byteLength, audioParts: 1 },
+      );
+      await addMeetingAudioPart({ ...ctx, now }, { recapId, position: 0, file: { name: "blob", type: "audio/webm", bytes: WEBM } });
+      const part = await t.db.meetingAudioPart.findUniqueOrThrow({ where: { recapId_position: { recapId, position: 0 } }, select: { id: true } });
+      return { fileId: part.id, routeId: part.id, parentId: recapId };
+    },
+    row: (id) => t.db.meetingAudioPart.findUniqueOrThrow({ where: { id }, select: fileCols }),
+    get: (a, id) => getMeetingAudioPartFile(a, id, t.db),
+    outsider: () => fresh({ status: "PENDING" }), // everyone ACTIVE may listen; not a pending account
+    options: { headers: meetingAudioHeaders },
+    remove: (ctx, a) => deleteMeetingAudio(ctx, { recapId: a.parentId }),
+    field: "file",
+  },
 ];
 
 const request = (path: string) => new NextRequest(`http://localhost${path}`);
@@ -502,6 +554,8 @@ describe("the signed-in file routes (R2 from the settings, as on Vercel)", () =>
       "workshop-photos": (await import("@/app/(app)/workshop/photos/[id]/route")).GET,
       "workshop-files": (await import("@/app/(app)/workshop/files/[id]/route")).GET,
       photos: (await import("@/app/(app)/people/photos/[id]/route")).GET,
+      "site-images": (await import("@/app/(app)/admin/website/images/[id]/route")).GET,
+      "meeting-audio": (await import("@/app/(app)/meetings/audio/[id]/route")).GET,
     };
     const call = (k: KindCase, id: string, query = "") =>
       routes[k.kind](request(`/x/${id}${query}`), { params: Promise.resolve({ id }) } as never) as Promise<Response>;
@@ -1195,5 +1249,7 @@ function readerFor(k: KindCase): Actor {
   if (k.kind === "resources") return captain;
   // Workshop drafts: the people who can change them, and reviewers.
   if (k.kind === "workshop-photos" || k.kind === "workshop-files") return captain;
+  // Website Coding: people with admin access.
+  if (k.kind === "site-images") return captain;
   return member;
 }

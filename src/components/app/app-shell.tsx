@@ -22,6 +22,7 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
         { href: "/attendance", label: "Attendance", icon: "attendance" },
         { href: "/calendar", label: "Team calendar", icon: "calendar" },
         { href: "/announcements", label: "Announcements", icon: "announcements", count: counts.unreadAnnouncements },
+        { href: "/meetings", label: "Meeting recaps", icon: "meetings" },
         { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
         { href: "/discussion", label: "Discussion", icon: "discussion", count: counts.unreadDiscussions },
       ],
@@ -64,6 +65,7 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
       items: [
         { href: "/admin", label: "Approvals", icon: "approvals", count: counts.pendingApprovals, exact: true },
         { href: "/admin/users", label: "People", icon: "users" },
+        { href: "/admin/website", label: "Website Coding", icon: "website" },
         // Owners only (subjects can reveal other subteams' private details).
         ...(canViewEmailLog(actor) ? [{ href: "/admin/emails", label: "Email log", icon: "emails" } satisfies NavItem] : []),
       ],

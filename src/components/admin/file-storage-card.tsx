@@ -174,6 +174,36 @@ export function FileStorageCard({ overview }: { overview: FileStorageOverview })
       swatch: "bg-pink-500",
       note: "Each person's own photo (Settings → My photo; one each, about 50 KB). They replace or remove it there; people who manage their account can remove it in Admin → People.",
     },
+    {
+      key: "website",
+      label: "Team website pictures",
+      bytes: usage.website,
+      swatch: "bg-orange-500",
+      note: (
+        <>
+          Pictures put on the team website in{" "}
+          <Link href="/admin/website" className="text-brand-700 underline underline-offset-2 hover:text-brand-800">
+            Website Coding
+          </Link>
+          . Each spot keeps its last few pictures so a change can be undone; older ones are removed automatically.
+        </>
+      ),
+    },
+    {
+      key: "meetings",
+      label: "Meeting recordings",
+      bytes: usage.meetings,
+      swatch: "bg-cyan-500",
+      note: (
+        <>
+          Recordings on{" "}
+          <Link href="/meetings" className="text-brand-700 underline underline-offset-2 hover:text-brand-800">
+            Meeting recaps
+          </Link>
+          . Deleted automatically 3 days after each meeting; everyone with admin access can delete one sooner.
+        </>
+      ),
+    },
   ];
 
   return (

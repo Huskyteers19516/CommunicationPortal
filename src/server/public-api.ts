@@ -4,7 +4,8 @@ import "server-only";
 // route handlers are thin wrappers around the functions here, which tests call. See "Public API for the team
 // website" in docs/CONVENTIONS.md.
 //
-// JSON (publicJsonResponse — progress, one person's progress, sponsors, events, Workshop, members' photos):
+// JSON (publicJsonResponse — progress, one person's progress, sponsors, events, Workshop, members' photos, Website
+// Coding's content):
 // - GET / HEAD / OPTIONS only (Next.js answers other methods with 405).
 // - CORS: `Access-Control-Allow-Origin` names the request's origin when it's the team website
 //   (https://huskyteers19516.github.io) or one of PUBLIC_PROGRESS_EXTRA_ORIGINS, and the team website otherwise —
@@ -22,7 +23,8 @@ import "server-only";
 // - "Not here" (only endpoints that pass `notFoundMessage`): the build answers `null` → a JSON 404 `{ error }`,
 //   `no-store`, with the same CORS headers — the same answer whatever the reason.
 //
-// Files (publicFileResponse + publicFileHeaders — sponsor logos, Workshop photos and design files, members' photos):
+// Files (publicFileResponse + publicFileHeaders — sponsor logos, Workshop photos and design files, members' photos,
+// Website Coding pictures):
 // no CORS needed (an <img> can show a cross-origin picture), but `Cross-Origin-Resource-Policy: cross-origin` so the
 // team website may embed it; nosniff, a sandboxing CSP, shown inline only for pictures, under a neutral name (Workshop
 // design files: their cleaned uploaded name), publicly cacheable. A query string is redirected to the bare address
@@ -42,6 +44,7 @@ import {
   type PublicPeopleDirectory,
 } from "./queries/public-progress";
 import { getPublicSponsorLogo, getPublicSponsors } from "./queries/public-sponsors";
+import { getPublicSiteContent, getPublicSiteImage, publicSiteImageFilename } from "./queries/site-content";
 import { getPublicTeamPhoto, getPublicTeamPhotos, publicTeamPhotoFilename } from "./queries/public-team-photos";
 import { getPublicWorkshop, getPublicWorkshopFile, getPublicWorkshopPhoto, publicWorkshopPhotoFilename } from "./queries/public-workshop";
 import { contentDisposition } from "./resources/serve";
@@ -578,5 +581,44 @@ export function publicTeamPhotoResponse(request: NextRequest, deps: { db: Db; id
     logTag: "public-team-photo",
     store: deps.store,
     extraHeaders: PUBLIC_NO_INDEX_HEADERS,
+  });
+}
+
+// ── Website Coding (text, links, and pictures admins changed on the team website) ──
+
+export const PUBLIC_SITE_CONTENT_UNAVAILABLE = "The website's content isn't available right now. Try again in a minute.";
+export const PUBLIC_SITE_IMAGE_NOT_FOUND = "That picture isn't on the team website.";
+
+/**
+ * GET /api/public/site-content: every saved Website Coding value (src/server/queries/site-content.ts), with the same
+ * CORS and caching as the other public JSON — so a change shows on the website within about a minute.
+ */
+export function publicSiteContentResponse(request: Request, deps: PublicProgressDeps): Promise<Response> {
+  return publicJsonResponse(request, {
+    extraOrigins: deps.extraOrigins,
+    now: deps.now,
+    cache: deps.cache,
+    build: () => getPublicSiteContent(deps.db, { now: deps.now }).then((answer) => JSON.stringify(answer)),
+    unavailableMessage: PUBLIC_SITE_CONTENT_UNAVAILABLE,
+    logTag: "public-site-content",
+  });
+}
+
+/**
+ * GET / HEAD /api/public/site-images/[id]: a Website Coding picture, only while a slot shows it (getPublicSiteImage:
+ * the check in its WHERE) — else a 404 that isn't cached — as publicFileResponse serves public files: inline (PNG,
+ * JPG, or WebP, metadata taken out), immutable (a new picture gets a new id), under the neutral name
+ * "website-picture.<ext>".
+ */
+export function publicSiteImageResponse(request: NextRequest, deps: { db: Db; id: string; store?: ObjectStore | null }): Promise<Response> {
+  return publicFileResponse(request, {
+    id: deps.id,
+    load: (id) => getPublicSiteImage(deps.db, id),
+    filename: publicSiteImageFilename,
+    inline: true,
+    immutable: true,
+    notFoundMessage: PUBLIC_SITE_IMAGE_NOT_FOUND,
+    logTag: "public-site-image",
+    store: deps.store,
   });
 }

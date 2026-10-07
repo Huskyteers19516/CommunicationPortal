@@ -438,6 +438,25 @@ export function canManagePublicProgress(actor: ActorLike): boolean {
   return canAdminister(actor);
 }
 
+/**
+ * Website Coding (Admin → Website Coding): change the team website's text, links, and pictures, reset them, and undo
+ * changes. Everyone with admin access.
+ */
+export function canEditWebsite(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
+// ── Meeting recaps ────────────────────────────────────────────────────────────
+// Everyone ACTIVE reads every recap and listens to its recording while it's kept (3 days).
+
+/**
+ * Meeting recaps (/meetings): record, upload, write, edit, and delete recaps, delete a recording early, and keep the
+ * list of meeting categories. Everyone with admin access.
+ */
+export function canManageMeetingRecaps(actor: ActorLike): boolean {
+  return canAdminister(actor);
+}
+
 // ── Announcements ─────────────────────────────────────────────────────────────
 // Everyone ACTIVE reads every announcement; who it's "for" (whole team or one subteam) drives badges and Today.
 

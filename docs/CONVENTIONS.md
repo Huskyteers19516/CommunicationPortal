@@ -411,7 +411,8 @@ doesn't lose a path being drawn). **Full screen** (secondary button) only where 
 768px (not iPhones); it unfolds the frame first. **Open in a new tab** is a plain link and always works, even when the
 frame can't load (the hint ends with the same link). On `/strategy` a **Skip the planner** link (visible on focus) jumps
 to the list. `next.config.ts` sends `X-Frame-Options: DENY` for every page except `/planner/*`, which gets `SAMEORIGIN`,
-`Permissions-Policy: camera=(), …` (no camera; our pages keep `camera=(self)` for the attendance scanner) and a
+`Permissions-Policy: camera=(), microphone=(), …` (no camera or microphone; our pages keep `camera=(self)` for the
+attendance scanner and `microphone=(self)` for the meeting recorder) and a
 **Content-Security-Policy** (`PLANNER_CSP`: `default-src 'self'; script-src 'self'` — no inline scripts, no eval — `style-src
 'self' 'unsafe-inline'` (Svelte transitions, style attributes), `img-src 'self' data: blob:`, `connect-src 'self'
 https://fpa.pedropathing.com` (the path optimizer), `worker-src 'self' blob:` (GIF export), `object-src 'none'`,
@@ -515,7 +516,7 @@ planner's `?path=` check) is a 404 before the database is asked (a NUL byte used
 tab's download and edit pages.
 Rules: JSON only, `Cache-Control: no-store`, `nosniff`; ACTIVE people only — everyone else a JSON 401, never a redirect
 (the proxy answers `/api/*` without a session cookie with that 401 itself — except `/api/public/*`, see Public
-progress); every POST/PUT/DELETE needs
+progress, and the daily job's exact path `/api/cron/meeting-audio`, see Meeting recaps); every POST/PUT/DELETE needs
 `Content-Type: application/json` **and** `X-Planner: 1`, and when present `Origin` must be this site
 (`request.nextUrl.origin`, `APP_URL`, or the forwarded host) and `Sec-Fetch-Site` must be `same-origin` — otherwise 403
 before anything is read; bodies are read up to `PLANNER_API_BODY_MAX_BYTES` (300 KB, 413 past it, by `Content-Length`
@@ -940,6 +941,260 @@ of them**; who one is "for" only decides whose menu badge and Today card it show
 - Pages: `/announcements`, `/announcements/new` (`?for=<subteam>` preselects one the person can post for; others get a
   short explanation), `/announcements/[id]/edit` (404 unless `canEditAnnouncement`).
 
+## Meeting recaps (`src/server/services/meeting-recaps.ts`, `/meetings`)
+
+The owner's ask: the key points of every important meeting, each named and put in categories, for everyone to read;
+only people with admin access record and change them; the recording itself is kept **3 days**, then deleted
+automatically. A port of the VoiceCollector recorder: recording, transcription, and the key points' first draft all
+happen in the browser (see **Recorder (browser)**); the server stores text and, for 3 days, audio. Client-safe helpers:
+`src/lib/meeting-recaps.ts` (limits, audio types, the list's filters, links, labels) and `src/lib/meeting-recorder/*`.
+
+- **Who**: everyone with admin access (`canManageMeetingRecaps` = `canAdminister`; ACTIVE) records, uploads, writes up,
+  edits, and deletes recaps, deletes a recording early, and keeps the categories — checked in every service
+  (`MEETING_RECAP_FORBIDDEN`) and in the admin queries (`getMeetingRecapFormValues`, `getMeetingRecorderSetup` → null).
+  **Everyone ACTIVE** reads every recap and listens to its recording while it's kept. Pending and disabled accounts get
+  null / [] from every query and a 403 from the part route.
+- **Data** (migration `20261007090000_meeting_recaps`): `MeetingRecap` — `title` (`LIMITS.meetingTitleMax`, 160),
+  `meetingDate` (DATE, team timezone; from 5 years back to tomorrow — a saved date may stay when it's out of range
+  later), `keyPoints` (≤ 20,000, one point per line) and `transcript` (≤ 300,000, one line per segment), both plain text
+  whose lines may start with `[m:ss] ` / `[h:mm:ss] ` (the moment in the meeting; `parseKeyPointLines` /
+  `parseTranscriptLines` in `src/lib/meeting-recorder/transcript-format.ts`; CRLF → `\n`, NUL dropped), `durationSec`
+  (0–21,600), `createdBy`, `editedAt`/`editedBy`, and the recording: `audioType` (`MEETING_AUDIO_TYPES`: webm, mp4, ogg,
+  wav, mpeg), `audioParts`, `audioBytes`, `audioExpiresAt`, `audioDeletedAt`. `MeetingRecapCategory` (0–5 per recap),
+  `MeetingCategory` (one team-wide list, `nameKey` unique lower-cased, ≤ `MEETING_CATEGORIES_MAX` 30; the migration adds
+  8 with fixed ids `meetingcat-<slug>`), `MeetingAudioPart` (stored file kind `meeting-audio`; `position` 0-based,
+  unique per recap; the CHECK and the deletion trigger).
+- **Saving** (`createMeetingRecap` → `{ id, audioRefused, duplicate, textKept }`): the text first, then the recording,
+  so a failed upload never loses the text. The form declares the recording: `audioType` (normalised:
+  `audio/webm;codecs=opus` → `audio/webm`), `audioBytes` (≤ `MEETING_AUDIO_MAX_BYTES`, 100 MB), `audioParts` (=
+  `ceil(bytes / MEETING_AUDIO_PART_BYTES)`, 3 MiB parts). The whole size is checked against the storage cap first (no
+  lock) — after purging recordings already past their 3 days (they'd still count until the purge runs; one quick
+  `SELECT EXISTS` when none are due; best-effort: a failed purge — 5 s timeout — is only logged and they count this
+  time, so it never stops a save or a part): if it won't fit, the recap is saved **without** the recording and
+  `audioRefused` says why (it starts with `storageFullSentence`). `audioExpiresAt = ctx.now + MEETING_AUDIO_KEEP_MS`
+  (72 h). A category deleted meanwhile → `MEETING_CATEGORY_GONE` on `categoryIds`. 20 new recaps per person per hour
+  (`MEETING_RECAP_RATE_LIMIT`, counted after the checks). **Saving again is safe**: the recorder and the write-up form
+  send a `requestId` (`newMeetingRequestId`: `crypto.randomUUID()`, or a v4 UUID from `getRandomValues` on a page
+  that isn't a secure context; `parseMeetingRequestId` — anything else is ignored) that becomes the recap's id, so
+  the same save again — after a lost answer, from the copy after a reload, or twice at once (the unique violation) —
+  returns the first recap (`duplicate: true`), never counted toward the rate limit. Its text: while the recap is
+  still that first save (the same person's, `editedAt` null and `updatedAt` still its `createdAt`), the retry is that
+  save — its fields are checked as for a new one (a field error, nothing changed) and, when they differ, replace the
+  first try's in one transaction conditional on the `updatedAt` read (`editedAt`/`editedBy` stay null; the version
+  moves, so an open edit form hears of it; an edit landing first wins). Otherwise — edited since (or already changed
+  by an earlier retry), or another admin's save — it keeps its text, and `textKept: true` says the retry's differed
+  (fields that can't be saved count as different, never as a refusal); the forms then open the recap with
+  `?saved=first`. Any admin may finish someone else's save (a shared browser's recorder copy: they can edit and
+  delete it anyway). A retry keeping a recording the first save didn't get says `audioRefused` again
+  (`MEETING_AUDIO_SAVED_WITHOUT`, or the storage reason), and a retry without one drops a declared recording none of
+  which arrived (raw SQL; updatedAt stays). A recap deleted meanwhile is saved again. No schema change: it's just the
+  id. `createMeetingRecapAction` never redirects and never echoes the form (a transcript can be 300,000 characters);
+  it returns `recapId`, `audioRefused`, `duplicate`, and `textKept`, and drains the R2 objects of recordings it purged
+  (`scheduleFileCleanup()`).
+- **Editing** (`updateMeetingRecap` → `{ id, changed }`): `version` (updatedAt) checked before the fields
+  (`MEETING_RECAP_CHANGED`); the same fields minus the recording; categories replaced in the same transaction;
+  `editedAt`/`editedBy` only when the title, date, categories, key points, or transcript change (the length alone
+  doesn't); a save that changes nothing writes nothing. The action redirects to `/meetings/<id>?saved=1` (`?saved=0`
+  when unchanged); after a conflict it refreshes the page and echoes the values. The form (`MeetingRecapForm`) keeps
+  the version it loaded until the admin chooses: a newer one only shows a warning ("Someone else saved this recap
+  while you were editing") with **Save mine anyway** (saves over that version) and **Use their version** (after a
+  confirm); Save changes alone moves focus to that warning. A new recap's form sends a `requestId` (made on the first
+  Save, reused by later ones), like the recorder, so pressing Save again after a lost answer opens the recap it made
+  (with the form's text, or `?saved=first` when it kept its own). `deleteMeetingRecap` (optional `version`) →
+  `/meetings?removed=1` (also when it was already gone); the parts cascade and the action calls `scheduleFileCleanup()`.
+  Edits and deletes share 120 per person per hour.
+- **Uploading the recording** (`addMeetingAudioPart` → `{ complete, duplicate }`, one Server Action call per part:
+  `uploadMeetingAudioPartAction`, fields `recapId`, `position`, `file`): every part but the last is exactly 3 MiB, the
+  last what's left of the declared size; part 0 must sniff as the declared type (`sniffMeetingAudioType`: WebM
+  `1A 45 DF A3`, MP4 `ftyp`, `OggS`, `RIFF…WAVE`, `ID3` / an MPEG audio frame); a position that's already there is a
+  success (`duplicate`: a retry after a lost answer, nothing uploaded); past its 3 days or deleted → ConflictError. The
+  row is created under the storage lock (`assertFileStorageRoom` per part; `precheck` before R2) with the recap's row
+  locked (`FOR UPDATE`; expiry and duplicates re-checked: two uploads of one part at once make one row, and in R2 the
+  loser's object is due for deletion); recordings past their 3 days are purged first, as when saving. It **never
+  writes the recap's row** (an open edit form never goes stale). Complete = as many parts as declared and their sizes
+  add up; the action refreshes the pages only then (and drains purged recordings' R2 objects). 300 parts per person
+  per hour. `getMeetingAudioUploadState` lists the positions in, so the recorder can finish an interrupted upload from
+  its IndexedDB copy; `getMeetingAudioUploadStateAction` answers `{ ok: true, state }`, `{ ok: false, gone: true }`
+  only when the recap was deleted, or `{ ok: false, gone: false, message }` for anything else (signed out, no access,
+  the database) — the recorder never treats those as "deleted" (`MeetingAudioUploadStateResult`).
+- **The recording's state** (`meetingAudioState(recap, parts, now)` in every query; `MeetingAudioState`): `none`;
+  `deleted` (`audioDeletedAt` set or `audioExpiresAt <= now`; `early` when deleted before its 3 days were up);
+  `uploading` (`received` of `total`); `ready` (`partIds` in order, `audioType`, `audioBytes`, `expiresAt`).
+- **Listening**: `GET /meetings/audio/[id]` (`getMeetingAudioPartFile` → `sendStoredFile` with `meetingAudioHeaders`:
+  always an `application/octet-stream` download, `no-store`, nosniff, the sandbox CSP, same-origin) for any ACTIVE
+  person while `audioDeletedAt` is null and `audioExpiresAt > now` — otherwise a 404, even before the purge got to it.
+  Each response is ≤ 3 MiB (Vercel's limit; no Range support needed): the player fetches the parts in order, joins them
+  into a Blob, and plays that.
+- **3 days**: access ends exactly at `audioExpiresAt`, in every read. The bytes go with `purgeExpiredMeetingAudio(db,
+  now, { limit, timeoutMs })` — a system job (no actor; a 30 s transaction by default, 5 s before a storage check),
+  `FOR UPDATE SKIP LOCKED`, deletes the parts (the trigger queues their R2
+  objects) and sets `audioDeletedAt` with **raw SQL** (updatedAt stays); unfinished uploads go the same way; running it
+  again finds nothing. It runs (1) after the response on the meeting pages and in every meeting action
+  (`scheduleMeetingAudioPurge`, `src/server/meetings/purge.ts`: one cheap `SELECT EXISTS` when nothing is due, then the
+  purge and the R2 drain; never throws) and (2) once a day from **Vercel Cron** (`vercel.json`, `0 11 * * *` →
+  `GET /api/cron/meeting-audio`, `maxDuration` 60, then `drainFileDeletions` for up to 40 s). With `CRON_SECRET` set
+  (`env.cronSecret`) only `Authorization: Bearer <secret>` runs it (compared in constant time; else 401); without it,
+  anyone may, at most 12 times an hour (429) — harmless, since it only deletes what's past its 3 days. The proxy lets
+  exactly that path through without a session (compared as sent). (3) Right before a new recording (or part) is
+  checked against the storage cap, so space every read treats as freed is free. (4) Optionally an R2 lifecycle rule
+  on the `meeting-audio/` prefix (README). **Delete recording now** (`deleteMeetingAudio`): the parts go, `audioDeletedAt` is
+  set with raw SQL, and the action calls `scheduleFileCleanup()`; already gone → `MEETING_AUDIO_ALREADY_DELETED`.
+- **Categories** (`src/server/services/meeting-categories.ts`): `createMeetingCategory` (→ `{ id, name }`; the recap
+  form's inline "New category" selects it via `createMeetingCategoryAction`'s `categoryId`), `renameMeetingCategory`
+  (capitals-only renames are fine), `deleteMeetingCategory` (its recaps stay; returns how many had it). Names via
+  `categoryNameSchema` / `categoryNameKey` (tidied, unique ignoring case: "There's already a category called “X”."), at
+  most 30 (`MEETING_CATEGORIES_FULL`), one advisory lock (`hk-meeting-categories`), 60 changes per person per hour.
+  Always shown alphabetically.
+- **The list** (`listMeetingRecaps`): newest meeting first, then newest saved; `?category=<id>` and `?q=` (title, key
+  points, transcript; `cleanSearchText` + `escapeLike`, any case) via `parseMeetingRecapFilters` / `meetingRecapsHref`;
+  20 a page. Cards: categories, the first 3 key points (without their times), how many, the length
+  (`formatMeetingDuration`), who saved it, the recording's state. **Today**: `getRecentMeetingRecaps` (saved in the
+  last 72 hours, up to 3). No nav badge and no emails (v1). `getMeetingRecorderSetup`: the categories, everyone
+  ACTIVE's first names (to-do owners in the drafted key points), and the team's today.
+- **Pages** (`src/app/(app)/meetings/`, components in `src/components/meetings/`; labels and "which transcript line is
+  this moment" in `src/lib/meeting-recap-view.ts`): `/meetings` — search (`?q=`), category chips (`KeepChipInView`),
+  the count line, cards ("Recording until Fri 3:40 PM" while it's kept; "Recorded by" / "Written up by" — from the
+  recorder means a length or a recording), `?removed=1`; admins also get **Record a meeting** (`RecorderLink`: a plain
+  `<a>`, so the recorder, outside the app's frame, loads afresh), **Write one up**, and **Categories**. `/meetings/[id]`
+  — the recording per its state (ready: `MeetingAudioPlayer`, which loads the parts on "Listen (12 MB)", joins them,
+  finds a WebM's length with `fixDuration`, and plays at 0.75×–2×; admins also Download recording and **Delete recording
+  now**; uploading: how many parts are in and, for admins, where to finish; deleted: after 3 days or early), the key
+  points (`MeetingKeyPoints`: the recorder's labels in bold; a time shows that transcript line and, once the recording
+  is loaded, plays from it), the transcript (`MeetingTranscript`: folded after 12 lines; once loaded, every timed line
+  plays from its moment and the one playing is highlighted with `aria-current="time"`; the page follows along while
+  the reader does), exports for everyone (`MeetingRecapExports`: Copy key points, Download .md, Download transcript
+  .txt), admins Edit / Delete; `?saved=new` (a new recap — the write-up and the recorder), `?saved=first` (a warning:
+  an earlier try had saved it and it kept its text — "use Edit to add them"), `?saved=1`, `?saved=0`. The
+  player, key points, and transcript share playback through `MeetingPlaybackProvider` (each works alone without it).
+  `/meetings/new` and `/meetings/[id]/edit` (others go to `/meetings` / the recap): `MeetingRecapForm` around
+  `MeetingRecapFields` — title, date, categories (`CategoryPicker`: chips, up to 5; **New category…** saves one right
+  away through `createMeetingCategoryAction` — a button, not a nested form — and picks it), key points, the transcript
+  (folded when long, still sent). The fields work controlled (`values` + `onChange(patch)`: the recorder's review step)
+  or uncontrolled (`initial`); a form holding them submits without React's form reset (`onSubmit` → `startTransition`),
+  which would put the category boxes back. Tools inside the form (`keyPointsActions` / `transcriptActions`) reach the
+  fields with `useMeetingRecapDraft()`. `/meetings/categories`: rename inline, delete (the confirm says how many recaps
+  lose it), add. Today: `TodayMeetingRecaps` after the announcements (nothing when there are none).
+- **Microphone**: `next.config.ts` allows `microphone=(self)` on every page (a page keeps the policy it was loaded with,
+  so a move to the recorder from another page would otherwise leave it blocked); the planner keeps `microphone=()`.
+  The recorder's static engine files are in `public/asr/<version>/` (cached for good: a new version gets a new
+  folder; skipped by the proxy's matcher and by eslint).
+- **Tests**: `tests/meeting-recaps.test.ts` (who — every admin-access role vs members, pending, and disabled accounts
+  for each service and query — validation, saving again with a request id (one recap, also at once; the retry's text
+  applied, checked, kept after an edit or for another admin, an edit or a delete in between; the recording's cases;
+  `newMeetingRequestId` without randomUUID), categories, parts (also two uploads of one part at once, in Postgres and
+  in a fake R2), upload state, the 72-hour boundary, the purge (also before a new recording meets the storage cap,
+  and that one failing), the
+  after-response purge, the cron route's auth and rate limit, the proxy and matcher, the part route, the list, Today,
+  the actions (the upload check's answers), the demo seed (a reset restores the usual categories)); the
+  `meeting-audio` kind in `tests/file-storage-r2.test.ts`; the headers in
+  `tests/planner-static.test.ts`; the pages' labels and line lookup in `tests/meeting-recap-view.test.ts`;
+  `e2e/meeting-recaps.spec.ts` (a member reads — Today, filters, search, a key point's time, exports — and is sent back
+  from the admin pages; the demo recording loads and plays; an admin writes one up with a new category, edits it,
+  deletes it, then renames and deletes the category).
+- **Demo**: the seed adds `demo-recap-kickoff` (recent, no recording), `demo-recap-scrimmage-prep` (its recording
+  deleted after 3 days), and `demo-recap-drive-practice` (a 1-second WAV in one Postgres part, kept until 3 days after
+  seeding, so the player works in e2e). It puts back the usual categories (`DEFAULT_MEETING_CATEGORIES`, the
+  migration's 8 — a test keeps the two in step): a reset deletes every category and recreates them as the migration
+  made them (renamed or deleted ones restored, added ones gone); without a reset, missing ones are added when their
+  name is free, and a demo recap simply goes without a category that couldn't be.
+
+### Recorder (browser)
+
+A port of VoiceCollector's recorder. **Privacy**: the audio and its transcription stay on the computer that recorded
+it — speech recognition and the key points' first draft run in the browser (no API keys, no speech service); the
+portal gets the saved text and, if the admin keeps it, the recording for its 3 days. Models and the wasm runtime are
+only downloaded (from Hugging Face and jsDelivr) and kept by the browser.
+
+- **Page**: `src/app/(meeting-recorder)/meetings/record/page.tsx` — its own route group (no AppShell, nothing to click
+  away by accident), `force-dynamic`, admins only (`getMeetingRecorderSetup` → null sends everyone else to
+  `/meetings`), entered with `RecorderLink` (a plain `<a>`, a clean page load). `MeetingRecorderApp`
+  (`src/components/meetings/recorder/meeting-recorder-app.tsx`) runs the steps: **setup** (`recorder-setup.tsx`: this
+  browser's unsaved copies — `recovery-list.tsx` — the microphone, the **Live transcript** switch — off by default on a
+  phone or tablet without WebGPU — the model line with **Download it now** and **Smaller download**, Chrome's
+  on-device summary with a one-time **Turn on**, "Let everyone know the meeting is being recorded.", **Start
+  recording**, **Upload a recording**, Write one up) → **recording** (`recording-panel.tsx`: timer, level, Pause /
+  Resume, **Mark key moment**, **Stop and review**, the live transcript with its first-text countdown and "no text
+  after 90 s — the audio is safe") → **processing** (`processing-panel.tsx`: the live transcript's last window; no
+  transcript, or only part of one → **Transcribe the recording now** or skip; drafting the key points) → **review**
+  (`review-panel.tsx`: listen back, **Keep the recording for 3 days**, `MeetingRecapFields` controlled, **Save
+  recap** / **Discard**) → upload → `/meetings/<id>?saved=new` (`?saved=first` when `textKept`; the review panel says
+  so too while it stays open). A picked file goes straight to transcription. Words
+  and pure decisions (default title "Meeting — Tue, Oct 7", progress lines, which files can be kept,
+  `draftKeyPoints` / `suggestKeyPoints`, what an upload's end means for the copy, the leave guard's words):
+  `src/lib/meeting-recorder/recorder-ui.ts`. While something isn't saved (recording, review, an upload running, or a
+  saved recap's recording that's only in this tab — memory-only storage, or refused by the portal),
+  `useLeaveGuard` asks before the tab closes and before any link leaves the page (`recorderLeaveMessage`). Leaving
+  stops an upload (an `AbortController` the unmount aborts; the part in flight still lands) and nothing navigates
+  afterwards (`openRecap` does nothing once unmounted); the copy finishes it later. **Accessibility**: status lines
+  announce steps and decisions ("Downloading the speech model…", "Transcribing…", "There's no transcript yet.") —
+  never a countdown's seconds or a download's percent, which are shown beside them (and in the progress bars); the
+  processing step's line stays mounted through every step and takes focus when the button just clicked is gone.
+- **Engine** (`src/components/meetings/recorder/engine/`, browser-only TypeScript, no React; each file's header documents
+  its API): `mic.ts` (the raw microphone — no echo cancellation or noise suppression, automatic gain — and a
+  24 kbps Opus `MediaRecorder` with a 5 s timeslice), `pcm-tap.ts` + `public/asr/v1/pcm-tap-worklet.js` (a 16 kHz tap
+  in an AudioWorklet), `asr-client.ts` ↔ `public/asr/v1/asr-worker.js` (the model in a module Web Worker — building it
+  can block a thread for minutes; messages `probe`, `load {model, device, ortVariant}` → `status` events → `load:ok`,
+  `transcribe {pcm (transferred), timestamps}` → raw `{text, chunks}`, `dispose`; every call has a timeout and a stuck
+  worker is killed), `live-session.ts` (`MeetingRecorder`: MediaRecorder + tap + windower + model + the IndexedDB
+  copy, pause left out of every timestamp, marks, wake lock, auto-stop at 3 h, a lost microphone stops it and keeps
+  what was recorded; `transcribeBlob` for whole files), `decode.ts` (to 16 kHz; 200 MB / 3 h), `fix-duration.ts`,
+  `wake-lock.ts`, `recorder-db.ts`, `chrome-summarizer.ts`, `upload.ts`. Text handling is pure and unit-tested in
+  `src/lib/meeting-recorder/*` (`stream-windower.ts`: 25 s windows with 3 s overlap, audio buffered from the first
+  second until the model is ready (up to 240 s), quiet windows skipped (`vad.ts`), a jump forward when inference falls
+  behind; `transcript-text.ts`: overlap joining, loop and repeat filters, Whisper's silence phrases dropped on quiet
+  audio).
+- **Models** (`ASR_MODELS`; pinned revisions, Hugging Face at run time, kept in Cache Storage `huskyteers-asr`):
+  WebGPU with `shader-f16` → `whisper-small.en` q4/q4 (~286 MB); otherwise, after a WebGPU failure (timed from the end
+  of the download), or with **Smaller download** → `whisper-base.en` q8/q8 on the CPU (~73 MB) in a fresh worker.
+  Never q8 on WebGPU (it hangs), never `language`/`task` for `.en` models, `env.allowLocalModels = false` (the portal
+  would answer `/models/…` with its sign-in page). onnxruntime-web's wasm from jsDelivr at the version transformers.js
+  4.3.0 pins (`.asyncify`; plain only for Safari < 26 without WebGPU, decided on the page). No COOP/COEP: single-thread
+  wasm is enough. `public/asr/v1/` is cached for good (`immutable`): change any file there → copy the folder to `v2`.
+- **This browser's copy** (`recorder-db.ts`, IndexedDB `huskyteers-recorder` v1: `recordings` docs, `chunks`
+  `<id>#<seq6>`): every 5 s chunk as it comes; the doc 3 s after a change, every 10 s, and at once on pause, mark, and
+  stop; the review form 1 s after typing; a picked file as chunk 0 (when it can be kept). Status `recording` →
+  `stopped` → `uploading` (with `recapId`) → deleted only once the portal has the whole recording (or the recap was
+  saved without it), or when the admin discards it — never because a check failed (`copyAfterUpload`): a deleted recap
+  (only `gone`) turns the copy back into an unsaved recording (no `recapId`, a new request id) to save as a new
+  recap; past its 3 days it stays until discarded. Each save's `requestId` is written into the copy before it's sent,
+  so saving again after a reload finds the same recap; a `textKept` answer is written in too (finishing the upload
+  then opens `?saved=first`), and a copy whose recap kept its own text isn't deleted while the recorder was left —
+  only once that can be said. Discard stops a due review autosave from writing the copy back.
+  Discarding an interrupted upload's copy (the list, or **Finish uploading**) first deletes what reached the portal
+  (`deleteMeetingAudioAction`, only while it's still uploading there — `serverAudioToDelete`), so the recap says "The
+  recording was deleted" instead of "still uploading" for 3 days; if that fails, nothing is deleted and the message
+  says so. Blocked IndexedDB (or a failed write) → memory only, with a warning to keep the tab open (and a failed
+  upload offers **Download the recording**, `uploadFailedHint`). Audio over 3 days old is
+  deleted when the page loads (the text stays). A tab holds a Web Lock (`huskyteers-recorder:<id>`) on the recording
+  it has open, so other tabs don't offer it; a `recording` nobody holds was cut off and is offered right away
+  ("Unsaved recording from … · 47:12 · 312 lines": **Review & save** / **Discard**; without Web Locks, after 15 s
+  without a heartbeat).
+- **Saving**: `createMeetingRecapAction` with the declared recording (or none), then `uploadRecording` — 3 MiB parts,
+  one `uploadMeetingAudioPartAction` each, in order, 3 retries with growing pauses on network errors, stopped by a
+  refusal ("Uploading the recording… 3 of 5 (9 MB of 14 MB)"). `audioRefused` → saved without it (download offered).
+  An upload that stopped: **Try the upload again** now, or **Finish uploading** later from the setup screen
+  (`getMeetingAudioUploadStateAction` → `resumeUpload`: the parts in are skipped; only a deleted recap is "orphaned" —
+  saved again as a new one; a check that couldn't be made is just a failure to try again; past its 3 days, nothing to
+  finish). A save answered `duplicate` resumes the upload the same way.
+- **Key points** (`draftKeyPoints`): the extractive ranker in `key-points.ts` (decisions, to-dos with the owner from
+  the roster of first names and the deadline, emphasis, marked moments, then the most content-rich sentences, spread
+  over the meeting) merged with Chrome's `Summarizer` (`type: "key-points"`) when it's ready — created in the Start
+  click (its download needs the click; the setup's **Turn on** does it once), fed the transcript after Stop, every call
+  with a timeout, garbage refused. One `[m:ss] ` line each, edited before saving.
+- **Edit page tools** (`src/components/meetings/recap-edit-tools.tsx`, in `MeetingRecapForm`'s
+  `keyPointsActions` / `transcriptActions`): **Suggest key points** (from the transcript box; empty key points are
+  filled, otherwise **Replace the key points** / **Add them below**) and, while the recording is kept, **Transcribe
+  the recording again** (the parts → `transcribeBlob` → **Replace the transcript**). Nothing changes until the admin
+  picks, and nothing is saved until **Save changes**.
+- **Tests**: `tests/meeting-recorder-*.test.ts` (formats, transcript text and VAD, the windower with a fake model, key
+  points on a realistic FTC meeting, the part upload, the worker client with a fake Worker, the recorder page's
+  helpers — status-line announcements, `resumeUpload`, `copyAfterUpload`, `serverAudioToDelete`,
+  `recorderLeaveMessage`); `e2e/meeting-recorder.spec.ts` (desktop, Chrome's fake microphone: live transcript off,
+  pause, a key moment, Stop → skip → review → save → `MeetingAudioPart` rows → the recap plays; a recording cut off by
+  leaving is offered again and discarded, with the autosave due; leaving mid-upload never navigates afterwards; a
+  discarded interrupted upload deletes what reached the portal; with `E2E_WHISPER=1`,
+  `e2e/fixtures/meeting-speech.wav` as the microphone and the real model's live transcript).
+
 ## Discussion (`src/server/services/discussion.ts`, `/discussion`)
 
 The team-wide forum (Questions stay private member → leader threads). Everyone ACTIVE reads every discussion, starts
@@ -1119,18 +1374,18 @@ be cached publicly. Never add anything personal to it.
 
 The team website (its own repo, static Astro on GitHub Pages; its `PUBLIC_PORTAL_URL` points here) reads public JSON
 and images from `src/app/api/public/**` in the browser, without signing in: `/progress` and `/progress/people/<id>`
-(above), `/sponsors`, `/events`, `/workshop` (see **Workshop (team website)**), and `/team-photos` (members' photos,
-below). Another feature adding a public endpoint follows exactly this.
+(above), `/sponsors`, `/events`, `/workshop` (see **Workshop (team website)**), `/team-photos` (members' photos,
+below), and `/site-content` with `/site-images/<id>` (see **Website Coding**). Another feature adding a public endpoint follows exactly this.
 
 - **Which paths are public** (`src/lib/public-api.ts`, client-safe): `PUBLIC_API_PATHS: readonly string[]` (exact
   paths: `PUBLIC_PROGRESS_PATH`, `PUBLIC_SPONSORS_PATH`, `PUBLIC_EVENTS_PATH`, `PUBLIC_WORKSHOP_PATH`,
-  `PUBLIC_TEAM_PHOTOS_PATH`; `src/lib/public-progress.ts` re-exports
+  `PUBLIC_TEAM_PHOTOS_PATH`, `PUBLIC_SITE_CONTENT_PATH`; `src/lib/public-progress.ts` re-exports
   `PUBLIC_API_PATHS` and `PUBLIC_PROGRESS_PATH` so older imports keep working), `PUBLIC_API_FILE_PREFIXES: readonly
   string[]` — the **id routes** (the name is older than the one JSON id route; it means "prefix + one id"), each
   ending with "/": `PUBLIC_SPONSOR_LOGOS_PREFIX` = `/api/public/sponsors/logos/`,
   `PUBLIC_WORKSHOP_PHOTOS_PREFIX` = `/api/public/workshop/photos/`, `PUBLIC_WORKSHOP_FILES_PREFIX` =
   `/api/public/workshop/files/`, `PUBLIC_PROGRESS_PEOPLE_PREFIX` = `/api/public/progress/people/` (JSON),
-  `PUBLIC_TEAM_PHOTOS_PREFIX` = `/api/public/team-photos/`,
+  `PUBLIC_TEAM_PHOTOS_PREFIX` = `/api/public/team-photos/`, `PUBLIC_SITE_IMAGES_PREFIX` = `/api/public/site-images/`,
   `PUBLIC_API_ID_RE = /^[A-Za-z0-9_-]{1,64}$/`, and `isPublicApiPath(pathname): boolean` — true for an exact
   `PUBLIC_API_PATHS` entry, or a prefix followed by exactly one segment matching `PUBLIC_API_ID_RE` (so no further "/",
   no "%" escapes such as `%2f` or `%2e`, no dots, nothing empty or longer than 64). The proxy (`src/proxy.ts`) uses it
@@ -1313,6 +1568,76 @@ public types: `src/lib/workshop.ts`.
   it: account ids, emails, who added or reviewed it, review notes, or anything not approved. `tests/workshop.test.ts`
   checks each.
 
+## Website Coding (`src/server/services/site-content.ts`, Admin → Website Coding, `/admin/website`)
+
+The owner's ask: future students change the public team website's text, links, and pictures from the portal, never
+touching TypeScript, and the site never needs a rebuild for it. The website (its own repo) marks each editable thing
+with a **slot key**; the portal stores values per key and serves them; the website's script swaps them in. The shared
+contract (keep both repos in step): the website's `src/lib/site-content.ts` and
+`src/components/site-content/SiteContent.astro`; the portal's client-safe side is `src/lib/public-site-content.ts`.
+
+- **Slots**: `data-edit-text="<key>"`, `data-edit-link="<key>"` (on an `<a>`: its href), `data-edit-image="<key>"`
+  (an `<img>`, or a placeholder box the website fills with an `<img>`), optional `data-edit-label`, and
+  `data-edit-multiline` for text that may span lines. Keys: `SITE_KEY_RE` (`^[a-z0-9]+(?:[.-][a-z0-9]+)*$`, ≤ 120),
+  by convention `<page>.<section>.<item>` (`home.hero.tagline`, `season.2025-2026.team-photo`, `footer.email`). What the
+  website's code says is the **default**; a saved value replaces it; **Reset to original** deletes it. To make something
+  new editable, add the attribute in the website's code — nothing changes in the portal.
+- **Data** (migration `20261006090000_site_content`): `SiteContent` (`key` @id, `kind` TEXT | LINK | IMAGE, `value` =
+  the text / the address / the `SiteImage` id, `updatedBy`), `SiteImage` (a stored file, kind `site-images`, with
+  `key`, `width`/`height`, `alt`; the CHECK and the deletion trigger), `SiteContentEdit` (`key`, `kind`, `before` →
+  `after`, null = the website's own; `editedBy`).
+- **Who**: everyone with admin access (`canEditWebsite` = `canAdminister`; ACTIVE), checked in every service and in
+  the queries (`getSiteContentAdminView`, `getSiteImageFile` → null for anyone else).
+- **Services**: `setSiteText` (plain text — never HTML, the website applies it with `textContent`; CRLF → `\n`,
+  control characters dropped, trimmed, 1–`SITE_TEXT_MAX` 5,000), `setSiteLink` (`parseSiteLink`, **exactly the
+  website's `safeLink`**: `https://` / `http://` (normalised, no user:password), `mailto:`, or a site path starting
+  with **one** `/`; never `javascript:`, `data:`, `//host`, `/\host`, spaces, control characters; ≤ 2,000),
+  `uploadSiteImage({ key, alt, file })`, `setSiteImageAlt` (the description of the picture shown — not an undoable
+  change), `resetSiteContent`, `revertSiteContentEdit({ editId })` (puts back the edit's `before` as a new change; a
+  picture deleted since → `ConflictError(SITE_IMAGE_GONE)`). Every change writes its `SiteContentEdit` **in the same
+  transaction**, all under one advisory lock (`hk-site-content`) so before/after are exact; saving the same value (or
+  resetting a spot that isn't changed) is a no-op (`{ changed: false }`, no edit row). At most
+  `SITE_CONTENT_MAX_ROWS` (3,000) saved spots (`SITE_CONTENT_FULL`). Rate limits: 300 changes and 60 uploads per person
+  per hour. A value of another kind than the one saved (the website changed what the spot is) counts as "original" in
+  the edit's `before`.
+- **Pictures** (`checkSiteImage`): PNG, JPG, or WebP by their bytes (HEIC: the iPhone hint), ≤ 4 MB, ≤
+  `SITE_IMAGE_MAX_SIDE` (8,000) pixels a side, a still picture, metadata stripped in **strict** mode (they're public),
+  a JPEG browsers can draw, stored as `picture.<ext>` with the size it's shown at. The editor makes big photos
+  web-sized in the browser first (`preparePhoto` from the Workshop: ≤ 2,000 px / 1.5 MB). Under the shared cap
+  (`FileStorageUsage.website`, "team website pictures"); no per-person allowance (admins only). Each upload is a **new
+  row** (a new public address); a spot keeps its `SITE_IMAGES_KEPT_PER_SLOT` (5) newest pictures for Undo and the
+  upload deletes older ones (never the one shown) — the action then calls `scheduleFileCleanup()`.
+- **Public** (see **Public API for the team website**): `GET /api/public/site-content` (`publicSiteContentResponse` →
+  `getPublicSiteContent`) → `{ enabled: true, updatedAt, texts: { key: text }, links: { key: href }, images: { key: {
+  src, alt, width?, height? } } }` — `src` always the relative `/api/public/site-images/<id>`; never who changed what or
+  the history. `GET /api/public/site-images/[id]` (`publicSiteImageResponse` → `getPublicSiteImage`: one raw query with
+  "a `SiteContent` IMAGE row **of the picture's own key** names it" in its WHERE): inline, immutable, named
+  `website-picture.<ext>`; pictures kept only for Undo, reset, or deleted are the uncached 404. Admins see every
+  picture at the signed-in `/admin/website/images/[id]`.
+- **The editor** (`src/components/admin/website-editor/*`, page `src/app/(app)/admin/website/page.tsx`, actions in
+  `actions.ts` next to it): the website in an `<iframe src="<WEBSITE_EDITOR_URL><path>?hk-edit=1">` inside a browser-like
+  frame (page menu `SITE_EDITOR_PAGES`, address, reload, computer/phone width), sandboxed
+  (`allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox`: no top navigation).
+  postMessage, both ways checked: the page accepts a message only when `event.origin` is the website's origin **and**
+  `event.source` is the frame's own window, and checks it field by field (`parseSiteMessage`); it posts only to the
+  website's origin. Website → portal: `{ source: "hk-site", type: "ready", path, title, slots: [{ key, kind, label,
+  defaultValue, multiline }] }` (on each page load, and again when spots appear later — handled idempotently: the list
+  is replaced and the preview re-sent) and `{ type: "select", key }`. Portal → website: `{ source: "hk-portal", type:
+  "preview", texts, links, images }` (the full current content — `buildPreviewMessage`, pictures as absolute addresses
+  on this portal, never blob:/data:) after every "ready" and whenever the saved values change (the actions'
+  `revalidatePath` refreshes the page's props), and `{ type: "highlight", key }` when a spot is picked in the list.
+  No "ready" within 8 s → a warning (the website isn't deployed with editing support, or `WEBSITE_EDITOR_URL` is
+  wrong) with a link to open the page. The side panel lists the page's spots (grouped by key without its last part,
+  searchable, "Edited"), edits the picked one (text / address / picture + description, the website's original, Reset),
+  and **Recent changes** (the last 100: who, when, key, before → after) has Undo on each.
+- **Settings**: `WEBSITE_EDITOR_URL` (optional; `env.websiteEditorUrl` / `parseWebsiteEditorUrl`: an http(s) base
+  without credentials, query, or #fragment, else `https://huskyteers19516.github.io`). The website accepts the editor
+  only from its `PUBLIC_PORTAL_URL` origin (plus `http://localhost:3000` in its dev server). Local dev:
+  `WEBSITE_EDITOR_URL=http://localhost:4321` and `PUBLIC_PROGRESS_EXTRA_ORIGINS=http://localhost:4321`.
+- **Tests**: `tests/site-content.test.ts` (permissions, keys and links, text/link/reset/Undo history, pictures and
+  pruning, the public JSON's shape, the picture route's 404s, CORS, the message checks); the `site-images` kind is in
+  `tests/file-storage-r2.test.ts`.
+
 ## Dates
 
 Due dates are calendar days in the team timezone (`TEAM_TIMEZONE`, default America/Los_Angeles), stored as `@db.Date`.
@@ -1343,6 +1668,8 @@ src/server/                     server-only code
   services/<feature>.ts         mutations (take a ServiceContext, validate, authorize, write, notify)
 src/app/(auth)/...              public pages (login, register, forgot/reset password, pending)
 src/app/(app)/...               signed-in pages (layout requires ACTIVE user and renders the AppShell)
+src/app/api/cron/*              scheduled jobs (Vercel Cron, vercel.json): each checks CRON_SECRET itself, and the
+                                proxy lets exactly its path through (src/proxy.ts)
 src/components/ui/*             design-system primitives — reuse, don't restyle ad hoc
 src/components/app/*            badges (role/subteam/status/due/priority), UserChip, nav
 src/components/<feature>/*      feature-specific components
@@ -1437,13 +1764,13 @@ below — ≤ `LIMITS.resourceFileMaxBytes` = 4 MB each and the team's storage c
   files and posters; any new kind of stored file must use `assertFileStorageRoom` so every file counts toward the same cap
   (and `withStoredFiles`, see **File storage**).
   "Full" messages start with `storageFullSentence(usage)` (how much is Resources files vs sponsor files, plus posters,
-  notebook pictures, strategy files, sponsor logos, Workshop photos and designs, and members' photos when there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
+  notebook pictures, strategy files, sponsor logos, Workshop photos and designs, members' photos, team website pictures, and meeting recordings when there are any) and say who can free each (`posterCleanupSentence(usage)` adds who can remove posters). Usage is shown on Admin → Approvals ("File storage") and on each sponsor's file card (`getFileStorageUsage`).
 
 ## File storage (`src/server/files/`)
 
 Every uploaded file (`ResourceFile`, `SponsorshipFile`, `PosterFile`, `NotebookImage`, `StrategyFile`, `SponsorshipLogo`,
-`WorkshopPhoto`, `WorkshopFile`, `UserPhoto` — kinds `resources`, `sponsors`, `posters`, `notebook`, `strategy`, `logos`,
-`workshop-photos`, `workshop-files`, `photos`) keeps its bytes in
+`WorkshopPhoto`, `WorkshopFile`, `UserPhoto`, `SiteImage`, `MeetingAudioPart` — kinds `resources`, `sponsors`, `posters`,
+`notebook`, `strategy`, `logos`, `workshop-photos`, `workshop-files`, `photos`, `site-images`, `meeting-audio`) keeps its bytes in
 **Postgres** (`data`) or in **Cloudflare R2** (`storageKey`, the object's key; `data` null) — a CHECK constraint makes every
 row have one. R2 is used only when all four of `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` are set
 (`env.r2Status` / `readR2Status`: some missing = `partial`, a bad account id/bucket/endpoint = `invalid`, both mean Postgres;
@@ -1494,9 +1821,10 @@ before (Postgres, 300 MB), so the code is safe to deploy before the owner adds t
   `reason: "unavailable"` when it can't be read — and the notebook's Word export via `loadNotebookImageBytes`) use
   `readStoredBytes`.
 - **Deleting**: database triggers (migration `20260928090000_object_storage`; `20261004080000_sponsor_logos` for logos;
-  `20261005070000_user_photos` for members' photos) put a
+  `20261005070000_user_photos` for members' photos; `20261006090000_site_content` for Website Coding pictures;
+  `20261007090000_meeting_recaps` for meeting recordings) put a
   row's `storageKey` into `FileDeletion` whenever the row is deleted — directly or by any cascade (a sponsor — its files and
-  logo — notebook, page, entry, poster, strategy, league team, an account's photo)
+  logo — notebook, page, entry, poster, strategy, league team, an account's photo, a meeting recap)
   — or its key changes. The app only drains that queue: actions that delete or replace files call `scheduleFileCleanup()`
   (`cleanup.ts`, `after()`: deletes from R2 after the response; never fails the action), the owner's storage card drains
   what's waiting when it's shown, and it has **Clean up**. `drainFileDeletions(db, { store, limit, budgetMs, includeStuck })`

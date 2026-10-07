@@ -173,6 +173,12 @@ model User {
   workshopCreated        WorkshopProject[]     @relation("WorkshopProjectCreator")
   workshopReviewed       WorkshopProject[]     @relation("WorkshopProjectReviewer")
   workshopCredits        WorkshopCredit[]
+  siteContentEdited      SiteContent[]         @relation("SiteContentEditor")
+  siteImagesUploaded     SiteImage[]           @relation("SiteImageUploader")
+  siteContentEdits       SiteContentEdit[]     @relation("SiteContentEditLogEditor")
+  meetingRecapsCreated   MeetingRecap[]        @relation("MeetingRecapCreator")
+  meetingRecapsEdited    MeetingRecap[]        @relation("MeetingRecapEditor")
+  meetingCategoriesAdded MeetingCategory[]     @relation("MeetingCategoryCreator")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -1306,4 +1312,151 @@ model UserPhoto {
   width       Int?
   height      Int?
   createdAt   DateTime @default(now())
+}
+
+/// What a "Website Coding" slot holds (Admin → Website Coding): plain text, a link, or an uploaded picture.
+enum SiteContentKind {
+  TEXT
+  LINK
+  IMAGE
+}
+
+/// A saved value for one editable slot on the team website (`data-edit-text|link|image="<key>"` there). A slot with
+/// no row shows the website's own (built-in) content; "Reset to original" deletes the row. Served to the website by
+/// GET /api/public/site-content.
+model SiteContent {
+  /// The slot's key, e.g. "home.hero.tagline" (SITE_KEY_RE: lower-case words joined by "." or "-", ≤ 120).
+  key         String          @id
+  kind        SiteContentKind
+  /// TEXT: the text (no HTML). LINK: the address. IMAGE: the SiteImage id shown.
+  value       String
+  updatedById String?
+  updatedBy   User?           @relation("SiteContentEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+  updatedAt   DateTime        @updatedAt
+}
+
+/// A picture uploaded for an image slot (metadata stripped). Stored like other uploads (Postgres bytes or Cloudflare
+/// R2 via storageKey) and counted toward the same storage cap. Each upload is a new row (a new public address); the
+/// few most recent per slot are kept so a change can be undone.
+model SiteImage {
+  id           String   @id @default(cuid())
+  /// The slot it was uploaded for.
+  key          String
+  filename     String
+  contentType  String
+  size         Int
+  /// The image's bytes when stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data         Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there. Null = in Postgres.
+  storageKey   String?  @unique
+  width        Int?
+  height       Int?
+  /// The picture's description for screen readers (alt text), ≤ 300 characters.
+  alt          String   @default("")
+  uploadedById String?
+  uploadedBy   User?    @relation("SiteImageUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@index([key, createdAt])
+}
+
+/// One change made in Website Coding (the "Recent changes" list and its Undo). `before` / `after` are SiteContent
+/// values (text, address, or SiteImage id); null = the website's own content (no saved value).
+model SiteContentEdit {
+  id         String          @id @default(cuid())
+  key        String
+  kind       SiteContentKind
+  before     String?
+  after      String?
+  editedById String?
+  editedBy   User?           @relation("SiteContentEditLogEditor", fields: [editedById], references: [id], onDelete: SetNull)
+  createdAt  DateTime        @default(now())
+
+  @@index([createdAt])
+  @@index([key, createdAt])
+}
+
+/// A kind of meeting on Meeting recaps (/meetings): one team-wide list, kept by people with admin access. Names are
+/// unique case-insensitively (nameKey). The usual ones come from the 20261007090000_meeting_recaps migration.
+model MeetingCategory {
+  id          String                 @id @default(cuid())
+  name        String
+  /// The name lower-cased (no duplicates, ignoring case).
+  nameKey     String                 @unique
+  createdById String?
+  createdBy   User?                  @relation("MeetingCategoryCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  recaps      MeetingRecapCategory[]
+}
+
+/// A team meeting's recap (/meetings): recorded (or written up) by someone with admin access; everyone ACTIVE reads
+/// it. Its recording is kept for 3 days (audioExpiresAt); the key points and transcript stay.
+model MeetingRecap {
+  id             String                 @id @default(cuid())
+  title          String
+  /// The meeting's day in the team timezone.
+  meetingDate    DateTime               @db.Date
+  /// Plain text, one point per line (optionally starting with "[m:ss] ", the moment in the meeting).
+  keyPoints      String                 @default("")
+  /// Plain text, one line per segment (optionally starting with "[m:ss] " or "[h:mm:ss] ").
+  transcript     String                 @default("")
+  /// How long the meeting (the recording) was, in seconds.
+  durationSec    Int?
+  createdById    String?
+  createdBy      User?                  @relation("MeetingRecapCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  /// Set when the title, date, categories, key points, or transcript change after it was saved.
+  editedAt       DateTime?
+  editedById     String?
+  editedBy       User?                  @relation("MeetingRecapEditor", fields: [editedById], references: [id], onDelete: SetNull)
+  /// The recording's type (MEETING_AUDIO_TYPES, e.g. audio/webm). Null = saved without a recording.
+  audioType      String?
+  /// How many parts (MeetingAudioPart) the browser said it would upload, and their total size.
+  audioParts     Int                    @default(0)
+  audioBytes     Int                    @default(0)
+  /// When the recording stops being available (saved + 3 days). From then on it counts as deleted.
+  audioExpiresAt DateTime?
+  /// When the recording was deleted (expired and purged, or "Delete recording now"). Written with raw SQL, so it
+  /// never moves updatedAt (an open edit form doesn't go stale).
+  audioDeletedAt DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  categories     MeetingRecapCategory[]
+  audio          MeetingAudioPart[]
+
+  @@index([meetingDate, createdAt])
+  @@index([audioExpiresAt])
+  @@index([createdAt])
+}
+
+/// A recap's categories (0–5 each).
+model MeetingRecapCategory {
+  recapId    String
+  recap      MeetingRecap    @relation(fields: [recapId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   MeetingCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([recapId, categoryId])
+  @@index([categoryId])
+}
+
+/// One piece (≤ 3 MiB) of a recap's recording, in order (stored file kind "meeting-audio"); the browser plays the
+/// recording by joining them. Stored like other uploads (Postgres bytes or Cloudflare R2 via storageKey) and counted
+/// toward the same storage cap. Deleted 3 days after the meeting was saved.
+model MeetingAudioPart {
+  id          String       @id @default(cuid())
+  recapId     String
+  recap       MeetingRecap @relation(fields: [recapId], references: [id], onDelete: Cascade)
+  /// 0-based.
+  position    Int
+  filename    String
+  contentType String
+  size        Int
+  /// The part's bytes when stored in Postgres. Null when it lives in Cloudflare R2 (see storageKey).
+  data        Bytes?
+  /// Object key in Cloudflare R2 when the file is stored there. Null = in Postgres.
+  storageKey  String?      @unique
+  createdAt   DateTime     @default(now())
+
+  @@unique([recapId, position])
 }

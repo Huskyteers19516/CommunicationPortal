@@ -1,0 +1,25 @@
+Huskyteers Portal - on-device speech recognition for Meeting recaps
+====================================================================
+
+This folder is served as static files (/asr/v1/...). The "v1" in the path changes whenever a file here changes,
+so browsers can cache everything for a year.
+
+transformers.min.js
+  @huggingface/transformers 4.3.0 - copied unmodified from the npm package
+  (dist/transformers.min.js, sha256 1475fd440e9932ab206682ee42cb18f6097403e9ee77ea62084c592d0f83597d).
+  Copyright 2023 The HuggingFace Inc. team. Licensed under the Apache License 2.0 - see LICENSE-transformers.txt.
+  Taken from the VoiceCollector project's vendor folder, where it was checked byte for byte against the npm release.
+
+asr-worker.js, pcm-tap-worklet.js
+  The portal's own code (the speech model's Web Worker and the microphone's 16 kHz AudioWorklet), ported from
+  VoiceCollector.
+
+Downloaded by the browser at run time (never stored in this repository):
+  - Whisper model weights from huggingface.co, at pinned revisions:
+      onnx-community/whisper-small.en @ 482fb8ba081b6e906f92efe103622316b2a0cc69 (about 286 MB, WebGPU)
+      onnx-community/whisper-base.en  @ 51eefc0af78b103839eda9e7e4f4186acc6517fe (about 73 MB, CPU)
+  - onnxruntime-web 1.31.0-dev.20260914-8d85527a0 WebAssembly files (MIT, Microsoft) from cdn.jsdelivr.net.
+  The browser keeps both in its Cache Storage ("huskyteers-asr"), so they download once per computer.
+
+Audio never leaves the browser for transcription: the model runs on the computer that records. Only the recording
+an admin chooses to keep is uploaded to the portal, and the portal deletes it after 3 days.

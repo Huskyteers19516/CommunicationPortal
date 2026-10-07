@@ -79,6 +79,23 @@ export function readR2Status(source: Record<string, string | undefined> = proces
   };
 }
 
+/** The live team website (the editor frame's default). */
+export const DEFAULT_WEBSITE_EDITOR_URL = "https://huskyteers19516.github.io";
+
+/** WEBSITE_EDITOR_URL as used: an http(s) base address without a trailing "/", else DEFAULT_WEBSITE_EDITOR_URL. */
+export function parseWebsiteEditorUrl(raw: string | undefined): string {
+  const value = raw?.trim();
+  if (!value) return DEFAULT_WEBSITE_EDITOR_URL;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return DEFAULT_WEBSITE_EDITOR_URL;
+    if (url.username || url.password || url.search || url.hash || !url.hostname) return DEFAULT_WEBSITE_EDITOR_URL;
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return DEFAULT_WEBSITE_EDITOR_URL;
+  }
+}
+
 function list(value: string | undefined): string[] {
   return (value ?? "")
     .split(",")
@@ -132,6 +149,21 @@ export const env = {
    */
   get publicProgressExtraOrigins(): string {
     return process.env.PUBLIC_PROGRESS_EXTRA_ORIGINS ?? "";
+  },
+  /**
+   * The team website shown in Admin → Website Coding's editor frame (WEBSITE_EDITOR_URL, optional): an absolute
+   * http(s) address without user name, password, query, or #fragment; anything else (or nothing) is the live site,
+   * https://huskyteers19516.github.io. Local dev: http://localhost:4321 (the Astro dev server).
+   */
+  get websiteEditorUrl(): string {
+    return parseWebsiteEditorUrl(process.env.WEBSITE_EDITOR_URL);
+  },
+  /**
+   * CRON_SECRET (optional): Vercel sends it as `Authorization: Bearer <secret>` to the daily job
+   * (/api/cron/meeting-audio, see vercel.json), which then answers only to it. Null when it isn't set.
+   */
+  get cronSecret(): string | null {
+    return process.env.CRON_SECRET?.trim() || null;
   },
   /**
    * Cloudflare R2 for uploaded files: on only when R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET
