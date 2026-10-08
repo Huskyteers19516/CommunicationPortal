@@ -390,6 +390,22 @@ people signed up. The edit form sends the amount raised it loaded (`loadedRaised
 the quick box is kept; changed while someone else changed it, the save is refused on that field and the page refreshes so
 saving again replaces it. Totals leave out cancelled fundraisers. No emails.
 
+## Sales (`src/server/services/sales.ts`, `/resources/sales`)
+
+A tab on Resources (Resources | Sales, `components/sales/sales-tabs.tsx`) for bake sales and food stands, with its own
+tabs: **Register** (tap menu buttons to build an order, custom lines like a donation, paid with Cash/Card/Venmo/Zelle/Other,
+cash received → change, optional name and note, optional fundraiser — defaults to the one Happening now), **Orders** (the
+queue: orders rung up with "Needs making" are OPEN until someone taps Served, oldest first, refreshes every 15 s; recent
+orders can go back to the queue or be voided), **Money book** (Today / 7 / 30 days / All time and a fundraiser filter:
+sales, other money in, money out, net, sales by payment, what sold, the entries, and a CSV export at
+`/resources/sales/export`), and **Menu** (`SaleItem`: name, category for grouping, price in cents, hidden = off the register).
+Everyone ACTIVE rings up orders and marks them served; the Business subteam and staff (`canManageSales` = the Fundraising
+people) change the menu, add/remove money-book entries (`LedgerEntry`, money in or out), and void any order; whoever rang an
+order up can void it too (`canVoidSale`). The server prices every menu line from the database (the register's prices are a
+preview), and `SaleLine` keeps the name and price sold at, so menu edits never change old orders. Voided orders stay on
+the record but leave every total. `Sale.soldOn` is the team-timezone day. Writes are rate-limited (`SALES_WRITES_PER_HOUR`).
+No emails.
+
 ## Strategy (`src/server/services/strategy.ts`, `/strategy`)
 
 The top of the page is the **Path planner**: the owner's Pedro Pathing visualizer (BIOBUZZ edition, a Svelte app,

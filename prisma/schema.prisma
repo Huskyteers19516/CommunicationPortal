@@ -179,6 +179,11 @@ model User {
   meetingRecapsCreated   MeetingRecap[]        @relation("MeetingRecapCreator")
   meetingRecapsEdited    MeetingRecap[]        @relation("MeetingRecapEditor")
   meetingCategoriesAdded MeetingCategory[]     @relation("MeetingCategoryCreator")
+  saleItemsAdded         SaleItem[]            @relation("SaleItemCreator")
+  salesMade              Sale[]                @relation("SaleSeller")
+  salesServed            Sale[]                @relation("SaleServer")
+  salesVoided            Sale[]                @relation("SaleVoider")
+  ledgerEntriesAdded     LedgerEntry[]         @relation("LedgerEntryCreator")
 
   @@index([status, role])
   @@index([subteam, status])
@@ -618,7 +623,9 @@ model Fundraiser {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
-  volunteers FundraiserVolunteer[]
+  volunteers    FundraiserVolunteer[]
+  sales         Sale[]
+  ledgerEntries LedgerEntry[]
 
   @@index([status, startsOn])
 }
@@ -1459,4 +1466,111 @@ model MeetingAudioPart {
   createdAt   DateTime     @default(now())
 
   @@unique([recapId, position])
+}
+
+// ── Sales (Resources → Sales): the register at bake sales and food stands, the order queue, and the money book ──
+
+enum SalePayment {
+  CASH
+  CARD
+  VENMO
+  ZELLE
+  OTHER
+}
+
+enum SaleStatus {
+  /// Paid, still being made (on the order queue).
+  OPEN
+  /// Handed to the customer.
+  SERVED
+  /// Rung up by mistake or refunded: kept for the record, left out of every total.
+  VOIDED
+}
+
+enum LedgerKind {
+  INCOME
+  EXPENSE
+}
+
+/// Something on the menu (a cookie, a drink, a T-shirt…). Hidden ones stay on old sales but not on the register.
+model SaleItem {
+  id          String     @id @default(cuid())
+  name        String
+  /// Groups buttons on the register ("Drinks", "Baked goods"). Empty = "Other".
+  category    String     @default("")
+  priceCents  Int
+  active      Boolean    @default(true)
+  createdById String?
+  createdBy   User?      @relation("SaleItemCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  lines       SaleLine[]
+
+  @@index([active, category, name])
+}
+
+/// One order rung up on the register. Lines keep the name and price they were sold at.
+model Sale {
+  id           String      @id @default(cuid())
+  /// The order number called out at the table (#12).
+  number       Int         @default(autoincrement())
+  customer     String      @default("")
+  note         String      @default("")
+  payment      SalePayment @default(CASH)
+  status       SaleStatus  @default(SERVED)
+  totalCents   Int
+  /// Team-timezone day it was sold, for the money book's periods.
+  soldOn       DateTime    @db.Date
+  fundraiserId String?
+  fundraiser   Fundraiser? @relation(fields: [fundraiserId], references: [id], onDelete: SetNull)
+  soldById     String?
+  soldBy       User?       @relation("SaleSeller", fields: [soldById], references: [id], onDelete: SetNull)
+  servedAt     DateTime?
+  servedById   String?
+  servedBy     User?       @relation("SaleServer", fields: [servedById], references: [id], onDelete: SetNull)
+  voidedAt     DateTime?
+  voidedById   String?
+  voidedBy     User?       @relation("SaleVoider", fields: [voidedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  lines        SaleLine[]
+
+  @@unique([number])
+  @@index([status, createdAt])
+  @@index([soldOn])
+  @@index([fundraiserId])
+}
+
+model SaleLine {
+  id         String    @id @default(cuid())
+  saleId     String
+  sale       Sale      @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  /// Null for a custom line, or after the item was removed from the menu.
+  itemId     String?
+  item       SaleItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  name       String
+  priceCents Int
+  quantity   Int
+
+  @@index([saleId])
+  @@index([itemId])
+}
+
+/// Money in or out that isn't a register sale: supplies bought, a cash donation, the table fee…
+model LedgerEntry {
+  id           String       @id @default(cuid())
+  kind         LedgerKind
+  description  String
+  amountCents  Int
+  payment      SalePayment?
+  occurredOn   DateTime     @db.Date
+  fundraiserId String?
+  fundraiser   Fundraiser?  @relation(fields: [fundraiserId], references: [id], onDelete: SetNull)
+  createdById  String?
+  createdBy    User?        @relation("LedgerEntryCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([occurredOn])
+  @@index([fundraiserId])
 }

@@ -329,6 +329,21 @@ export function canManageFundraisers(actor: ActorLike): boolean {
   return canUseSponsorships(actor);
 }
 
+// ── Sales (Resources → Sales: the register, the order queue, the money book) ────────
+
+/**
+ * Change the menu, add and remove money-book entries (supplies bought, cash donations…), and void anyone's order:
+ * the Business subteam and staff (same people as Fundraising). Everyone ACTIVE rings up orders and marks them served.
+ */
+export function canManageSales(actor: ActorLike): boolean {
+  return canManageFundraisers(actor);
+}
+
+/** Void an order (rung up by mistake, refunded): whoever rang it up, plus canManageSales. */
+export function canVoidSale(actor: ActorLike, sale: { soldById: string | null }): boolean {
+  return canManageSales(actor) || (sale.soldById !== null && sale.soldById === actor.id);
+}
+
 // ── Attendance ────────────────────────────────────────────────────────────────
 
 /**

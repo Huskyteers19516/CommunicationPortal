@@ -1,6 +1,7 @@
 import { BookMarked, Plus } from "lucide-react";
 import type { Metadata } from "next";
 import { ResourceCard } from "@/components/resources/resource-card";
+import { ResourcesTabs } from "@/components/sales/sales-tabs";
 import { ResourceReviewQueue } from "@/components/resources/resource-review-queue";
 import { MyResourceItem, PendingResourceItem } from "@/components/resources/submission-items";
 import { ButtonLink } from "@/components/ui/button";
@@ -29,6 +30,7 @@ export default async function ResourcesPage() {
 
   return (
     <>
+      <ResourcesTabs active="resources" />
       <PageHeader title="Resources" description="Team docs, code, tools, and links in one place." actions={addButton} />
       <div className="space-y-8">
         {/* Mounted for every reviewer (renders nothing when the queue is empty) so its confirmation survives the refresh. */}

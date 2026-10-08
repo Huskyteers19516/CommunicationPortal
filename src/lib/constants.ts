@@ -375,4 +375,13 @@ export const LIMITS = {
   plannerPathNotesMax: 2000,
   /** A saved planner path's .pp JSON, in bytes. Real paths are a few KB. */
   plannerPathDataMaxBytes: 256 * 1024,
+  saleItemNameMax: 80,
+  saleItemCategoryMax: 40,
+  saleCustomerMax: 80,
+  saleNoteMax: 300,
+  /** Different things on one order. */
+  saleLinesMax: 40,
+  /** How many of one thing on one order. */
+  saleQuantityMax: 999,
+  ledgerDescriptionMax: 200,
 } as const;

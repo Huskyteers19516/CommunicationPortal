@@ -23,6 +23,10 @@ import { SlotPanel } from "./slot-panel";
 /** How long to wait for the website to say it's ready before explaining what might be wrong. */
 const READY_TIMEOUT_MS = 8000;
 
+/** The widths the website is laid out at: a typical laptop (wide enough for its full top menu) and a phone. */
+const COMPUTER_WIDTH = 1440;
+const PHONE_WIDTH = 390;
+
 interface ShownPage {
   path: string;
   title: string;
@@ -54,6 +58,20 @@ export function WebsiteEditor({
   const readyRef = useRef(false);
   const entriesRef = useRef(entries);
   const panelRef = useRef<HTMLDivElement>(null);
+  /** The space the frame has on this screen, so the website can be laid out at its real width and shrunk to fit. */
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setBox((old) => (old && old.width === width && old.height === height ? old : { width, height }));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const send = useCallback(
     (message: object) => {
@@ -125,6 +143,10 @@ export function WebsiteEditor({
   const frameSrc = `${siteUrl}${framePath}?hk-edit=1`;
   const openUrl = `${siteUrl}${currentPath}`;
   const menuValue = SITE_EDITOR_PAGES.some((p) => p.path === currentPath) ? currentPath : "";
+  // The website always gets the real width (so it shows its computer or phone layout), then is scaled down to fit.
+  const layoutWidth = mobile ? PHONE_WIDTH : COMPUTER_WIDTH;
+  const scale = box && box.width > 0 ? Math.min(1, box.width / layoutWidth) : 1;
+  const frameHeight = box ? box.height / scale : undefined;
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
@@ -201,17 +223,30 @@ export function WebsiteEditor({
             </div>
           )}
           <div className="bg-ink-100 p-0 sm:p-3">
-            <div className={cn("mx-auto overflow-hidden bg-white shadow-sm transition-[width]", mobile ? "w-[390px] max-w-full sm:rounded-2xl sm:border-8 sm:border-ink-800" : "w-full")}>
-              <iframe
-                key={frameLoad}
-                ref={iframeRef}
-                src={frameSrc}
-                title="The team website, in edit mode"
-                className="block h-[70dvh] min-h-[28rem] w-full"
-                // Its own origin (needed for its scripts and its requests to this portal), no way to navigate this page.
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-              />
+            <div ref={viewportRef} className="relative h-[70dvh] min-h-[28rem] w-full">
+              <div
+                className={cn(
+                  "mx-auto h-full overflow-hidden bg-white shadow-sm",
+                  mobile && scale === 1 && "sm:rounded-2xl sm:outline-8 sm:outline-ink-800",
+                )}
+                style={{ width: layoutWidth * scale }}
+              >
+                <iframe
+                  key={frameLoad}
+                  ref={iframeRef}
+                  src={frameSrc}
+                  title="The team website, in edit mode"
+                  className="block origin-top-left border-0"
+                  style={{ width: layoutWidth, height: frameHeight, transform: scale === 1 ? undefined : `scale(${scale})` }}
+                  // Its own origin (needed for its scripts and its requests to this portal), no way to navigate this page.
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+                />
+              </div>
             </div>
+            <p className="mt-2 hidden text-center text-xs text-ink-500 sm:block">
+              {mobile ? "Phone" : "Computer"} layout · {layoutWidth}px wide
+              {scale < 1 && ` · shown at ${Math.round(scale * 100)}%`}
+            </p>
           </div>
         </Card>
         <p className="text-sm text-ink-500">
