@@ -1,14 +1,27 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { Actor } from "@/server/actor";
-import { canAccessManage, canAdminister, canUseSponsorships, canViewEmailLog } from "@/server/permissions";
+import {
+  canAccessManage,
+  canAdminister,
+  canManageCalendar,
+  canManageMeetingRecaps,
+  canManageResources,
+  canPostAnnouncement,
+  canUseSponsorships,
+  canViewEmailLog,
+} from "@/server/permissions";
 import type { NavCounts } from "@/server/queries/nav";
 import { HuskyMark, Logo } from "../brand/logo";
+import { CommandPalette, CommandPaletteButton } from "./command-palette";
 import { BottomTabs, MobileNav, SidebarNav, SignOutButton } from "./nav-client";
-import type { NavItem, NavSection } from "./nav-data";
+import type { NavAction, NavItem, NavSection } from "./nav-data";
 import { UserChipWithPhoto } from "./user-avatar";
 
-export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSection[]; tabs: NavItem[] } {
+export function buildNav(
+  actor: Actor,
+  counts: NavCounts,
+): { sections: NavSection[]; tabs: NavItem[]; actions: NavAction[] } {
   const staff = canAccessManage(actor);
   const admin = canAdminister(actor);
   const questionsCount = staff ? counts.openQuestions + counts.answeredForMe : counts.answeredForMe;
@@ -32,10 +45,28 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
       items: [
         { href: "/people", label: "Team members", icon: "people" },
         { href: "/notebook", label: "Team notebook", icon: "notebook" },
-        { href: "/strategy", label: "Strategy", icon: "strategy" },
+        {
+          href: "/strategy",
+          label: "Strategy",
+          icon: "strategy",
+          children: [
+            { href: "/strategy", label: "Our strategies" },
+            { href: "/strategy/teams", label: "Other teams" },
+            { href: "/strategy/paths", label: "Paths" },
+          ],
+        },
         { href: "/parts", label: "Parts queue", icon: "parts" },
         { href: "/orders", label: "Order list", icon: "orders" },
-        { href: "/resources", label: "Resources", icon: "resources", count: counts.pendingResources },
+        {
+          href: "/resources",
+          label: "Resources",
+          icon: "resources",
+          count: counts.pendingResources,
+          children: [
+            { href: "/resources", label: "All resources" },
+            { href: "/resources/sales", label: "Sales" },
+          ],
+        },
         { href: "/posters", label: "Posters", icon: "posters" },
         { href: "/workshop", label: "Workshop", icon: "workshop", count: counts.pendingWorkshop },
       ],
@@ -80,11 +111,28 @@ export function buildNav(actor: Actor, counts: NavCounts): { sections: NavSectio
     { href: "/questions", label: "Questions", icon: "questions", count: questionsCount },
     ...(staff ? [{ href: "/manage/review", label: "Review", icon: "review", count: counts.reviewQueue } satisfies NavItem] : []),
   ];
-  return { sections, tabs };
+  // Command palette shortcuts: only the create pages this person can actually use.
+  const actions: NavAction[] = [
+    ...(staff ? [{ href: "/manage/tasks/new", label: "New task", keywords: "assign create" }] : []),
+    { href: "/questions/new", label: "Ask a question", keywords: "help leader" },
+    { href: "/discussion/new", label: "Start a discussion", keywords: "thread post" },
+    ...(canPostAnnouncement(actor) ? [{ href: "/announcements/new", label: "Post an announcement", keywords: "news" }] : []),
+    ...(canManageCalendar(actor) ? [{ href: "/calendar/new", label: "Add an event", keywords: "calendar meeting" }] : []),
+    ...(canManageMeetingRecaps(actor) ? [{ href: "/meetings/new", label: "Write up a meeting", keywords: "recap record" }] : []),
+    { href: "/parts/new", label: "Add a part", keywords: "print cnc queue" },
+    { href: "/orders/new", label: "Add an item to the order list", keywords: "buy purchase" },
+    {
+      href: "/resources/new",
+      label: canManageResources(actor) ? "Add a resource" : "Share a resource",
+      keywords: "link file doc",
+    },
+    { href: "/strategy/new", label: "Add a strategy", keywords: "auto plan" },
+  ];
+  return { sections, tabs, actions };
 }
 
 export function AppShell({ actor, counts, children }: { actor: Actor; counts: NavCounts; children: ReactNode }) {
-  const { sections, tabs } = buildNav(actor, counts);
+  const { sections, tabs, actions } = buildNav(actor, counts);
   return (
     <div className="min-h-dvh">
       {/* Desktop sidebar */}
@@ -93,6 +141,7 @@ export function AppShell({ actor, counts, children }: { actor: Actor; counts: Na
           <Link href="/today" aria-label="Home">
             <Logo size="sm" />
           </Link>
+          <CommandPaletteButton variant="field" className="mt-4" />
         </div>
         <div className="flex-1 overflow-y-auto px-3 pb-4">
           <SidebarNav sections={sections} />
@@ -111,10 +160,13 @@ export function AppShell({ actor, counts, children }: { actor: Actor; counts: Na
           <HuskyMark className="size-8" />
           <span className="font-display text-lg font-bold uppercase tracking-wide text-brand-500">Huskyteers</span>
         </Link>
-        <MobileNav
-          sections={sections}
-          header={<UserChipWithPhoto userId={actor.id} name={actor.name} role={actor.role} subteam={actor.subteam} size="sm" />}
-        />
+        <div className="flex items-center gap-1">
+          <CommandPaletteButton variant="icon" />
+          <MobileNav
+            sections={sections}
+            header={<UserChipWithPhoto userId={actor.id} name={actor.name} role={actor.role} subteam={actor.subteam} size="sm" />}
+          />
+        </div>
       </header>
 
       <main className="px-4 pb-28 pt-6 sm:px-6 lg:ml-64 lg:px-10 lg:pb-12 lg:pt-10">
@@ -122,6 +174,7 @@ export function AppShell({ actor, counts, children }: { actor: Actor; counts: Na
       </main>
 
       <BottomTabs items={tabs} />
+      <CommandPalette sections={sections} actions={actions} />
     </div>
   );
 }

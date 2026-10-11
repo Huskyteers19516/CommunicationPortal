@@ -1752,6 +1752,12 @@ export async function createThingAction(_prev: ActionState, formData: FormData):
 - Set `export const metadata = { title: "..." }` on pages (title template adds " · Huskyteers Portal").
 - Forms: client components with `useActionState(action, initialActionState)`, `<SubmitButton>` (pending state), `<FormMessage state={state} />`, per-field errors via `<Field error={state?.fieldErrors?.title}>`, and `defaultValue={state?.values?.title ?? initial}` so input survives validation errors.
 - Use the UI kit: `Button/ButtonLink/buttonClasses` (size `icon` = 40px square icon button; `cn` only joins classes, so an override only wins if the kit leaves that property out — padding is left out when you pass your own `p-*`/`px-*`), `SubmitButton` (supports `confirm="Are you sure?"`), `Field/Input/Textarea/Select/CheckboxField`, `AutoSubmitSelect` (a filter menu in a GET form that applies on change), `Card/CardHeader/CardBody`, `Badge/CountBubble`, `Alert`, `FormMessage`, `EmptyState`, `PageHeader`, `Avatar`, `ProgressBar`, `StatCard`, `LinkTabs`, `Pagination/parsePage`, `RichText` (user text; never `dangerouslySetInnerHTML`).
+- Navigation (`components/app/app-shell.tsx` `buildNav`): a nav item's `children` are its sub-pages, opened in place under
+  it in the sidebar / phone drawer while you're anywhere in it (the longest matching child href is active). The same
+  items, plus `actions` (create pages, gated by the same permission checks as the pages), feed the ⌘K / Ctrl+K command
+  palette (`components/app/command-palette.tsx`). Active highlights (sidebar block, `LinkTabs` underline, palette row)
+  slide via `useSlidingIndicator` + `useOptimisticActive` (`components/ui/sliding-indicator.ts`): they move on click,
+  before the next page arrives.
   Domain badges: `RoleBadge`, `SubteamBadge` (null = "Whole team"), `AccountStatusBadge`, `AssignmentStatusBadge`, `QuestionStatusBadge`, `PriorityBadge`, `DueBadge`; `UserChip`, `describeRole`.
   People's avatars: in server components `UserAvatar` / `UserChipWithPhoto` with the person's `userId` (their photo
   when they show one, else initials); in client components `Avatar` / `UserChip` with a `photoId` the page passed

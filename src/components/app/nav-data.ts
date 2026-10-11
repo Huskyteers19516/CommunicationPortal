@@ -36,9 +36,25 @@ export interface NavItem {
   count?: number;
   /** Match only the exact path (for section roots like /manage and /admin). */
   exact?: boolean;
+  /** Sub-pages, shown under the item (opened in place) while you're anywhere in it. */
+  children?: NavChild[];
+}
+
+/** A sub-page link. The one whose href is the longest prefix of the current path is active. */
+export interface NavChild {
+  href: string;
+  label: string;
 }
 
 export interface NavSection {
   title?: string;
   items: NavItem[];
+}
+
+/** A "do something" entry in the command palette (opens a create page the person is allowed to use). */
+export interface NavAction {
+  href: string;
+  label: string;
+  /** Extra words it should match, e.g. "add create". */
+  keywords?: string;
 }

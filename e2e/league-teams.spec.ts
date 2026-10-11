@@ -32,9 +32,9 @@ test.describe("other teams", () => {
 
     // The tab next to Our strategies.
     await page.goto("/strategy");
-    await page.getByRole("link", { name: /^Other teams/ }).click();
+    await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: /^Other teams/ }).click();
     await expect(page).toHaveURL(/\/strategy\/teams$/);
-    await expect(page.getByRole("link", { name: /^Other teams/ })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: /^Other teams/ })).toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("link", { name: /^9040\s*STEAMpunks Alpha/ })).toBeVisible();
     // Our own number only appears in the app's brand, never in the list.
     await expect(page.getByRole("main").getByText(String(19516), { exact: true })).toHaveCount(0);

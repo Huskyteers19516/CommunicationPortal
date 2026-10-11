@@ -41,9 +41,10 @@ import { createPortal } from "react-dom";
 import { logoutAction } from "@/server/auth/actions";
 import { cn } from "@/lib/cn";
 import { CountBubble } from "../ui/badge";
-import type { NavIcon, NavItem, NavSection } from "./nav-data";
+import { INDICATOR_MOTION, useOptimisticActive, useSlidingIndicator } from "../ui/sliding-indicator";
+import type { NavChild, NavIcon, NavItem, NavSection } from "./nav-data";
 
-const ICONS: Record<NavIcon, LucideIcon> = {
+export const ICONS: Record<NavIcon, LucideIcon> = {
   today: ListChecks,
   myTasks: ClipboardList,
   dashboard: SquareKanban,
@@ -74,15 +75,52 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   settings: Settings,
 };
 
-function isActive(pathname: string, item: NavItem) {
+function isActive(pathname: string, item: { href: string; exact?: boolean }) {
   if (item.exact) return pathname === item.href;
   return pathname === item.href || pathname.startsWith(item.href + "/");
 }
 
+/** Highlight keys: a top-level item is its href; a sub-page is "parent > child" (a child can share its parent's href). */
+const childKey = (item: NavItem, child: NavChild) => `${item.href} > ${child.href}`;
+
+/** The sub-page link to land on when the parent itself is clicked (the one at the parent's own URL). */
+function landingKey(item: NavItem) {
+  const child = item.children?.find((c) => c.href === item.href);
+  return child ? childKey(item, child) : item.href;
+}
+
+/** Which link the current page highlights: the deepest match (a sub-page's longest matching href wins). */
+function currentKey(pathname: string, sections: NavSection[]): string | null {
+  for (const item of sections.flatMap((s) => s.items)) {
+    if (!isActive(pathname, item)) continue;
+    const child = item.children
+      ?.filter((c) => isActive(pathname, c))
+      .sort((a, b) => b.href.length - a.href.length)[0];
+    return child ? childKey(item, child) : item.href;
+  }
+  return null;
+}
+
+/**
+ * The sidebar / drawer links. The highlight block slides from the old item to the new one as soon as you click, and
+ * an item's sub-pages open in place under it while you're anywhere in it.
+ */
 function NavLinks({ sections, onNavigate }: { sections: NavSection[]; onNavigate?: () => void }) {
   const pathname = usePathname();
+  const current = currentKey(pathname, sections);
+  const { activeKey, onPick } = useOptimisticActive(current);
+  const { containerRef, indicatorRef } = useSlidingIndicator<HTMLElement, HTMLSpanElement>(activeKey);
+  const pick = (key: string) => (e: React.MouseEvent) => {
+    onPick(key)(e);
+    onNavigate?.();
+  };
   return (
-    <nav className="space-y-6" aria-label="Main">
+    <nav ref={containerRef} className="group relative space-y-6" aria-label="Main">
+      <span
+        ref={indicatorRef}
+        aria-hidden
+        className={cn("pointer-events-none absolute left-0 top-0 rounded-lg bg-brand-50 opacity-0", INDICATOR_MOTION)}
+      />
       {sections.map((section, i) => (
         <div key={section.title ?? i}>
           {section.title && (
@@ -91,22 +129,64 @@ function NavLinks({ sections, onNavigate }: { sections: NavSection[]; onNavigate
           <ul className="space-y-0.5">
             {section.items.map((item) => {
               const Icon = ICONS[item.icon];
-              const active = isActive(pathname, item);
+              const self = activeKey === item.href;
+              const within = self || (!!activeKey && activeKey.startsWith(item.href + " > "));
               return (
                 <li key={item.href}>
                   <Link
                     href={item.href}
-                    onClick={onNavigate}
-                    aria-current={active ? "page" : undefined}
+                    onClick={pick(item.children ? landingKey(item) : item.href)}
+                    data-indicator-key={item.href}
+                    aria-current={current === item.href ? "page" : undefined}
                     className={cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                      active ? "bg-brand-50 text-brand-800" : "text-ink-600 hover:bg-ink-50 hover:text-ink-900",
+                      "relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                      self
+                        ? "bg-brand-50 text-brand-800 group-data-[indicator=on]:bg-transparent"
+                        : within
+                          ? "text-brand-800 hover:bg-ink-50"
+                          : "text-ink-600 hover:bg-ink-50 hover:text-ink-900",
                     )}
                   >
-                    <Icon className={cn("size-[18px] shrink-0", active ? "text-brand-600" : "text-ink-400")} aria-hidden />
+                    <Icon className={cn("size-[18px] shrink-0", within ? "text-brand-600" : "text-ink-400")} aria-hidden />
                     <span className="flex-1 truncate">{item.label}</span>
                     <CountBubble count={item.count ?? 0} />
                   </Link>
+                  {item.children && (
+                    <div
+                      inert={!within}
+                      className={cn(
+                        "grid transition-[grid-template-rows] duration-300 ease-out motion-reduce:transition-none",
+                        within ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+                      )}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <ul className="ml-[1.3rem] space-y-0.5 border-l border-ink-200 py-0.5 pl-2">
+                          {item.children.map((child) => {
+                            const key = childKey(item, child);
+                            const active = activeKey === key;
+                            return (
+                              <li key={child.href}>
+                                <Link
+                                  href={child.href}
+                                  onClick={pick(key)}
+                                  data-indicator-key={key}
+                                  aria-current={current === key ? "page" : undefined}
+                                  className={cn(
+                                    "relative flex rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors",
+                                    active
+                                      ? "bg-brand-50 text-brand-800 group-data-[indicator=on]:bg-transparent"
+                                      : "text-ink-500 hover:bg-ink-50 hover:text-ink-900",
+                                  )}
+                                >
+                                  <span className="truncate">{child.label}</span>
+                                </Link>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
                 </li>
               );
             })}
