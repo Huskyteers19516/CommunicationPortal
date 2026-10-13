@@ -1,6 +1,6 @@
 "use client";
 
-import { CornerDownLeft, CircleArrowRight, Plus, Search, type LucideIcon } from "lucide-react";
+import { CornerDownLeft, CircleArrowRight, Mail, Plus, Search, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
@@ -13,11 +13,13 @@ import type { NavAction, NavSection } from "./nav-data";
 /** Fired by the sidebar / header buttons; the one CommandPalette in the shell listens. */
 const OPEN_EVENT = "command-palette:open";
 
+const GROUPS = ["Go to", "Create", "Tools"] as const;
+
 interface Command {
   key: string;
   href: string;
   label: string;
-  group: "Go to" | "Create";
+  group: (typeof GROUPS)[number];
   /** Where it lives ("Team", "Strategy"…), shown on the right and searchable. */
   hint?: string;
   icon: LucideIcon;
@@ -35,14 +37,12 @@ function buildCommands(sections: NavSection[], actions: NavAction[]): Command[] 
         .map((c) => ({ key: c.href, href: c.href, label: c.label, group: "Go to" as const, hint: item.label, icon: CircleArrowRight })),
     ]),
   );
-  const creates: Command[] = actions.map((a) => ({
-    key: `new:${a.href}`,
-    ...a,
-    keywords: `new add create ${a.keywords ?? ""}`,
-    group: "Create" as const,
-    icon: Plus,
-  }));
-  return [...pages, ...creates];
+  const doers: Command[] = actions.map(({ kind, ...a }) =>
+    kind === "tool"
+      ? { key: `tool:${a.href}`, ...a, group: "Tools" as const, icon: Mail }
+      : { key: `new:${a.href}`, ...a, keywords: `new add create ${a.keywords ?? ""}`, group: "Create" as const, icon: Plus },
+  );
+  return [...pages, ...doers];
 }
 
 /** Every word typed must appear somewhere; labels that start with the query come first, then word starts. */
@@ -148,8 +148,11 @@ function PaletteDialog({ sections, actions, onClose }: { sections: NavSection[];
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
   const results = useMemo(() => filterCommands(commands, query), [commands, query]);
+  // Rows are drawn grouped (best match first within each group); ↑↓, Enter, and the default row follow that order.
+  const groups = GROUPS.map((g) => ({ g, items: results.filter((c) => c.group === g) })).filter((x) => x.items.length > 0);
+  const ordered = groups.flatMap((x) => x.items);
   // The picked row while it's still in the results; otherwise the top one.
-  const activeKey = results.some((c) => c.key === picked) ? picked : (results[0]?.key ?? null);
+  const activeKey = ordered.some((c) => c.key === picked) ? picked : (ordered[0]?.key ?? null);
   const { containerRef, indicatorRef } = useSlidingIndicator<HTMLUListElement, HTMLSpanElement>(activeKey);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -178,15 +181,15 @@ function PaletteDialog({ sections, actions, onClose }: { sections: NavSection[];
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    const index = results.findIndex((c) => c.key === activeKey);
+    const index = ordered.findIndex((c) => c.key === activeKey);
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      if (!results.length) return;
+      if (!ordered.length) return;
       const step = e.key === "ArrowDown" ? 1 : -1;
-      setPicked(results[(index + step + results.length) % results.length].key);
+      setPicked(ordered[(index + step + ordered.length) % ordered.length].key);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (results[index]) go(results[index]);
+      if (ordered[index]) go(ordered[index]);
     } else if (e.key === "Escape") {
       e.preventDefault();
       onClose();
@@ -194,10 +197,6 @@ function PaletteDialog({ sections, actions, onClose }: { sections: NavSection[];
       e.preventDefault(); // the field is the only stop
     }
   };
-
-  const groups = (["Go to", "Create"] as const)
-    .map((g) => ({ g, items: results.filter((c) => c.group === g) }))
-    .filter((x) => x.items.length > 0);
 
   return (
     <div ref={rootRef} className="fixed inset-0 z-[60] flex items-start justify-center px-4 pt-[12vh]" role="dialog" aria-modal="true" aria-label="Command palette">

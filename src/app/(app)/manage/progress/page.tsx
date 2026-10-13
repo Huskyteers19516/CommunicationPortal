@@ -1,8 +1,15 @@
-import { Users } from "lucide-react";
+import { Mail, Users } from "lucide-react";
 import type { Metadata } from "next";
 import { ProgressLegend, ProgressRangeTabs, SubteamChips } from "@/components/manage/progress-filters";
-import { describeRange, scopeLabel, subteamGroupLabel, teamProgressHref } from "@/components/manage/progress-links";
+import {
+  describeRange,
+  overdueReminderHref,
+  scopeLabel,
+  subteamGroupLabel,
+  teamProgressHref,
+} from "@/components/manage/progress-links";
 import { SubteamSummaryStrip, TeamProgressList } from "@/components/manage/team-progress";
+import { ButtonLink } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
@@ -10,6 +17,7 @@ import { Pagination, parsePage } from "@/components/ui/pagination";
 import { todayInTimezone } from "@/lib/dates";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { canAdminister } from "@/server/permissions";
 import { getTeamProgress } from "@/server/queries/progress";
 
 export const metadata: Metadata = { title: "Team progress" };
@@ -43,6 +51,14 @@ export default async function TeamProgressPage({ searchParams }: PageProps<"/man
         eyebrow={scopeLabel(actor)}
         title="Team progress"
         description={`Who has finished what, for tasks due ${describeRange(range, data.from, data.to, today)}.`}
+        actions={
+          canAdminister(actor) && (
+            <ButtonLink variant="secondary" href={overdueReminderHref({ range, subteam: filterSubteam })}>
+              <Mail className="size-4" aria-hidden />
+              Overdue reminder
+            </ButtonLink>
+          )
+        }
       />
 
       <ProgressRangeTabs range={range} hrefFor={(r) => teamProgressHref({ range: r, subteam: filterSubteam })} />

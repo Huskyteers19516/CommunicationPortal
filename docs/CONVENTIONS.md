@@ -121,6 +121,23 @@ replaces it and a `role="status"` line says what happened).
   Admin → People (`closedAssignments`), and the dashboard's public status `"closed"`. Recent activity leaves out items
   approved by finishing (one task could fill it).
 
+## Overdue reminder (`queries/overdue-reminder.ts`, `lib/overdue-reminder.ts`, `/manage/progress/reminder`)
+
+The portal can't send email from a team address, so a leader copies a ready-made reminder into their own email.
+**Admin access only** (`canAdminister` → `ForbiddenError`; the page uses `requireAdminUser`). Same scope as the progress
+pages: all-scope staff pick the whole team or one subteam (tabs with how many people are behind in each; an unknown
+`?subteam=` = whole team), subteam leaders always get their own subteam. "Subteam" means the **person's** subteam, so
+whole-team tasks show up under each person's group; the captain/mentors/teachers (no subteam) only under Whole team.
+Overdue is the one shared definition, `overdueItemsWhere` / `isOverdueWhere` in `queries/progress.ts` (to do or sent
+back, due before today, task not finished, ACTIVE people) — the count always matches the overview's.
+The text (`buildOverdueReminder`) holds only what the Task dashboard already shows everyone: names, task titles, due
+dates and days late — never notes, review notes, or whether an item was sent back (the email usually goes to everyone
+on it). Recipients are the people's emails (deduped), the subject names the group and date, the message is editable
+before copying, and "Open in email app" (`reminderMailto`) appears only while the link is short enough (`MAILTO_MAX`).
+Lists at most `OVERDUE_REMINDER_MAX` (500) items, oldest first, and says so when there are more. Reached from Team
+progress ("Overdue reminder", keeping the subteam filter), the overview's Needs attention card ("Remind them"), and the
+command palette (Tools).
+
 ## Categories, sign-up tasks, and the Task dashboard
 
 - `TaskCategory` groups a subteam's tasks (`subteam` null = whole-team categories), managed by `canManageCategories`

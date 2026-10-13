@@ -51,10 +51,12 @@ export interface NavSection {
   items: NavItem[];
 }
 
-/** A "do something" entry in the command palette (opens a create page the person is allowed to use). */
+/** A "do something" entry in the command palette: a create page, or a tool, the person is allowed to use. */
 export interface NavAction {
   href: string;
   label: string;
   /** Extra words it should match, e.g. "add create". */
   keywords?: string;
+  /** "tool" = listed under Tools (e.g. the overdue reminder) instead of Create. */
+  kind?: "create" | "tool";
 }

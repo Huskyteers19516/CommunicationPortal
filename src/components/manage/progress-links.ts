@@ -39,6 +39,15 @@ export function teamProgressHref(opts: { range?: ProgressRange; subteam?: Subtea
   return qs ? `/manage/progress?${qs}` : "/manage/progress";
 }
 
+/** The overdue reminder for a group; `range` is Team progress's, carried so its back link returns there. */
+export function overdueReminderHref(opts: { range?: ProgressRange; subteam?: Subteam | null } = {}): string {
+  const q = new URLSearchParams();
+  if (opts.subteam) q.set("subteam", opts.subteam);
+  if (opts.range) q.set("range", opts.range);
+  const qs = q.toString();
+  return qs ? `/manage/progress/reminder?${qs}` : "/manage/progress/reminder";
+}
+
 export function memberProgressHref(userId: string, range?: ProgressRange): string {
   const path = `/manage/progress/${encodeURIComponent(userId)}`;
   return range ? `${path}?range=${range}` : path;

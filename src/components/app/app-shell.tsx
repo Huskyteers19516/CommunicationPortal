@@ -127,6 +127,16 @@ export function buildNav(
       keywords: "link file doc",
     },
     { href: "/strategy/new", label: "Add a strategy", keywords: "auto plan" },
+    ...(admin
+      ? [
+          {
+            href: "/manage/progress/reminder",
+            label: "Overdue reminder email",
+            keywords: "late behind remind export copy",
+            kind: "tool",
+          } satisfies NavAction,
+        ]
+      : []),
   ];
   return { sections, tabs, actions };
 }

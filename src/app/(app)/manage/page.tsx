@@ -7,6 +7,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { dateOnlyToDb, todayInTimezone } from "@/lib/dates";
 import { requireStaffUser } from "@/server/auth/session";
 import { env } from "@/server/env";
+import { canAdminister } from "@/server/permissions";
 import { getOverview } from "@/server/queries/progress";
 
 export const metadata: Metadata = { title: "Overview" };
@@ -76,7 +77,7 @@ export default async function ManageOverviewPage() {
       <div className="mt-6 grid gap-6 lg:grid-cols-5">
         <TodaysTasksCard tasks={o.todaysTasks} total={o.todaysTaskTotal} className="lg:col-span-3 lg:self-start" />
         <div className="space-y-6 lg:col-span-2">
-          <AttentionCard people={o.attention} />
+          <AttentionCard people={o.attention} reminderHref={canAdminister(actor) ? "/manage/progress/reminder" : undefined} />
           <RecentActivityCard items={o.recentActivity} now={now} timeZone={env.teamTimezone} />
         </div>
       </div>

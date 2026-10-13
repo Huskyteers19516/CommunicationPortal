@@ -31,6 +31,19 @@ const OPEN_STATUSES: AssignmentStatus[] = [AssignmentStatus.TODO, AssignmentStat
 const OPEN_TASK = { completedAt: null } satisfies Prisma.TaskWhereInput;
 const FINISHED_TASK = { completedAt: { not: null } } satisfies Prisma.TaskWhereInput;
 
+/**
+ * Overdue checklist items of `people`: still on their plate (to do / sent back), due before `today`, on a task that
+ * isn't marked finished. The one definition behind every overdue count and the overdue reminder.
+ */
+export function overdueItemsWhere(people: Prisma.UserWhereInput, today: DateOnly): Prisma.TaskAssignmentWhereInput {
+  return { user: people, ...isOverdueWhere(today) };
+}
+
+/** overdueItemsWhere without the people part (e.g. for `assignments: { some: … }` on a user). */
+export function isOverdueWhere(today: DateOnly): Prisma.TaskAssignmentWhereInput {
+  return { status: { in: OPEN_STATUSES }, task: { dueDate: { lt: dateOnlyToDb(today) }, ...OPEN_TASK } };
+}
+
 const rangeSchema = z.enum(PROGRESS_RANGES);
 const subteamSchema = z.enum(Subteam);
 
@@ -188,11 +201,7 @@ export async function getOverview(actor: Actor, today: DateOnly, db: Db = prisma
   const todayDb = dateOnlyToDb(today);
   const people = manageableMembersWhere(actor);
   const todaysTasksWhere: Prisma.TaskWhereInput = { AND: [manageableTasksWhere(actor), { dueDate: todayDb }] };
-  const overdueWhere: Prisma.TaskAssignmentWhereInput = {
-    user: people,
-    status: { in: OPEN_STATUSES },
-    task: { dueDate: { lt: todayDb }, ...OPEN_TASK },
-  };
+  const overdueWhere = overdueItemsWhere(people, today);
   // Activity on tasks the actor manages, plus activity of the people they look after.
   const activityScope: Prisma.TaskAssignmentWhereInput = { OR: [{ task: manageableTasksWhere(actor) }, { user: people }] };
 
@@ -397,7 +406,7 @@ export async function getTeamProgress(
     }),
     db.taskAssignment.groupBy({
       by: ["userId"],
-      where: { user: people, status: { in: OPEN_STATUSES }, task: { dueDate: { lt: dateOnlyToDb(today) }, ...OPEN_TASK } },
+      where: overdueItemsWhere(people, today),
       _count: { _all: true },
     }),
   ]);

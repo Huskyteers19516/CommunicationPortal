@@ -1,4 +1,4 @@
-import { BadgeCheck, CalendarCheck, ChartColumn, ChevronRight, Inbox, PartyPopper, Plus } from "lucide-react";
+import { BadgeCheck, CalendarCheck, ChartColumn, ChevronRight, Inbox, Mail, PartyPopper, Plus } from "lucide-react";
 import Link from "next/link";
 import { FinishedBadge, PriorityBadge, SubteamBadge } from "@/components/app/badges";
 import { UserAvatar } from "@/components/app/user-avatar";
@@ -137,10 +137,31 @@ export function TodaysTasksCard({
   );
 }
 
-export function AttentionCard({ people, className }: { people: AttentionPerson[]; className?: string }) {
+/** `reminderHref`: link to the overdue reminder (people with admin access), shown while someone is behind. */
+export function AttentionCard({
+  people,
+  reminderHref,
+  className,
+}: {
+  people: AttentionPerson[];
+  reminderHref?: string;
+  className?: string;
+}) {
   return (
     <Card className={className}>
-      <CardHeader title="Needs attention" description="Most overdue checklist items" />
+      <CardHeader
+        title="Needs attention"
+        description="Most overdue checklist items"
+        actions={
+          reminderHref &&
+          people.length > 0 && (
+            <ButtonLink href={reminderHref} variant="secondary">
+              <Mail className="size-4" aria-hidden />
+              Remind them
+            </ButtonLink>
+          )
+        }
+      />
       {people.length === 0 ? (
         <EmptyState icon={PartyPopper} title="Nobody is behind" description="No overdue items right now. Nice work!" />
       ) : (
